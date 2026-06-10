@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lesion Annotation Trainer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Setup screen ───────────────────────────────────────────────────────── -->
+<div id="setup-screen">
+  <div class="setup-card">
+    <h1>Lesion Annotation Trainer</h1>
+
+    <!-- Fork: shown when a saved session exists -->
+    <div id="fork-screen" hidden>
+      <div id="fork-session-info" class="resume-info"></div>
+      <button id="resume-btn" class="btn-primary" style="margin-top:10px">Continue session</button>
+      <button id="new-session-btn" class="btn-secondary" style="width:100%;margin-top:8px">New session →</button>
+      <button id="add-pair-btn" class="btn-text" style="margin-top:8px">+ Add new training set</button>
+    </div>
+
+    <!-- Config: shown when no session, or after clicking "New session" -->
+    <div id="config-screen">
+      <div id="pair-section">
+        <p class="setup-sub">Training set</p>
+        <div id="session-deleted-notice" class="notice-banner" hidden>
+          <span>Your previous session's training set was deleted.</span>
+          <button id="dismiss-deleted-notice" class="notice-dismiss">✕</button>
+        </div>
+        <div id="pair-list"></div>
+      </div>
+
+      <p class="setup-sub">What would you like to practice?</p>
+
+      <div class="mode-checks">
+        <label class="mode-check">
+          <input type="checkbox" id="cb-polygon">
+          <div class="mode-check-text">
+            <strong>Polygon drawing</strong>
+            <span>Trace the lesion boundary</span>
+          </div>
+        </label>
+        <label class="mode-check">
+          <input type="checkbox" id="cb-label">
+          <div class="mode-check-text">
+            <strong>Label identification</strong>
+            <span>Name the lesion type</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="count-field">
+        <div class="count-header">
+          <label for="n-slider">Cards per session</label>
+          <span id="n-display">–</span>
+        </div>
+        <input type="range" id="n-slider" min="1" max="38" value="38" class="range-input">
+      </div>
+
+      <p id="mode-error" class="error-text" hidden>Please select at least one mode.</p>
+      <button id="start-btn" class="btn-primary" disabled>Start Training</button>
+      <button id="back-fork-btn" class="btn-text" hidden style="margin-top:6px">← Back</button>
+    </div>
+
+    <!-- Add pair screen: upload-only, reached from fork menu -->
+    <div id="add-pair-screen" hidden>
+      <p class="setup-sub">Add new training set</p>
+      <input type="text" id="add-name" placeholder="Display name" class="text-input">
+      <div class="upload-file-row">
+        <label class="upload-file-btn">
+          <span id="add-img-label">Image…</span>
+          <input type="file" id="add-image" accept=".tif,.tiff,.png,.jpg,.jpeg">
+        </label>
+        <label class="upload-file-btn">
+          <span id="add-json-label">JSON…</span>
+          <input type="file" id="add-json" accept=".json">
+        </label>
+      </div>
+      <button id="add-upload-btn" class="btn-secondary" style="width:100%">Upload</button>
+      <p id="add-status" class="upload-status" hidden></p>
+      <button id="back-add-btn" class="btn-text" style="margin-top:6px">← Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="app" hidden>
+  <header>
+    <div id="header-left">
+      <span id="progress-text"><span id="stat-tried">–</span> : <span id="stat-susp">–</span> : <span id="stat-total">–</span></span>
+      <div id="progress-bar"><div id="progress-fill"></div><div id="progress-susp"></div></div>
+      <span id="avg-text">–</span>
+    </div>
+    <div id="header-right">
+      <button id="export-btn">Export JSON</button>
+      <button id="home-btn">Home</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="canvas-container">
+      <canvas id="canvas"></canvas>
+      <div id="canvas-hint"></div>
+    </div>
+
+    <div id="sidebar">
+      <div id="badges">
+        <div id="retry-badge"      hidden></div>
+        <div id="prev-score-badge" hidden></div>
+      </div>
+
+      <!-- Drawing panel -->
+      <div id="drawing-panel">
+        <div id="polygon-section" hidden>
+          <div id="vert-info">
+            <span id="vert-count">0 vertices</span>
+            <span id="snap-hint" hidden>&nbsp;· click&nbsp;● to close</span>
+          </div>
+          <div class="btn-row">
+            <button id="undo-btn"  class="btn-secondary">Undo</button>
+            <button id="clear-btn" class="btn-secondary">Clear</button>
+          </div>
+        </div>
+
+        <div id="label-section" class="field" hidden>
+          <label for="label-select">Label</label>
+          <select id="label-select">
+            <option value="">— choose —</option>
+          </select>
+        </div>
+
+        <button id="submit-btn" class="btn-primary" disabled>Submit</button>
+
+        <div class="legend" id="legend-draw" hidden>
+          <span class="swatch user-swatch"></span><span>Your polygon</span>
+        </div>
+
+        <button id="suspend-draw-btn" class="btn-suspend">Suspend this card</button>
+      </div>
+
+      <!-- Reveal panel -->
+      <div id="reveal-panel" hidden>
+
+        <!-- Drawing score (polygon / both mode) -->
+        <div id="r-draw" hidden>
+          <div class="r-score-row">
+            <span class="r-dim">Drawing</span>
+            <strong id="r-draw-val">–</strong>
+            <button id="iou-info-btn" class="btn-info">?</button>
+          </div>
+          <div id="iou-tooltip" class="iou-tooltip" hidden>
+            <p>IoU (Intersection over Union) — how much your polygon overlaps the ground truth relative to their combined area.</p>
+            <div id="iou-calc-lines"></div>
+          </div>
+          <div id="r-draw-best" hidden class="r-best">
+            best: <span id="r-draw-best-val">–</span>
+          </div>
+        </div>
+
+        <!-- Label result (label / both mode) -->
+        <div id="r-label" hidden>
+          <div id="r-label-result" class="r-score-row"></div>
+          <div id="r-label-best" hidden class="r-best">
+            best: <span id="r-label-best-val">–</span>
+          </div>
+        </div>
+
+        <div class="legend" id="legend-reveal">
+          <div id="legend-user-row" hidden>
+            <span class="swatch user-swatch"></span><span>Your polygon</span>
+          </div>
+          <div id="legend-gt-row"><span class="swatch mgr-swatch"></span><span>Ground Truth</span></div>
+        </div>
+
+        <button id="next-btn" class="btn-primary">Next Card →</button>
+        <button id="redo-btn" class="btn-secondary" style="width:100%" hidden>↺ Redo this card</button>
+        <button id="suspend-reveal-btn" class="btn-suspend">Suspend this card</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ── All-suspended screen ───────────────────────────────────────────────── -->
+<div id="done-screen" hidden>
+  <div class="done-card">
+    <div class="done-icon">✓</div>
+    <h2>All cards suspended</h2>
+    <p>No more cards in rotation.<br>Reset to start a fresh session.</p>
+    <div class="btn-row" style="justify-content:center;gap:12px;margin-top:24px">
+      <button id="export-done-btn" class="btn-primary" style="padding:10px 20px">
+        Download Annotations
+      </button>
+      <button id="play-again-btn" class="btn-secondary">Reset Session</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Card list modal ─────────────────────────────────────────────────────── -->
+<div id="card-modal" hidden>
+  <div id="card-modal-backdrop"></div>
+  <div id="card-modal-panel">
+    <div id="card-modal-header">
+      <div id="card-modal-tabs">
+        <button class="modal-tab" id="tab-tried">Attempted <span class="tab-count" id="tab-tried-count">0</span></button>
+        <button class="modal-tab" id="tab-susp">Suspended <span class="tab-count" id="tab-susp-count">0</span></button>
+      </div>
+      <button id="card-modal-close">✕</button>
+    </div>
+    <div id="card-modal-grid"></div>
+  </div>
+</div>
+
+<script src="/static/session.js"></script>
+<script src="/static/canvas.js"></script>
+<script src="/static/modal.js"></script>
+<script src="/static/trainer.js"></script>
+<script src="/static/setup.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
