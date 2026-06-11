@@ -38,7 +38,8 @@ LEGACY_JSON  = BASE / 'DSC_0018_segment_1_segmented_smoothed.json'
 
 app = Flask(__name__, static_folder=str(STATIC))
 
-_img_cache: dict[str, Image.Image] = {}
+_img_cache:      dict[str, Image.Image] = {}
+_overview_cache: dict[str, bytes]       = {}
 
 
 def _load_manifest() -> list:
@@ -59,7 +60,9 @@ def _hash_bytes(data: bytes) -> str:
 def _get_image(image_hash: str, image_ext: str) -> Image.Image:
     key = f'{image_hash}.{image_ext}'
     if key not in _img_cache:
-        _img_cache[key] = Image.open(IMG_DIR / key)
+        img = Image.open(IMG_DIR / key)
+        img.load()  # force full pixel decode; avoids lazy-seek issues with TIFF
+        _img_cache[key] = img
     return _img_cache[key]
 
 
@@ -309,6 +312,119 @@ def api_delete_pair(pair_id: str):
         _img_cache.pop(f'{h}.{ext}', None)
     _save_manifest(remaining)
     return '', 204
+
+
+@app.get('/api/image/<image_hash>')
+def api_image_overview(image_hash: str):
+    if image_hash in _overview_cache:
+        return send_file(io.BytesIO(_overview_cache[image_hash]), mimetype='image/png')
+    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
+    if not pair:
+        return jsonify({'error': 'image not found'}), 404
+    img  = _get_image(image_hash, pair['image_ext'])
+    w, h = img.size
+    if max(w, h) > 2000:
+        scale = 2000 / max(w, h)
+        img   = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    data = buf.getvalue()
+    _overview_cache[image_hash] = data
+    return send_file(io.BytesIO(data), mimetype='image/png')
+
+
+@app.get('/api/image/<image_hash>/crop')
+def api_image_crop(image_hash: str):
+    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
+    if not pair:
+        return jsonify({'error': 'image not found'}), 404
+    img  = _get_image(image_hash, pair['image_ext'])
+    iw, ih = img.size
+    try:
+        x = max(0, int(request.args['x']))
+        y = max(0, int(request.args['y']))
+        w = int(request.args['w'])
+        h = int(request.args['h'])
+    except (KeyError, ValueError):
+        return jsonify({'error': 'x, y, w, h query params required'}), 400
+    buf = io.BytesIO()
+    img.crop((x, y, min(iw, x + w), min(ih, y + h))).save(buf, 'PNG')
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
+
+
+@app.post('/api/compare')
+def api_compare():
+    body       = request.json or {}
+    image_hash = body.get('imageHash')
+    set_ids    = body.get('setIds', [])
+    if not image_hash or not set_ids:
+        return jsonify({'error': 'imageHash and setIds required'}), 400
+    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
+    if not pair:
+        return jsonify({'error': 'image not found'}), 404
+    img    = _get_image(image_hash, pair['image_ext'])
+    iw, ih = img.size
+
+    annotations = []
+    n = 0
+    for set_id in set_ids:
+        try:
+            shapes = _load_shapes(set_id)
+        except Exception:
+            continue
+        for s in shapes:
+            pts = s['points']
+            xs  = [p[0] for p in pts]
+            ys  = [p[1] for p in pts]
+            annotations.append({
+                'id':     f'a{n}',
+                'setId':  set_id,
+                'points': pts,
+                'bbox':   [min(xs), min(ys), max(xs), max(ys)],
+            })
+            n += 1
+
+    # Union-find for connected components
+    parent = {a['id']: a['id'] for a in annotations}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        parent[find(x)] = find(y)
+
+    edges: list[list[str]] = []
+    for i in range(len(annotations)):
+        ai = annotations[i]
+        for j in range(i + 1, len(annotations)):
+            aj = annotations[j]
+            # Broad phase: bbox overlap
+            ax0, ay0, ax1, ay1 = ai['bbox']
+            bx0, by0, bx1, by1 = aj['bbox']
+            if ax0 >= bx1 or ax1 <= bx0 or ay0 >= by1 or ay1 <= by0:
+                continue
+            # Narrow phase: Shapely intersection
+            if ShapelyPolygon(ai['points']).buffer(0).intersects(
+                    ShapelyPolygon(aj['points']).buffer(0)):
+                union(ai['id'], aj['id'])
+                edges.append([ai['id'], aj['id']])
+
+    groups: dict[str, list] = {}
+    for a in annotations:
+        root = find(a['id'])
+        groups.setdefault(root, []).append(a['id'])
+
+    return jsonify({
+        'imageWidth':  iw,
+        'imageHeight': ih,
+        'annotations': annotations,
+        'piles':       list(groups.values()),
+        'edges':       edges,
+    })
 
 
 @app.post('/api/iou')

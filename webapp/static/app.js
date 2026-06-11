@@ -72,17 +72,20 @@ const modeError      = document.getElementById('mode-error');
 const nSlider        = document.getElementById('n-slider');
 const nDisplay       = document.getElementById('n-display');
 
-/* ── Init ────────────────────────────────────────────────────────────────── */
-(async () => {
-  initModal();
-  initTrainer();
-  initSetup();
+/* ── Mode routing ────────────────────────────────────────────────────────── */
+function showModeScreen() {
+  document.getElementById('mode-screen').hidden        = false;
+  document.getElementById('fork-screen').hidden        = true;
+  document.getElementById('config-screen').hidden      = true;
+  document.getElementById('add-pair-screen').hidden    = true;
+  document.getElementById('compare-fork').hidden       = true;
+  document.getElementById('compare-setup').hidden      = true;
+}
 
-  const pairs = await fetch('/api/images').then(r => r.json());
-  renderPairList(pairs);
-
+async function enterTrainingMode() {
+  document.getElementById('mode-screen').hidden = true;
   const saved = readSession();
-  if (saved && pairs.some(p => p.id === saved.pairId)) {
+  if (saved && availablePairs.some(p => p.id === saved.pairId)) {
     await selectPair(saved.pairId);
     showFork(saved);
   } else {
@@ -90,7 +93,29 @@ const nDisplay       = document.getElementById('n-display');
       document.getElementById('session-deleted-notice').hidden = false;
       localStorage.removeItem(SESSION_KEY);
     }
-    if (pairs.length > 0) await selectPair(pairs[0].id);
+    if (availablePairs.length > 0) await selectPair(availablePairs[0].id);
     showConfig(false);
   }
+}
+
+function enterComparisonMode() {
+  document.getElementById('mode-screen').hidden = true;
+  const saved = readCompareSession();
+  if (saved) showCompareFork(saved);
+  else showCompareSetup();
+}
+
+/* ── Init ────────────────────────────────────────────────────────────────── */
+(async () => {
+  initModal();
+  initTrainer();
+  initSetup();
+  initCompareSetup();
+  initCompare();
+
+  const pairs = await fetch('/api/images').then(r => r.json());
+  renderPairList(pairs);
+
+  document.getElementById('training-mode-btn').addEventListener('click', enterTrainingMode);
+  document.getElementById('compare-mode-btn').addEventListener('click', enterComparisonMode);
 })();

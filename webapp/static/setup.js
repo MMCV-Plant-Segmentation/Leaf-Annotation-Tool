@@ -22,7 +22,7 @@ function renderPairList(pairs) {
   if (!pairs.length) {
     const msg = document.createElement('p');
     msg.className = 'pair-empty';
-    msg.textContent = 'No training sets yet. ';
+    msg.textContent = 'No annotation sets yet. ';
     const addBtn = document.createElement('button');
     addBtn.className   = 'btn-text';
     addBtn.textContent = '+ Add one';
@@ -43,7 +43,7 @@ function renderPairList(pairs) {
     replaceBtn.className = 'pair-replace-btn'; replaceBtn.title = 'Replace files'; replaceBtn.textContent = '↻';
 
     const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'pair-delete-btn'; deleteBtn.title = 'Delete this training set'; deleteBtn.textContent = '✕';
+    deleteBtn.className = 'pair-delete-btn'; deleteBtn.title = 'Delete this annotation set'; deleteBtn.textContent = '✕';
 
     const actionBtns = document.createElement('div');
     actionBtns.className = 'pair-action-btns';
@@ -338,6 +338,10 @@ function initSetup() {
     newSession(mode, parseInt(nSlider.value), selectedPairId);
     enterApp();
   });
+
+  // Modes buttons
+  document.getElementById('modes-btn-fork').addEventListener('click', showModeScreen);
+  document.getElementById('modes-btn-config').addEventListener('click', showModeScreen);
 
   // Trainer: home button
   document.getElementById('home-btn').addEventListener('click', () => {

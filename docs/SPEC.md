@@ -1,0 +1,371 @@
+# Lesion Annotation Trainer — Specification
+
+Canonical reference for the application as built.
+
+The app has two tools that share a backend and a setup screen:
+
+1. **Training tool** — practice annotating to match a reference ("ground truth").
+2. **Comparison tool** — pool independent annotations from several annotators,
+   group them into distinct lesions, and reconcile a shared truth.
+
+---
+
+## 1. Architecture
+
+- **Flask backend** (`webapp/app.py`) serving a single-page web app. The backend
+  is **stateless**: all session state lives in the browser's `localStorage`.
+- **Content-addressed storage**: images at `data/images/{sha256[:24]}.{ext}`;
+  annotation JSONs at `data/jsons/{pair_id}.json`; an index at
+  `data/manifest.json`. Images are de-duplicated by `image_hash`, so several
+  annotation sets can share one underlying image.
+- **Frontend** is multi-file plain `<script>` JavaScript (no ES modules). Shared
+  globals; each file exposes a deferred `initX()` wired from `app.js`. Screens
+  are shown/hidden via the `hidden` attribute.
+- **labelme JSON** (v6.3.1) is the annotation interchange format. Only
+  `shape_type == 'polygon'` shapes are used; the `fused_exterior` label is
+  excluded.
+- **Geometry** is computed server-side with Shapely; images handled with PIL.
+- **Browsers cannot render TIFF**, so the comparison tool never points an
+  `<img>` at the raw file — it requests server-converted PNGs (see §4.1).
+
+### Run
+
+Launch with `uv run app.py` from `webapp/`. Always use `uv run python3` in this
+project (never plain `python3`).
+
+---
+
+## 2. Backend API
+
+### Training endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/api/images` | Manifest of available pairs/sets. |
+| `POST` | `/api/upload` | Upload image + labelme JSON + display name (web upload so SSH-forwarded users need no direct server access). |
+| `GET`  | `/api/shapes?pair=<id>` | Polygon-only shapes for a pair. |
+| `GET`  | `/api/crop/<pair_id>/<int:idx>` | Crop image for one training card. |
+| `PATCH`/`PUT`/`DELETE` | `/api/images/<pair_id>` | Manage a pair. |
+| `POST` | `/api/iou` | Score one annotation (intersection ÷ union). |
+
+### Comparison endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/api/image/<hash>` | Downscaled **overview** PNG (long side ≤ 2000 px, LANCZOS), cached. Frontend derives display scale from natural vs logical dimensions. |
+| `GET`  | `/api/image/<hash>/crop?x=&y=&w=&h=` | Full-resolution PNG **crop** for pile zoom. |
+| `POST` | `/api/compare` | Seed a comparison session (see §4.2). |
+
+`/api/compare` pools all polygons from the selected sets, runs a broad-phase
+bbox-overlap check then a Shapely narrow-phase intersection, builds union-find
+connected components, and returns the components as initial pile groupings
+**plus the intersection edges**. The edges are kept client-side and used for the
+connected-component check during splitting (§5.6); the graph itself is otherwise
+discarded after seeding.
+
+**Implementation note:** `img.load()` is called immediately after
+`Image.open()` in `_get_image` to force eager pixel decode and avoid lazy-seek
+issues with TIFF files under concurrent requests.
+
+---
+
+## 3. Training Tool
+
+### Canvas
+
+- Polygon drawing on an HTML5 canvas with pan/zoom; canvas coordinates map back
+  to original image pixels (`canvasToOriginal` / `originalToCanvas`).
+- **labelme-style closing**: click within the snap radius (~14 px) of the first
+  vertex to close; a gold snap ring gives feedback.
+- **Undo** (button and Ctrl+Z) removes the last vertex; undo after closing
+  re-opens the polygon.
+- Edges + a preview line are shown while drawing; fill appears only after
+  closing.
+- **Reveal phase**: clicking the canvas cycles overlays — `full` (fill +
+  outline) → `none` (image only) → `outline` — *independently* for the
+  ground-truth polygon and the user polygon. Resets to `full` on each new card.
+
+### Scoring & modes
+
+- **Polygon mode**: IoU as a percentage; tooltip shows raw intersection/union
+  areas.
+- **Label mode**: classification correct/incorrect.
+- **Both mode**: polygon and label scores tracked separately.
+- Configurable cards-per-session slider (1 – total available).
+- Mode checkboxes must be explicitly selected (no default), to avoid accidental
+  wrong-mode starts.
+
+### Session flow
+
+- Card selection: lowest cumulative score first, random tie-break; a
+  just-answered card is immediately eligible again.
+- **Suspend** removes a card from rotation; resumable from the progress modal.
+- **Redo** allows an immediate retry without waiting for rotation.
+- **Progress bar**: tried / suspended / total, colour-coded, with a live average
+  accuracy. Clicking the tried or suspended counts opens a modal listing those
+  cards with per-card retry/suspend actions and an Attempted/Suspended tab strip.
+- Session persisted to `localStorage` (`SESSION_KEY = 'lesion-trainer'`) with a
+  `version` field and migration logic (v1/unversioned → v2 adds `pairId`).
+
+---
+
+## 4. Comparison Tool
+
+Three annotators independently annotate the same leaf image. The comparison tool
+pools all annotations, groups them into distinct lesions, and helps the team
+agree on a ground truth.
+
+**Terminology.** "Training set" was renamed **"annotation set"** throughout
+user-facing copy (code identifiers such as `pairId` unchanged). The `<h1>Lesion
+Annotation Trainer</h1>` product title was intentionally left unchanged.
+
+A **pile** is a *dog-pile* — all overlapping annotations of one distinct lesion,
+pooled across **all** annotators (a pile is **not** per-annotator). Connected
+components of the collision graph seed the initial piles. **Layers** model nested
+lesions (a small lesion sitting on top of a larger one).
+
+```
+Layer   (visibility, collapse, reorder, delete-when-empty)
+  └─ Pile   (visibility, collapse, conflict flag, per-pile randomised per-annotator colours)
+       └─ Annotation   (stable global number, per-annotation overlay cycle)
+```
+
+### 4.1 Setup & persistence
+
+- Landing screen adds a **Training / Comparison** mode chooser before the
+  existing fork/config flow. Training entry is deferred until the mode is
+  chosen — `enterTrainingMode()` does the `pairs[0]` pre-select and `/api/shapes`
+  fetch — so choosing Comparison never pays for a training-only shapes fetch.
+- Comparison setup: single-select image list (**one image per session**), per-set
+  include toggles (all checked by default), Continue.
+- On Continue: `POST /api/compare` seeds the session; saved to `localStorage`
+  under a separate key (`COMPARE_KEY = 'lesion-compare'`).
+- Resume fork screen shows a session summary and a **Delete saved comparison**
+  option. The saved `phase` (`grouping` or `final`) is restored and the correct
+  page shown immediately.
+- `readCompareSession` validates that the saved image hash and at least one set
+  ID still exist in the manifest before trusting saved data.
+
+### 4.2 Persisted session model (`compareSession`)
+
+```jsonc
+{
+  "version": 1,
+  "imageHash": "20a85ffa…",
+  "includedSetIds": ["legacy", "ed0b8a1a-…"],
+  "phase": "grouping" | "final",
+  "blind": true,                       // grouping-page blind flag
+  "finalBlind": true,                  // Compare-Lesions-page blind flag (independent)
+  "globalColors": { "legacy": "#e74c3c", "ed0b8a1a-…": "#3498db" },
+  "edges": [["a0","a7"], ["a1","a4"]], // intersection edges, for split connectivity
+  "annotations": [
+    { "id": "a0", "num": 1, "setId": "legacy",
+      "points": [[x,y], …], "bbox": [x0,y0,x1,y1],
+      "overlay": "outline" }           // per-annotation: outline | full | none
+  ],
+  "layers": [
+    { "id": "L1", "name": "Layer 1", "collapsed": false, "visible": true,
+      "piles": ["P1", "P2"] }
+  ],
+  "piles": {
+    "P1": {
+      "annotationIds": ["a0","a7","a12"],
+      "collapsed": false,              // default !flagged (conflict piles expanded)
+      "visible": true,
+      "flagged": true,
+      "showBbox": false,               // 3rd visibility state
+      "colors": { "legacy": "#e74c3c", "ed0b8a1a-…": "#3498db" }
+    }
+  }
+}
+```
+
+### 4.3 Canvas viewer (`compare_canvas.js`)
+
+- Separate module from the trainer; **world coordinates = original image
+  pixels**.
+- **Overview mode**: renders the downscaled full image; all *visible*
+  annotations drawn in layer → pile → annotation order.
+- **Focus mode**: renders a full-resolution crop of the focused pile's bbox
+  (+10 % padding); only the focused pile's annotations drawn.
+- Pan (drag), wheel zoom. Initial framing = union bbox of all annotations
+  (+10 % padding).
+- **HiDPI**: canvas buffer dimensions multiplied by `window.devicePixelRatio`;
+  pan deltas compensated by DPR.
+- `imageSmoothingEnabled = false` in focus mode (pixel-accurate); `true` +
+  `'high'` quality in overview.
+- **Click-to-highlight**: ray-cast point-in-polygon hit test; shift/ctrl/plain
+  click all work in both modes. Clicking an annotation whose pile is collapsed
+  auto-expands that pile in the sidebar.
+
+### 4.4 Group Distinct Lesions page
+
+**Sidebar tree** — re-rendered on every mutation:
+- **Layer row**: collapse caret, name, eye toggle (2-state), ↑/↓ reorder, ✕
+  delete (disabled unless empty).
+- **Pile row**: collapse caret, `Pile N · M annotations` label, 3-state
+  visibility button, conflict `!` badge, 🔍 zoom button, ↑/↓ reorder.
+- **Annotation row**: colour swatch (click cycles overlay), stable numeric
+  label, row click = select/highlight.
+- Sidebar auto-scrolls to keep the focused pile / most-recently-clicked
+  annotation in view.
+
+**3-state pile visibility** — the pile eye button cycles **visible (no bbox) →
+hidden → visible with bounding box**. Layer rows keep the original 2-state
+toggle.
+
+**Blind mode** (`session.blind`, default on):
+- On: each pile gets its own randomised annotator→colour mapping; identity is
+  unrecognisable across piles.
+- Off: fixed global palette (`globalColors`) — same annotator, same colour
+  everywhere; a colour-key overlay appears top-right of the viewer.
+
+**Per-annotation overlay** — swatch click cycles `outline → full → none`,
+default `outline`, persisted per annotation.
+
+**Conflict detection & resolution**:
+- A pile is **flagged** if annotation counts are not equal across all included
+  sets (an absent set counts as 0).
+- A conflict is **trivial / "missing-only"** if every *present* annotator
+  contributed the same count (the only disagreement is an absent annotator).
+- The `!` badge toggles `pile.flagged` manually at any time.
+- **"Done Grouping Distinct Lesions"** is disabled until every `pile.flagged`
+  is false.
+- Header stats line shows live pile count and conflict count.
+
+**Filter bar** (three controls):
+
+| Control | Behaviour |
+|---|---|
+| Hide resolved | Hides `flagged = false` piles from sidebar and canvas (does not change `pile.visible`). |
+| Hide missing-only | Hides trivially-conflicting piles. |
+| Auto-resolve missing | Marks all existing trivial conflicts resolved and keeps auto-resolving any new trivial pile from a split; mutually exclusive with Hide missing-only. |
+
+### 4.5 Zoom / focus & split
+
+- 🔍 loads a full-res crop centred on the pile bbox (+10 % padding); other piles
+  dimmed in sidebar and hidden in viewer. ↩ restores overview and clears
+  selection.
+- **Split** (focus mode only): a "Split Off" button appears below the annotation
+  list. Disabled unless the selected annotations form a **single connected
+  component** (client-side union-find over the server-returned `edges`); hint
+  text explains why when disabled.
+- A **layer picker** chooses the destination layer (defaults to the pile's
+  current layer; "New Layer…" creates one on the fly). UI order: layer picker
+  first, then Split Off.
+- After split: selected annotations become a new pile in the target layer;
+  remaining annotations are re-checked for connectivity and may shard into
+  further piles; focus moves to the new pile; bbox reframes. Auto-resolve (if on)
+  is applied to the new pile **and** all remaining components including the
+  original.
+
+**Selection model** (`_selection`, a `Set` of annotation IDs, shared across
+modes):
+- Plain click: exclusive select (click again to deselect).
+- Ctrl/Meta click: toggle one.
+- Shift click (focus mode only): range select within the pile's list.
+- Selection persists across zoom in/out; filtered to pile membership before
+  split.
+
+### 4.6 Compare Lesions page (final)
+
+Reached via "Done Grouping Distinct Lesions"; sets `phase = 'final'`.
+
+| Element | Grouping page | Compare Lesions page |
+|---|---|---|
+| Page title | "Group Distinct Lesions" | "Compare Lesions" |
+| Pile labels | "Pile N · M annotations" | "Lesion N · M annotations" |
+| Filter bar | shown | hidden |
+| Conflict `!` badge | shown | hidden |
+| Split controls | shown when zoomed | hidden |
+| Zoom button | shown | shown (split row suppressed) |
+| Blind mode | `session.blind` | `session.finalBlind` (independent) |
+| Stats line | piles + conflicts | piles only |
+| Bounding boxes | off by default | on by default |
+
+**Blind mode here** (`finalBlind`, independent of the grouping flag):
+- Blind (default): all annotations drawn uniform `rgba(74,158,255,0.22)` —
+  overlaps blend darker, giving an agreement-density map; colour key hidden.
+- Non-blind: each annotation drawn in its global annotator colour (fill +
+  outline); colour key shown; sidebar swatches match.
+
+**Bounding boxes**: drawn as dashed white rectangles over all annotations, from
+the union of the pile's annotation bboxes. The 3-state visibility cycle is
+available on both pages; all pile bboxes default on when entering this page.
+
+**Navigation**: "← Back to Grouping" returns to the grouping page; focus state
+and selection are cleared on both transitions.
+
+---
+
+## 5. Invariants (test targets)
+
+These should hold at all times and are the natural assertions for a future test
+suite. Grouped by concern.
+
+### Structural
+
+- **I1** Every annotation belongs to **exactly one** pile — no orphans, no
+  annotation in two piles.
+- **I2** Every pile belongs to **exactly one** layer; every ID in a layer's
+  `piles[]` resolves to an existing pile, and every pile is referenced by exactly
+  one layer.
+- **I3** Every annotation's `setId` is in `includedSetIds`.
+- **I4** `annotation.num` is unique across the session and **stable** across
+  splits, moves, and reloads.
+- **I5** Every entry in `edges` references two annotation IDs that exist in the
+  session.
+- **I6** A pile's `colors` map covers every `setId` that appears among that
+  pile's annotations.
+
+### Conflict
+
+- **I7** *Seeding rule:* a pile is flagged iff per-set annotation counts (absent
+  set = 0) are not all equal. Note this is enforced **at seeding and after
+  splits**, not as a continuously maintained invariant — the `!` badge lets the
+  user override `flagged` manually afterward.
+- **I8** A pile is "missing-only" (trivial) iff every *present* set contributed
+  the same count.
+- **I9** "Done Grouping" is enabled **iff** every pile has `flagged === false`.
+- **I10** "Auto-resolve missing" and "Hide missing-only" are never both active.
+
+### Split
+
+- **I11** Split is offered only in focus mode and only when the current selection
+  forms a single connected component under `edges`.
+- **I12** Annotation count is **conserved** across any split: no annotation is
+  created, lost, or duplicated.
+- **I13** After a split, every resulting pile (new, original remainder, and any
+  further shards) is internally connected under `edges`.
+
+### State & persistence
+
+- **I14** 3-state pile visibility cycles exactly `visible(no bbox) → hidden →
+  visible+bbox → …`.
+- **I15** `session.blind` and `session.finalBlind` are independent — changing one
+  never mutates the other.
+- **I16** A session restored from `localStorage` only loads if its `imageHash`
+  and ≥1 of its `includedSetIds` still exist in the manifest; otherwise it is
+  rejected cleanly.
+- **I17** `phase ∈ {grouping, final}` round-trips through save/restore.
+
+### Geometry / rendering
+
+- **I18** World coordinates equal original image pixels in both overview and
+  focus mode; a point clicked maps to the same world coordinate regardless of
+  zoom/pan/DPR.
+- **I19** A pile's drawn bounding box equals the union of its annotations'
+  bboxes (+ padding only where specified).
+
+---
+
+## 6. Known future work
+
+- **Per-pile k-of-n agreement IoU** — the real comparison metric and the intended
+  evolution of the Compare Lesions page. Group a pile's annotations by annotator,
+  union each annotator's shapes into one region, then compute
+  `area(≥k members) / area(≥1 member)`. `k` is user-chosen (default = majority);
+  "all annotators" is expected to be too strict.
+- **Layer rename** — names default to "Layer N"; renaming deferred.
+- **Labels** — annotation label fields exist in the data but are ignored by the
+  comparison tool.

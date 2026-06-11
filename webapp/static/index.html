@@ -12,20 +12,28 @@
   <div class="setup-card">
     <h1>Lesion Annotation Trainer</h1>
 
+    <!-- Mode chooser: shown on load -->
+    <div id="mode-screen">
+      <p class="setup-sub">What would you like to do?</p>
+      <button id="training-mode-btn" class="btn-primary">Training</button>
+      <button id="compare-mode-btn" class="btn-secondary" style="width:100%;margin-top:8px">Comparison →</button>
+    </div>
+
     <!-- Fork: shown when a saved session exists -->
     <div id="fork-screen" hidden>
       <div id="fork-session-info" class="resume-info"></div>
       <button id="resume-btn" class="btn-primary" style="margin-top:10px">Continue session</button>
       <button id="new-session-btn" class="btn-secondary" style="width:100%;margin-top:8px">New session →</button>
-      <button id="add-pair-btn" class="btn-text" style="margin-top:8px">+ Add new training set</button>
+      <button id="add-pair-btn" class="btn-text" style="margin-top:8px">+ Add new annotation set</button>
+      <button id="modes-btn-fork" class="btn-text" style="margin-top:8px">← Modes</button>
     </div>
 
     <!-- Config: shown when no session, or after clicking "New session" -->
-    <div id="config-screen">
+    <div id="config-screen" hidden>
       <div id="pair-section">
-        <p class="setup-sub">Training set</p>
+        <p class="setup-sub">Annotation set</p>
         <div id="session-deleted-notice" class="notice-banner" hidden>
-          <span>Your previous session's training set was deleted.</span>
+          <span>Your previous session's annotation set was deleted.</span>
           <button id="dismiss-deleted-notice" class="notice-dismiss">✕</button>
         </div>
         <div id="pair-list"></div>
@@ -61,11 +69,33 @@
       <p id="mode-error" class="error-text" hidden>Please select at least one mode.</p>
       <button id="start-btn" class="btn-primary" disabled>Start Training</button>
       <button id="back-fork-btn" class="btn-text" hidden style="margin-top:6px">← Back</button>
+      <button id="modes-btn-config" class="btn-text" style="margin-top:6px">← Modes</button>
+    </div>
+
+    <!-- Comparison fork: shown when a saved comparison exists -->
+    <div id="compare-fork" hidden>
+      <div id="compare-fork-info" class="resume-info"></div>
+      <button id="compare-resume-btn" class="btn-primary" style="margin-top:10px">Continue comparison</button>
+      <button id="compare-new-btn" class="btn-secondary" style="width:100%;margin-top:8px">New comparison →</button>
+      <button id="compare-delete-btn" class="btn-text" style="margin-top:4px;color:var(--fail)">✕ Delete saved comparison</button>
+      <button id="modes-btn-compare-fork" class="btn-text" style="margin-top:8px">← Modes</button>
+    </div>
+
+    <!-- Comparison setup: image + set selection -->
+    <div id="compare-setup" hidden>
+      <p class="setup-sub">Image</p>
+      <div id="compare-image-list"></div>
+      <div id="compare-sets-section" hidden>
+        <p class="setup-sub">Annotation sets</p>
+        <div id="compare-set-list"></div>
+      </div>
+      <button id="compare-continue-btn" class="btn-primary" disabled style="margin-top:12px">Continue →</button>
+      <button id="modes-btn-compare-setup" class="btn-text" style="margin-top:6px">← Modes</button>
     </div>
 
     <!-- Add pair screen: upload-only, reached from fork menu -->
     <div id="add-pair-screen" hidden>
-      <p class="setup-sub">Add new training set</p>
+      <p class="setup-sub">Add new annotation set</p>
       <input type="text" id="add-name" placeholder="Display name" class="text-input">
       <div class="upload-file-row">
         <label class="upload-file-btn">
@@ -81,6 +111,27 @@
       <p id="add-status" class="upload-status" hidden></p>
       <button id="back-add-btn" class="btn-text" style="margin-top:6px">← Back</button>
     </div>
+  </div>
+</div>
+
+<!-- ── Compare grouping screen ─────────────────────────────────────────────── -->
+<div id="compare-screen" hidden>
+  <header>
+    <div style="display:flex;align-items:baseline;gap:12px">
+      <span id="compare-page-title" style="font-size:0.9rem;font-weight:600">Group Distinct Lesions</span>
+      <span id="compare-stats" style="font-size:0.78rem;opacity:0.55"></span>
+    </div>
+    <div id="compare-header-right">
+      <button id="compare-blind-btn">🙈 Blind</button>
+      <button id="compare-done-btn" class="btn-primary">Done Grouping Distinct Lesions</button>
+      <button id="compare-back-btn" class="btn-secondary" hidden>← Back to Grouping</button>
+      <button id="compare-home-btn">Home</button>
+    </div>
+  </header>
+  <div id="compare-main">
+    <div id="compare-tree"></div>
+    <canvas id="compare-canvas"></canvas>
+    <div id="compare-color-key" hidden></div>
   </div>
 </div>
 
@@ -216,6 +267,9 @@
 <script src="/static/modal.js"></script>
 <script src="/static/trainer.js"></script>
 <script src="/static/setup.js"></script>
+<script src="/static/compare_setup.js"></script>
+<script src="/static/compare_canvas.js"></script>
+<script src="/static/compare.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
