@@ -190,7 +190,8 @@ body {
   transition: border-color 0.15s, background 0.15s;
   user-select: none;
 }
-.pair-item:hover { border-color: #555; }
+.pair-item:hover:not(.pair-item-disabled) { border-color: #555; }
+.pair-item-disabled { opacity: 0.45; cursor: not-allowed; }
 .pair-item.selected {
   border-color: var(--user);
   background: rgba(74,158,255,0.08);

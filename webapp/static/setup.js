@@ -2,6 +2,14 @@
 let selectedPairId = null;
 let availablePairs = [];
 
+/* ── Count label helper ──────────────────────────────────────────────────── */
+function _countLabel(p) {
+  if (p.kind === 'merged') {
+    return p.pile_count != null ? p.pile_count + ' piles' : '— piles';
+  }
+  return p.shape_count + ' shapes';
+}
+
 /* ── Kind tag helper ─────────────────────────────────────────────────────── */
 function _makeKindTag(p) {
   const tag = document.createElement('span');
@@ -56,7 +64,7 @@ function renderPairList(pairs) {
     _makeKindTag(p).forEach(t => tagsRow.appendChild(t));
 
     const metaEl = document.createElement('span');
-    metaEl.textContent = p.shape_count + ' shapes';
+    metaEl.textContent = _countLabel(p);
 
     const left = document.createElement('div');
     left.className = 'pair-item-left';
@@ -66,7 +74,12 @@ function renderPairList(pairs) {
     div.className  = 'pair-item';
     div.dataset.id = p.id;
     div.append(left);
-    div.addEventListener('click', () => selectPair(p.id));
+    if (p.kind === 'raw' || p.kind === 'reannotated') {
+      div.addEventListener('click', () => selectPair(p.id));
+    } else {
+      div.classList.add('pair-item-disabled');
+      div.title = `${p.kind} sets cannot be used for training`;
+    }
 
     const entry = document.createElement('div');
     entry.className = 'pair-entry';
@@ -96,7 +109,7 @@ function renderManagePairList(pairs) {
     _makeKindTag(p).forEach(t => tagsRow.appendChild(t));
 
     const metaEl = document.createElement('span');
-    metaEl.textContent = p.shape_count + ' shapes';
+    metaEl.textContent = _countLabel(p);
 
     const left = document.createElement('div');
     left.className = 'pair-item-left';
@@ -107,6 +120,7 @@ function renderManagePairList(pairs) {
 
     const replaceBtn = document.createElement('button');
     replaceBtn.className = 'pair-replace-btn'; replaceBtn.title = 'Replace files'; replaceBtn.textContent = '↻';
+    if (p.kind === 'merged') replaceBtn.hidden = true;
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'pair-delete-btn'; deleteBtn.title = 'Delete'; deleteBtn.textContent = '✕';

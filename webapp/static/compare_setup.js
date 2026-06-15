@@ -126,7 +126,7 @@ function _renderSetList(hash) {
     cb.dataset.id = p.id;
     cb.addEventListener('change', _updateContinueBtn);
     label.appendChild(cb);
-    label.append(` ${p.display_name} (${p.shape_count} shapes)`);
+    label.append(` ${p.display_name} (${_countLabel(p)})`);
     list.appendChild(label);
   }
 }

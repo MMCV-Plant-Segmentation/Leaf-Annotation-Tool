@@ -153,8 +153,17 @@ Layer   (visibility, collapse, reorder, delete-when-empty)
   fetch — so choosing Comparison never pays for a training-only shapes fetch.
 - Comparison setup: single-select image list (**one image per session**), per-set
   include toggles (all checked by default), Continue.
-- On Continue: `POST /api/compare` seeds the session; saved to `localStorage`
-  under a separate key (`COMPARE_KEY = 'lesion-compare'`).
+- On Continue: `POST /api/compare` seeds the session; the full doc is stored
+  server-side in the `merge` table and only the merge ID kept in
+  `localStorage['lesion-compare-id']`.
+- **Set count label**: annotation set pickers (training config, manage screen,
+  comparison setup) show "N shapes" for raw/reannotated sets and "N piles" for
+  merged sets. Merged sets are disabled in the training config picker (they have
+  no labelme JSON on disk).
+- **Replace restriction**: the ↻ replace-files button is hidden for merged sets
+  in the Manage Sets screen; `PUT /api/images/<id>` returns 400 for merged sets.
+  (Merged sets have no image/JSON to replace — they are derived from the merge
+  table.)
 - Resume fork screen shows a session summary and a **Delete saved comparison**
   option. The saved `phase` (`grouping` or `final`) is restored and the correct
   page shown immediately.

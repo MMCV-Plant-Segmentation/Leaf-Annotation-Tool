@@ -246,10 +246,28 @@ def index():
 def api_images():
     out = []
     for p in _all_sets():
-        try:
-            n = len(_load_shapes(p['id']))
-        except Exception:
-            n = 0
+        pile_count = None
+        if p['kind'] == 'merged':
+            prov = json.loads(p['provenance'] or '{}') if p['provenance'] else {}
+            if 'pile_count' in prov:
+                pile_count = prov['pile_count']
+            else:
+                # Fallback for records saved before pile_count was stored
+                con2 = _db.get_db()
+                try:
+                    mrow = con2.execute(
+                        'SELECT doc FROM merge WHERE set_id = ?', (p['id'],)
+                    ).fetchone()
+                    if mrow:
+                        pile_count = len(json.loads(mrow['doc']).get('piles', {}))
+                finally:
+                    _db.close_db(con2)
+            shape_count = 0
+        else:
+            try:
+                shape_count = len(_load_shapes(p['id']))
+            except Exception:
+                shape_count = 0
         # Backward-compatible response shape: keep uploaded_at alias
         out.append({
             'id':           p['id'],
@@ -261,7 +279,8 @@ def api_images():
             'kind':         p['kind'],
             'terminal':     bool(p['terminal']),
             'created_by':   p['created_by'],
-            'shape_count':  n,
+            'shape_count':  shape_count,
+            'pile_count':   pile_count,
         })
     return jsonify(out)
 
@@ -393,6 +412,8 @@ def api_replace_pair(pair_id: str):
     meta = _get_set(pair_id)
     if not meta:
         return jsonify({'error': 'pair not found'}), 404
+    if meta['kind'] == 'merged':
+        return jsonify({'error': 'merged sets cannot have files replaced'}), 400
     if 'image' not in request.files and 'json' not in request.files:
         return jsonify({'error': 'at least one of image or json required'}), 400
 
@@ -613,13 +634,16 @@ def api_save_merge(merge_id: str):
         display_name = display_name[:97] + '…'
     set_id     = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
+    pile_count = len(doc.get('piles', {}))
     _insert_set({
         'id':           set_id,
         'display_name': display_name,
         'image_hash':   row['image_hash'],
         'image_ext':    _get_image_ext(row['image_hash']),
         'kind':         'merged',
-        'provenance':   json.dumps({'source_set_ids': included_ids, 'merge_id': merge_id}),
+        'provenance':   json.dumps({'source_set_ids': included_ids,
+                                    'merge_id': merge_id,
+                                    'pile_count': pile_count}),
         'created_by':   _xuser(),
         'created_at':   created_at,
         'terminal':     0,
