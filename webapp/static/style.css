@@ -25,6 +25,61 @@ body {
   overflow: hidden;
 }
 
+/* ── Home tiles ───────────────────────────────────────────────────────────── */
+.home-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.home-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+}
+.home-tile:hover:not(:disabled) {
+  border-color: var(--user);
+  background: rgba(74,158,255,0.06);
+}
+.home-tile strong { font-size: 0.88rem; color: var(--text); }
+.home-tile span   { font-size: 0.75rem; color: var(--muted); }
+
+.home-tile-wide {
+  grid-column: 1 / -1;
+}
+.home-tile-soon {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Set kind tags ─────────────────────────────────────────────────────────── */
+.pair-tags-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.set-kind-tag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+.set-kind-raw        { background: rgba(122,127,146,0.18); color: var(--muted); }
+.set-kind-merged     { background: rgba(250,204,21,0.15);  color: var(--warn);  }
+.set-kind-reannotated { background: rgba(74,222,128,0.15); color: var(--pass);  }
+.set-kind-terminal   { background: rgba(248,113,113,0.15); color: var(--fail);  }
+
 /* ── Setup screen ─────────────────────────────────────────────────────────── */
 #setup-screen {
   position: fixed;
@@ -111,8 +166,12 @@ body {
 }
 
 /* fork / config screens */
+#home-screen   { display: flex; flex-direction: column; gap: 0; }
+#manage-screen { display: flex; flex-direction: column; gap: 10px; }
 #fork-screen   { display: flex; flex-direction: column; gap: 0; }
 #config-screen { display: flex; flex-direction: column; gap: 20px; }
+#home-screen[hidden]   { display: none !important; }
+#manage-screen[hidden] { display: none !important; }
 #fork-screen[hidden]   { display: none !important; }
 #config-screen[hidden] { display: none !important; }
 
@@ -998,3 +1057,51 @@ select:focus { outline: none; border-color: var(--user); }
   cursor: pointer;
 }
 .compare-set-row input[type="checkbox"] { cursor: pointer; accent-color: var(--accent, #4a9eff); }
+
+/* ── Byline modal ─────────────────────────────────────────────────────────── */
+#byline-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#byline-modal[hidden] { display: none; }
+
+#byline-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+}
+
+#byline-panel {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 36px 40px;
+  width: min(380px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#byline-panel h2 { font-size: 1.15rem; font-weight: 700; }
+#byline-sub { font-size: 0.82rem; color: var(--muted); line-height: 1.5; }
+
+/* ── Change-name button in headers ────────────────────────────────────────── */
+.btn-byline-change {
+  font-size: 0.78rem !important;
+  color: var(--muted) !important;
+  border-color: transparent !important;
+  background: none !important;
+  padding: 4px 8px !important;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.btn-byline-change:hover {
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}

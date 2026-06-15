@@ -12,20 +12,46 @@
   <div class="setup-card">
     <h1>Lesion Annotation Trainer</h1>
 
-    <!-- Mode chooser: shown on load -->
-    <div id="mode-screen">
-      <p class="setup-sub">What would you like to do?</p>
-      <button id="training-mode-btn" class="btn-primary">Training</button>
-      <button id="compare-mode-btn" class="btn-secondary" style="width:100%;margin-top:8px">Comparison →</button>
+    <!-- Home screen: default landing -->
+    <div id="home-screen">
+      <div class="home-tiles">
+        <button class="home-tile" id="tile-manage">
+          <strong>Manage Sets</strong>
+          <span>Upload, rename, delete</span>
+        </button>
+        <button class="home-tile" id="tile-merge">
+          <strong>Merge Sets</strong>
+          <span>Group overlapping annotations</span>
+        </button>
+        <button class="home-tile home-tile-soon" id="tile-analyze" disabled>
+          <strong>Analyze</strong>
+          <span>Coming soon</span>
+        </button>
+        <button class="home-tile home-tile-soon" id="tile-reannotate" disabled>
+          <strong>Re-annotate</strong>
+          <span>Coming soon</span>
+        </button>
+        <button class="home-tile home-tile-wide" id="tile-train">
+          <strong>Train</strong>
+          <span>Practice annotation</span>
+        </button>
+      </div>
     </div>
 
-    <!-- Fork: shown when a saved session exists -->
+    <!-- Manage Sets screen -->
+    <div id="manage-screen" hidden>
+      <p class="setup-sub">Annotation sets</p>
+      <div id="manage-pair-list"></div>
+      <button id="manage-add-btn" class="btn-text" style="margin-top:10px">+ Add new annotation set</button>
+      <button id="manage-home-btn" class="btn-text" style="margin-top:8px">← Home</button>
+    </div>
+
+    <!-- Fork: shown when a saved training session exists -->
     <div id="fork-screen" hidden>
       <div id="fork-session-info" class="resume-info"></div>
       <button id="resume-btn" class="btn-primary" style="margin-top:10px">Continue session</button>
       <button id="new-session-btn" class="btn-secondary" style="width:100%;margin-top:8px">New session →</button>
-      <button id="add-pair-btn" class="btn-text" style="margin-top:8px">+ Add new annotation set</button>
-      <button id="modes-btn-fork" class="btn-text" style="margin-top:8px">← Modes</button>
+      <button id="home-btn-fork" class="btn-text" style="margin-top:8px">← Home</button>
     </div>
 
     <!-- Config: shown when no session, or after clicking "New session" -->
@@ -69,7 +95,7 @@
       <p id="mode-error" class="error-text" hidden>Please select at least one mode.</p>
       <button id="start-btn" class="btn-primary" disabled>Start Training</button>
       <button id="back-fork-btn" class="btn-text" hidden style="margin-top:6px">← Back</button>
-      <button id="modes-btn-config" class="btn-text" style="margin-top:6px">← Modes</button>
+      <button id="home-btn-config" class="btn-text" style="margin-top:6px">← Home</button>
     </div>
 
     <!-- Comparison fork: shown when a saved comparison exists -->
@@ -78,7 +104,7 @@
       <button id="compare-resume-btn" class="btn-primary" style="margin-top:10px">Continue comparison</button>
       <button id="compare-new-btn" class="btn-secondary" style="width:100%;margin-top:8px">New comparison →</button>
       <button id="compare-delete-btn" class="btn-text" style="margin-top:4px;color:var(--fail)">✕ Delete saved comparison</button>
-      <button id="modes-btn-compare-fork" class="btn-text" style="margin-top:8px">← Modes</button>
+      <button id="home-btn-compare-fork" class="btn-text" style="margin-top:8px">← Home</button>
     </div>
 
     <!-- Comparison setup: image + set selection -->
@@ -90,7 +116,7 @@
         <div id="compare-set-list"></div>
       </div>
       <button id="compare-continue-btn" class="btn-primary" disabled style="margin-top:12px">Continue →</button>
-      <button id="modes-btn-compare-setup" class="btn-text" style="margin-top:6px">← Modes</button>
+      <button id="home-btn-compare-setup" class="btn-text" style="margin-top:6px">← Home</button>
     </div>
 
     <!-- Add pair screen: upload-only, reached from fork menu -->
@@ -125,6 +151,7 @@
       <button id="compare-blind-btn">🙈 Blind</button>
       <button id="compare-done-btn" class="btn-primary">Done Grouping Distinct Lesions</button>
       <button id="compare-back-btn" class="btn-secondary" hidden>← Back to Grouping</button>
+      <button id="compare-byline-change-btn" class="btn-byline-change" title="Change display name"></button>
       <button id="compare-home-btn">Home</button>
     </div>
   </header>
@@ -145,6 +172,7 @@
     </div>
     <div id="header-right">
       <button id="export-btn">Export JSON</button>
+      <button id="byline-change-btn" class="btn-byline-change" title="Change display name"></button>
       <button id="home-btn">Home</button>
     </div>
   </header>
@@ -259,6 +287,18 @@
       <button id="card-modal-close">✕</button>
     </div>
     <div id="card-modal-grid"></div>
+  </div>
+</div>
+
+<!-- ── Byline modal ────────────────────────────────────────────────────────── -->
+<div id="byline-modal" hidden>
+  <div id="byline-backdrop"></div>
+  <div id="byline-panel">
+    <h2>Who are you?</h2>
+    <p id="byline-sub">Enter a display name. This is shown alongside your annotations — no password needed.</p>
+    <input type="text" id="byline-input" class="text-input" placeholder="Your name" autocomplete="off" maxlength="64">
+    <p id="byline-error" class="error-text" hidden>Please enter a name.</p>
+    <button id="byline-confirm-btn" class="btn-primary">Continue</button>
   </div>
 </div>
 

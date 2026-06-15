@@ -4,13 +4,19 @@
 # dependencies = ["flask", "pillow", "numpy", "shapely"]
 # ///
 """
-Stateless backend — all session logic lives in the browser.
+Backend — registry lives in SQLite (data/app.db); images and per-set
+labelme JSONs stay on disk unchanged.
+
 Endpoints:
-  GET  /api/images          → list of available image/JSON pairs
+  GET  /api/images          → list of available annotation sets
   POST /api/upload          → upload a new image/JSON pair
   GET  /api/shapes?pair=ID  → shapes + crop bounds for a pair
   GET  /api/crop/ID/<idx>   → crop image as PNG
   POST /api/iou             → compute IoU between two polygon arrays
+  PATCH/PUT/DELETE /api/images/<id>  → manage a set
+  GET  /api/image/<hash>    → overview PNG (comparison tool)
+  GET  /api/image/<hash>/crop → full-res crop (comparison tool)
+  POST /api/compare         → seed a comparison session
 """
 
 import hashlib
@@ -23,6 +29,8 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
+
+import db as _db
 
 BASE     = Path(__file__).parent.parent
 DATA_DIR = BASE / 'data'
@@ -42,16 +50,85 @@ _img_cache:      dict[str, Image.Image] = {}
 _overview_cache: dict[str, bytes]       = {}
 
 
-def _load_manifest() -> list:
-    if not MANIFEST.exists():
-        return []
-    return json.loads(MANIFEST.read_text())
+# ── DB helpers ────────────────────────────────────────────────────────────────
+
+def _all_sets() -> list[dict]:
+    """Return all annotation_set rows as a list of dicts."""
+    con = _db.get_db()
+    try:
+        return con.execute(
+            'SELECT * FROM annotation_set ORDER BY created_at'
+        ).fetchall()
+    finally:
+        _db.close_db(con)
 
 
-def _save_manifest(pairs: list) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    MANIFEST.write_text(json.dumps(pairs, indent=2))
+def _get_set(set_id: str) -> dict | None:
+    con = _db.get_db()
+    try:
+        return con.execute(
+            'SELECT * FROM annotation_set WHERE id = ?', (set_id,)
+        ).fetchone()
+    finally:
+        _db.close_db(con)
 
+
+def _insert_set(row: dict) -> None:
+    con = _db.get_db()
+    try:
+        con.execute(
+            '''INSERT INTO annotation_set
+                 (id, display_name, image_hash, image_ext,
+                  kind, provenance, created_by, created_at, terminal)
+               VALUES (:id, :display_name, :image_hash, :image_ext,
+                       :kind, :provenance, :created_by, :created_at, :terminal)''',
+            row,
+        )
+        con.commit()
+    finally:
+        _db.close_db(con)
+
+
+def _update_set_field(set_id: str, field: str, value) -> None:
+    con = _db.get_db()
+    try:
+        con.execute(
+            f'UPDATE annotation_set SET {field} = ? WHERE id = ?',
+            (value, set_id),
+        )
+        con.commit()
+    finally:
+        _db.close_db(con)
+
+
+def _delete_set(set_id: str) -> None:
+    con = _db.get_db()
+    try:
+        con.execute('DELETE FROM annotation_set WHERE id = ?', (set_id,))
+        con.commit()
+    finally:
+        _db.close_db(con)
+
+
+def _hash_in_use(image_hash: str, exclude_id: str | None = None) -> bool:
+    con = _db.get_db()
+    try:
+        if exclude_id:
+            row = con.execute(
+                'SELECT 1 FROM annotation_set WHERE image_hash = ? AND id != ?',
+                (image_hash, exclude_id),
+            ).fetchone()
+        else:
+            row = con.execute(
+                'SELECT 1 FROM annotation_set WHERE image_hash = ?',
+                (image_hash,),
+            ).fetchone()
+        return row is not None
+    finally:
+        _db.close_db(con)
+
+
+# ── Image / JSON helpers ──────────────────────────────────────────────────────
 
 def _hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:24]
@@ -74,7 +151,7 @@ def _load_shapes(pair_id: str) -> list:
 
 def _get_pair(pair_id: str):
     """Return (meta, shapes, image) or (None, None, None) if not found."""
-    meta = next((p for p in _load_manifest() if p['id'] == pair_id), None)
+    meta = _get_set(pair_id)
     if not meta:
         return None, None, None
     try:
@@ -108,11 +185,29 @@ def _iou(a: list, b: list) -> dict:
         return {'iou': 0.0, 'intersection': 0.0, 'union': 0.0}
 
 
-def _auto_migrate() -> None:
-    """Import the old hardcoded files as the 'legacy' pair on first run."""
-    pairs = _load_manifest()
-    if any(p['id'] == LEGACY_ID for p in pairs):
-        return
+def _xuser() -> str | None:
+    """Return the byline sent in the X-User header, or None."""
+    v = (request.headers.get('X-User') or '').strip()
+    return v or None
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+def _startup() -> None:
+    """Create schema, run manifest migration, and handle legacy file migration."""
+    _db.auto_create_schema()
+    _db.migrate_manifest(MANIFEST)
+    _auto_migrate_legacy()
+
+
+def _auto_migrate_legacy() -> None:
+    """
+    Import the old hardcoded files as the 'legacy' pair if they exist on disk
+    but have not yet been added to the manifest or the DB.
+    This is the original one-time migration kept for backward compat.
+    """
+    if _get_set(LEGACY_ID):
+        return  # already in DB (either via migrate_manifest or a previous run)
     if not LEGACY_IMAGE.exists() or not LEGACY_JSON.exists():
         return
     IMG_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,16 +221,21 @@ def _auto_migrate() -> None:
     dst_json = JSON_DIR / f'{LEGACY_ID}.json'
     if not dst_json.exists():
         dst_json.write_bytes(LEGACY_JSON.read_bytes())
-    pairs.append({
+    _insert_set({
         'id':           LEGACY_ID,
         'image_hash':   img_hash,
         'image_ext':    img_ext,
         'display_name': LEGACY_IMAGE.stem,
-        'uploaded_at':  datetime.now(timezone.utc).isoformat(),
+        'kind':         'raw',
+        'provenance':   None,
+        'created_by':   'legacy',
+        'created_at':   datetime.now(timezone.utc).isoformat(),
+        'terminal':     0,
     })
-    _save_manifest(pairs)
     print(f'[auto-migrate] legacy pair imported (hash {img_hash})')
 
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get('/')
 def index():
@@ -145,12 +245,24 @@ def index():
 @app.get('/api/images')
 def api_images():
     out = []
-    for p in _load_manifest():
+    for p in _all_sets():
         try:
             n = len(_load_shapes(p['id']))
         except Exception:
             n = 0
-        out.append({**p, 'shape_count': n})
+        # Backward-compatible response shape: keep uploaded_at alias
+        out.append({
+            'id':           p['id'],
+            'display_name': p['display_name'],
+            'image_hash':   p['image_hash'],
+            'image_ext':    p['image_ext'],
+            'uploaded_at':  p['created_at'],   # alias for existing JS
+            'created_at':   p['created_at'],
+            'kind':         p['kind'],
+            'terminal':     bool(p['terminal']),
+            'created_by':   p['created_by'],
+            'shape_count':  n,
+        })
     return jsonify(out)
 
 
@@ -176,20 +288,33 @@ def api_upload():
         dst_img.write_bytes(img_bytes)
     _img_cache.pop(f'{img_hash}.{img_ext}', None)
 
-    pair_id = str(uuid.uuid4())
+    pair_id    = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
     (JSON_DIR / f'{pair_id}.json').write_bytes(json_file.read())
 
-    entry = {
+    _insert_set({
         'id':           pair_id,
         'image_hash':   img_hash,
         'image_ext':    img_ext,
         'display_name': display_name,
-        'uploaded_at':  datetime.now(timezone.utc).isoformat(),
-    }
-    pairs = _load_manifest()
-    pairs.append(entry)
-    _save_manifest(pairs)
+        'kind':         'raw',
+        'provenance':   None,
+        'created_by':   _xuser(),
+        'created_at':   created_at,
+        'terminal':     0,
+    })
 
+    entry = {
+        'id':           pair_id,
+        'display_name': display_name,
+        'image_hash':   img_hash,
+        'image_ext':    img_ext,
+        'uploaded_at':  created_at,
+        'created_at':   created_at,
+        'kind':         'raw',
+        'terminal':     False,
+        'created_by':   _xuser(),
+    }
     try:
         entry['shape_count'] = len(_load_shapes(pair_id))
     except Exception:
@@ -245,20 +370,28 @@ def api_update_image(pair_id: str):
     display_name = (data.get('display_name') or '').strip()
     if not display_name:
         return jsonify({'error': 'display_name required'}), 400
-    pairs = _load_manifest()
-    pair  = next((p for p in pairs if p['id'] == pair_id), None)
-    if not pair:
+    meta = _get_set(pair_id)
+    if not meta:
         return jsonify({'error': 'pair not found'}), 404
-    pair['display_name'] = display_name
-    _save_manifest(pairs)
-    return jsonify(pair)
+    _update_set_field(pair_id, 'display_name', display_name)
+    meta = _get_set(pair_id)
+    return jsonify({
+        'id':           meta['id'],
+        'display_name': meta['display_name'],
+        'image_hash':   meta['image_hash'],
+        'image_ext':    meta['image_ext'],
+        'uploaded_at':  meta['created_at'],
+        'created_at':   meta['created_at'],
+        'kind':         meta['kind'],
+        'terminal':     bool(meta['terminal']),
+        'created_by':   meta['created_by'],
+    })
 
 
 @app.put('/api/images/<pair_id>')
 def api_replace_pair(pair_id: str):
-    pairs = _load_manifest()
-    pair  = next((p for p in pairs if p['id'] == pair_id), None)
-    if not pair:
+    meta = _get_set(pair_id)
+    if not meta:
         return jsonify({'error': 'pair not found'}), 404
     if 'image' not in request.files and 'json' not in request.files:
         return jsonify({'error': 'at least one of image or json required'}), 400
@@ -273,44 +406,60 @@ def api_replace_pair(pair_id: str):
         if not dst.exists():
             dst.write_bytes(img_bytes)
         _img_cache.pop(f'{new_hash}.{new_ext}', None)
-        old_h, old_ext = pair['image_hash'], pair['image_ext']
-        if old_h != new_hash and not any(p['image_hash'] == old_h for p in pairs if p['id'] != pair_id):
+        old_h, old_ext = meta['image_hash'], meta['image_ext']
+        if old_h != new_hash and not _hash_in_use(old_h, exclude_id=pair_id):
             old_path = IMG_DIR / f'{old_h}.{old_ext}'
             if old_path.exists():
                 old_path.unlink()
             _img_cache.pop(f'{old_h}.{old_ext}', None)
-        pair['image_hash'] = new_hash
-        pair['image_ext']  = new_ext
+        con = _db.get_db()
+        try:
+            con.execute(
+                'UPDATE annotation_set SET image_hash=?, image_ext=? WHERE id=?',
+                (new_hash, new_ext, pair_id),
+            )
+            con.commit()
+        finally:
+            _db.close_db(con)
 
     if 'json' in request.files:
         JSON_DIR.mkdir(parents=True, exist_ok=True)
         (JSON_DIR / f'{pair_id}.json').write_bytes(request.files['json'].read())
 
-    _save_manifest(pairs)
+    meta = _get_set(pair_id)
+    result = {
+        'id':           meta['id'],
+        'display_name': meta['display_name'],
+        'image_hash':   meta['image_hash'],
+        'image_ext':    meta['image_ext'],
+        'uploaded_at':  meta['created_at'],
+        'created_at':   meta['created_at'],
+        'kind':         meta['kind'],
+        'terminal':     bool(meta['terminal']),
+        'created_by':   meta['created_by'],
+    }
     try:
-        pair['shape_count'] = len(_load_shapes(pair_id))
+        result['shape_count'] = len(_load_shapes(pair_id))
     except Exception:
-        pair['shape_count'] = 0
-    return jsonify(pair)
+        result['shape_count'] = 0
+    return jsonify(result)
 
 
 @app.delete('/api/images/<pair_id>')
 def api_delete_pair(pair_id: str):
-    pairs = _load_manifest()
-    pair  = next((p for p in pairs if p['id'] == pair_id), None)
-    if not pair:
+    meta = _get_set(pair_id)
+    if not meta:
         return jsonify({'error': 'pair not found'}), 404
-    remaining = [p for p in pairs if p['id'] != pair_id]
     json_path = JSON_DIR / f'{pair_id}.json'
     if json_path.exists():
         json_path.unlink()
-    h, ext = pair['image_hash'], pair['image_ext']
-    if not any(p['image_hash'] == h for p in remaining):
+    h, ext = meta['image_hash'], meta['image_ext']
+    _delete_set(pair_id)
+    if not _hash_in_use(h):
         img_path = IMG_DIR / f'{h}.{ext}'
         if img_path.exists():
             img_path.unlink()
         _img_cache.pop(f'{h}.{ext}', None)
-    _save_manifest(remaining)
     return '', 204
 
 
@@ -318,10 +467,18 @@ def api_delete_pair(pair_id: str):
 def api_image_overview(image_hash: str):
     if image_hash in _overview_cache:
         return send_file(io.BytesIO(_overview_cache[image_hash]), mimetype='image/png')
-    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
-    if not pair:
+    # Look up extension from DB
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT image_ext FROM annotation_set WHERE image_hash = ? LIMIT 1',
+            (image_hash,),
+        ).fetchone()
+    finally:
+        _db.close_db(con)
+    if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, pair['image_ext'])
+    img  = _get_image(image_hash, row['image_ext'])
     w, h = img.size
     if max(w, h) > 2000:
         scale = 2000 / max(w, h)
@@ -335,10 +492,17 @@ def api_image_overview(image_hash: str):
 
 @app.get('/api/image/<image_hash>/crop')
 def api_image_crop(image_hash: str):
-    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
-    if not pair:
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT image_ext FROM annotation_set WHERE image_hash = ? LIMIT 1',
+            (image_hash,),
+        ).fetchone()
+    finally:
+        _db.close_db(con)
+    if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, pair['image_ext'])
+    img  = _get_image(image_hash, row['image_ext'])
     iw, ih = img.size
     try:
         x = max(0, int(request.args['x']))
@@ -360,10 +524,19 @@ def api_compare():
     set_ids    = body.get('setIds', [])
     if not image_hash or not set_ids:
         return jsonify({'error': 'imageHash and setIds required'}), 400
-    pair = next((p for p in _load_manifest() if p['image_hash'] == image_hash), None)
-    if not pair:
+
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT image_ext FROM annotation_set WHERE image_hash = ? LIMIT 1',
+            (image_hash,),
+        ).fetchone()
+    finally:
+        _db.close_db(con)
+
+    if not row:
         return jsonify({'error': 'image not found'}), 404
-    img    = _get_image(image_hash, pair['image_ext'])
+    img    = _get_image(image_hash, row['image_ext'])
     iw, ih = img.size
 
     annotations = []
@@ -402,12 +575,10 @@ def api_compare():
         ai = annotations[i]
         for j in range(i + 1, len(annotations)):
             aj = annotations[j]
-            # Broad phase: bbox overlap
             ax0, ay0, ax1, ay1 = ai['bbox']
             bx0, by0, bx1, by1 = aj['bbox']
             if ax0 >= bx1 or ax1 <= bx0 or ay0 >= by1 or ay1 <= by0:
                 continue
-            # Narrow phase: Shapely intersection
             if ShapelyPolygon(ai['points']).buffer(0).intersects(
                     ShapelyPolygon(aj['points']).buffer(0)):
                 union(ai['id'], aj['id'])
@@ -434,5 +605,5 @@ def api_iou():
 
 
 if __name__ == '__main__':
-    _auto_migrate()
+    _startup()
     app.run(debug=True, port=5000)

@@ -13,11 +13,22 @@ The app has two tools that share a backend and a setup screen:
 ## 1. Architecture
 
 - **Flask backend** (`webapp/app.py`) serving a single-page web app. The backend
-  is **stateless**: all session state lives in the browser's `localStorage`.
+  holds the **annotation-set registry** in SQLite (`data/app.db`,
+  `webapp/db.py`); **session state** (practice and comparison) still lives in the
+  browser's `localStorage`. (Moving sessions server-side is later-phase work — see
+  `docs/Restructure & Reannotation Plan.md`.)
+- **Identity (byline):** on first load the user enters a display name (no
+  password — attribution, not access control), stored in
+  `localStorage['lesion-user']` and sent as an `X-User` header on every `/api/`
+  request; the backend records it as `created_by` on creates.
 - **Content-addressed storage**: images at `data/images/{sha256[:24]}.{ext}`;
-  annotation JSONs at `data/jsons/{pair_id}.json`; an index at
-  `data/manifest.json`. Images are de-duplicated by `image_hash`, so several
-  annotation sets can share one underlying image.
+  annotation JSONs at `data/jsons/{pair_id}.json`. Images are de-duplicated by
+  `image_hash`, so several annotation sets can share one underlying image. The
+  registry lives in the `annotation_set` table (`id`, `display_name`,
+  `image_hash`, `image_ext`, `kind`, `provenance`, `created_by`, `created_at`,
+  `terminal`); `data/manifest.json` is retained as a read-only backup but is no
+  longer authoritative. `data/app.db` also contains empty scaffolding tables
+  (`merge`, `reannot_*`) for future phases.
 - **Frontend** is multi-file plain `<script>` JavaScript (no ES modules). Shared
   globals; each file exposes a deferred `initX()` wired from `app.js`. Screens
   are shown/hidden via the `hidden` attribute.
@@ -41,12 +52,16 @@ project (never plain `python3`).
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET`  | `/api/images` | Manifest of available pairs/sets. |
-| `POST` | `/api/upload` | Upload image + labelme JSON + display name (web upload so SSH-forwarded users need no direct server access). |
+| `GET`  | `/api/images` | List available annotation sets (from the `annotation_set` registry). |
+| `POST` | `/api/upload` | Upload image + labelme JSON + display name (web upload so SSH-forwarded users need no direct server access). Stamps `created_by` from `X-User`. |
 | `GET`  | `/api/shapes?pair=<id>` | Polygon-only shapes for a pair. |
 | `GET`  | `/api/crop/<pair_id>/<int:idx>` | Crop image for one training card. |
-| `PATCH`/`PUT`/`DELETE` | `/api/images/<pair_id>` | Manage a pair. |
+| `PATCH`/`PUT`/`DELETE` | `/api/images/<pair_id>` | Manage a set (DB-backed). |
 | `POST` | `/api/iou` | Score one annotation (intersection ÷ union). |
+
+Registry endpoints read/write the `annotation_set` table. The startup path
+auto-creates the schema and runs a one-time idempotent import of
+`data/manifest.json` into the registry (`kind='raw'`, `created_by='legacy'`).
 
 ### Comparison endpoints
 

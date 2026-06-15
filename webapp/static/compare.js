@@ -730,7 +730,7 @@ function initCompare() {
   document.getElementById('compare-home-btn').addEventListener('click', () => {
     document.getElementById('compare-screen').hidden = true;
     document.getElementById('setup-screen').hidden   = false;
-    showModeScreen();
+    showHomeScreen();
   });
   window.addEventListener('resize', () => {
     if (document.getElementById('compare-screen').hidden) return;

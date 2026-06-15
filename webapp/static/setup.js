@@ -2,10 +2,24 @@
 let selectedPairId = null;
 let availablePairs = [];
 
-/* ── Pair selection ──────────────────────────────────────────────────────── */
+/* ── Kind tag helper ─────────────────────────────────────────────────────── */
+function _makeKindTag(p) {
+  const tag = document.createElement('span');
+  tag.className = 'set-kind-tag set-kind-' + p.kind;
+  tag.textContent = p.kind;
+  if (p.terminal) {
+    const lock = document.createElement('span');
+    lock.className = 'set-kind-tag set-kind-terminal';
+    lock.textContent = 'locked';
+    return [tag, lock];
+  }
+  return [tag];
+}
+
+/* ── Pair selection (training config) ───────────────────────────────────── */
 async function selectPair(pairId) {
   selectedPairId = pairId;
-  document.querySelectorAll('.pair-item').forEach(el => {
+  document.querySelectorAll('#pair-list .pair-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.id === pairId);
   });
   shapesData = await fetch(`/api/shapes?pair=${encodeURIComponent(pairId)}`).then(r => r.json());
@@ -15,6 +29,7 @@ async function selectPair(pairId) {
   startBtn.disabled = false;
 }
 
+/* ── Training config: read-only pair picker ──────────────────────────────── */
 function renderPairList(pairs) {
   availablePairs = pairs;
   const list = document.getElementById('pair-list');
@@ -23,18 +38,69 @@ function renderPairList(pairs) {
     const msg = document.createElement('p');
     msg.className = 'pair-empty';
     msg.textContent = 'No annotation sets yet. ';
-    const addBtn = document.createElement('button');
-    addBtn.className   = 'btn-text';
-    addBtn.textContent = '+ Add one';
-    addBtn.addEventListener('click', showAddPair);
-    msg.appendChild(addBtn);
+    const manageBtn = document.createElement('button');
+    manageBtn.className   = 'btn-text';
+    manageBtn.textContent = 'Manage Sets →';
+    manageBtn.addEventListener('click', showManageScreen);
+    msg.appendChild(manageBtn);
     list.appendChild(msg);
     return;
   }
   for (const p of pairs) {
+    const nameEl = document.createElement('strong');
+    nameEl.className   = 'pair-name';
+    nameEl.textContent = p.display_name;
+
+    const tagsRow = document.createElement('div');
+    tagsRow.className = 'pair-tags-row';
+    _makeKindTag(p).forEach(t => tagsRow.appendChild(t));
+
+    const metaEl = document.createElement('span');
+    metaEl.textContent = p.shape_count + ' shapes';
+
     const left = document.createElement('div');
     left.className = 'pair-item-left';
-    left.innerHTML = `<strong class="pair-name">${p.display_name}</strong><span>${p.shape_count} shapes</span>`;
+    left.append(nameEl, tagsRow, metaEl);
+
+    const div = document.createElement('div');
+    div.className  = 'pair-item';
+    div.dataset.id = p.id;
+    div.append(left);
+    div.addEventListener('click', () => selectPair(p.id));
+
+    const entry = document.createElement('div');
+    entry.className = 'pair-entry';
+    entry.append(div);
+    list.appendChild(entry);
+  }
+}
+
+/* ── Manage Sets: full CRUD pair list ────────────────────────────────────── */
+function renderManagePairList(pairs) {
+  const list = document.getElementById('manage-pair-list');
+  list.innerHTML = '';
+  if (!pairs.length) {
+    const msg = document.createElement('p');
+    msg.className   = 'pair-empty';
+    msg.textContent = 'No annotation sets yet. Click "Add new annotation set" below.';
+    list.appendChild(msg);
+    return;
+  }
+  for (const p of pairs) {
+    const nameEl = document.createElement('strong');
+    nameEl.className   = 'pair-name';
+    nameEl.textContent = p.display_name;
+
+    const tagsRow = document.createElement('div');
+    tagsRow.className = 'pair-tags-row';
+    _makeKindTag(p).forEach(t => tagsRow.appendChild(t));
+
+    const metaEl = document.createElement('span');
+    metaEl.textContent = p.shape_count + ' shapes';
+
+    const left = document.createElement('div');
+    left.className = 'pair-item-left';
+    left.append(nameEl, tagsRow, metaEl);
 
     const editBtn = document.createElement('button');
     editBtn.className = 'pair-edit-btn'; editBtn.title = 'Rename'; editBtn.textContent = '✎';
@@ -43,7 +109,7 @@ function renderPairList(pairs) {
     replaceBtn.className = 'pair-replace-btn'; replaceBtn.title = 'Replace files'; replaceBtn.textContent = '↻';
 
     const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'pair-delete-btn'; deleteBtn.title = 'Delete this annotation set'; deleteBtn.textContent = '✕';
+    deleteBtn.className = 'pair-delete-btn'; deleteBtn.title = 'Delete'; deleteBtn.textContent = '✕';
 
     const actionBtns = document.createElement('div');
     actionBtns.className = 'pair-action-btns';
@@ -66,7 +132,6 @@ function renderPairList(pairs) {
     div.className  = 'pair-item';
     div.dataset.id = p.id;
     div.append(left, actionBtns, deleteConfirm);
-    div.addEventListener('click', () => selectPair(p.id));
 
     const entry = document.createElement('div');
     entry.className = 'pair-entry';
@@ -86,7 +151,7 @@ function renderPairList(pairs) {
       actionBtns.hidden = true;
       deleteConfirm.hidden = false;
     });
-    confirmYes.addEventListener('click', async e => { e.stopPropagation(); await deletePair(p.id, entry); });
+    confirmYes.addEventListener('click', async e => { e.stopPropagation(); await deletePair(p.id); });
     confirmNo.addEventListener('click', e => {
       e.stopPropagation();
       deleteConfirm.hidden = true;
@@ -164,9 +229,8 @@ function buildReplaceForm(entryEl, pair) {
       const i = availablePairs.findIndex(q => q.id === pair.id);
       if (i !== -1) availablePairs[i] = updated;
       pair.shape_count = updated.shape_count;
-      entryEl.querySelector('.pair-item-left span').textContent = `${updated.shape_count} shapes`;
-      if (selectedPairId === pair.id) await selectPair(pair.id);
-      close();
+      renderManagePairList(availablePairs);
+      renderPairList(availablePairs);
     } catch (e) {
       statusEl.textContent = e.message;
       statusEl.style.color = 'var(--fail)';
@@ -178,23 +242,21 @@ function buildReplaceForm(entryEl, pair) {
   return form;
 }
 
-async function deletePair(pairId, entryEl) {
+async function deletePair(pairId) {
   try {
     const r = await fetch(`/api/images/${encodeURIComponent(pairId)}`, { method: 'DELETE' });
     if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? 'Delete failed'); }
     if (session && session.pairId === pairId) { localStorage.removeItem(SESSION_KEY); session = null; }
     availablePairs = availablePairs.filter(p => p.id !== pairId);
-    entryEl.remove();
     if (selectedPairId === pairId) {
       selectedPairId = null;
       startBtn.disabled = true;
-      if (availablePairs.length > 0) await selectPair(availablePairs[0].id);
     }
-    if (!availablePairs.length) renderPairList([]);
+    renderManagePairList(availablePairs);
+    renderPairList(availablePairs);
   } catch (e) {
     console.error('Delete failed:', e);
-    entryEl.querySelector('.pair-delete-confirm').hidden = true;
-    entryEl.querySelector('.pair-action-btns').hidden    = false;
+    renderManagePairList(availablePairs);
   }
 }
 
@@ -220,12 +282,11 @@ function startRenaming(itemEl, pair) {
         body:    JSON.stringify({ display_name: newName }),
       });
       pair.display_name = newName;
+      const i = availablePairs.findIndex(q => q.id === pair.id);
+      if (i !== -1) availablePairs[i].display_name = newName;
+      renderPairList(availablePairs);
     }
-    const restored = document.createElement('strong');
-    restored.className   = 'pair-name';
-    restored.textContent = pair.display_name;
-    input.replaceWith(restored);
-    actionBtns.hidden = false;
+    renderManagePairList(availablePairs);
   };
 
   input.addEventListener('blur',    save);
@@ -235,7 +296,14 @@ function startRenaming(itemEl, pair) {
   });
 }
 
-/* ── Fork / config screens ───────────────────────────────────────────────── */
+/* ── Manage Sets screen ──────────────────────────────────────────────────── */
+function showManageScreen() {
+  _hideAllSetupScreens();
+  document.getElementById('manage-screen').hidden = false;
+  renderManagePairList(availablePairs);
+}
+
+/* ── Fork / config screens (training flow) ───────────────────────────────── */
 function showFork(saved) {
   const pair = availablePairs.find(p => p.id === saved.pairId);
   if (!pair) { showConfig(false); return; }
@@ -271,11 +339,11 @@ function showAddPair() {
   document.getElementById('fork-screen').hidden     = true;
   document.getElementById('config-screen').hidden   = true;
   document.getElementById('add-pair-screen').hidden = false;
+  document.getElementById('manage-screen').hidden   = true;
 }
 
 /* ── Enter app ───────────────────────────────────────────────────────────── */
 function enterApp() {
-  // Repopulate label dropdown fresh for this pair
   labelSelect.innerHTML = '<option value="">— choose —</option>';
   shapesData.labels.forEach(l => {
     const opt = document.createElement('option');
@@ -339,38 +407,33 @@ function initSetup() {
     enterApp();
   });
 
-  // Modes buttons
-  document.getElementById('modes-btn-fork').addEventListener('click', showModeScreen);
-  document.getElementById('modes-btn-config').addEventListener('click', showModeScreen);
+  // Home buttons in training flow
+  document.getElementById('home-btn-fork').addEventListener('click', showHomeScreen);
+  document.getElementById('home-btn-config').addEventListener('click', showHomeScreen);
 
-  // Trainer: home button
+  // Manage Sets screen
+  document.getElementById('manage-add-btn').addEventListener('click', showAddPair);
+  document.getElementById('manage-home-btn').addEventListener('click', showHomeScreen);
+
+  // Trainer: home button → back to home screen
   document.getElementById('home-btn').addEventListener('click', () => {
     appDiv.hidden      = true;
     setupScreen.hidden = false;
-    const saved = readSession();
-    if (saved && availablePairs.some(p => p.id === saved.pairId)) showFork(saved);
-    else showConfig(false);
+    showHomeScreen();
   });
 
-  // Done screen: reset
+  // Done screen: reset → home screen
   document.getElementById('play-again-btn').addEventListener('click', () => {
     localStorage.removeItem(SESSION_KEY);
     session = null;
     doneScreen.hidden  = true;
     appDiv.hidden      = true;
     setupScreen.hidden = false;
-    showConfig(false);
+    showHomeScreen();
   });
 
-  // Add pair screen: open from fork
-  document.getElementById('add-pair-btn').addEventListener('click', showAddPair);
-
-  // Add pair screen: back
-  document.getElementById('back-add-btn').addEventListener('click', () => {
-    const saved = readSession();
-    if (saved && availablePairs.some(p => p.id === saved.pairId)) showFork(saved);
-    else showConfig(false);
-  });
+  // Add pair screen: back → manage screen
+  document.getElementById('back-add-btn').addEventListener('click', showManageScreen);
 
   // Add pair screen: file input label feedback
   document.getElementById('add-image').addEventListener('change', e => {
@@ -408,18 +471,15 @@ function initSetup() {
       if (!r.ok) { const e = await r.json(); throw new Error(e.error ?? 'Upload failed'); }
       const newPair = await r.json();
       availablePairs.push(newPair);
+      renderManagePairList(availablePairs);
       renderPairList(availablePairs);
-      await selectPair(newPair.id);
-      document.getElementById('add-name').value            = '';
-      document.getElementById('add-image').value           = '';
-      document.getElementById('add-json').value            = '';
-      document.getElementById('add-img-label').textContent = 'Image…';
+      document.getElementById('add-name').value             = '';
+      document.getElementById('add-image').value            = '';
+      document.getElementById('add-json').value             = '';
+      document.getElementById('add-img-label').textContent  = 'Image…';
       document.getElementById('add-json-label').textContent = 'JSON…';
       statusEl.hidden = true;
-      // Route back: fork if a valid session still exists, otherwise config
-      const saved = readSession();
-      if (saved && availablePairs.some(p => p.id === saved.pairId)) showFork(saved);
-      else showConfig(false);
+      showManageScreen();
     } catch (e) {
       statusEl.textContent = e.message;
       statusEl.style.color = 'var(--fail)';

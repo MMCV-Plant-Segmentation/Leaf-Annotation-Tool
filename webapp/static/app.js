@@ -72,18 +72,98 @@ const modeError      = document.getElementById('mode-error');
 const nSlider        = document.getElementById('n-slider');
 const nDisplay       = document.getElementById('n-display');
 
-/* ── Mode routing ────────────────────────────────────────────────────────── */
-function showModeScreen() {
-  document.getElementById('mode-screen').hidden        = false;
-  document.getElementById('fork-screen').hidden        = true;
-  document.getElementById('config-screen').hidden      = true;
-  document.getElementById('add-pair-screen').hidden    = true;
-  document.getElementById('compare-fork').hidden       = true;
-  document.getElementById('compare-setup').hidden      = true;
+/* ── B.1 Byline identity ─────────────────────────────────────────────────── */
+const BYLINE_KEY = 'lesion-user';
+
+function getUser() {
+  return (localStorage.getItem(BYLINE_KEY) || '').trim() || null;
+}
+
+function setUser(name) {
+  localStorage.setItem(BYLINE_KEY, name.trim());
+  _syncBylineButtons();
+}
+
+function _syncBylineButtons() {
+  const name = getUser() || 'anonymous';
+  const label = name.length > 18 ? name.slice(0, 16) + '…' : name;
+  document.querySelectorAll('.btn-byline-change').forEach(btn => {
+    btn.textContent = label;
+    btn.title = 'Signed in as ' + name + ' — click to change';
+  });
+}
+
+/* ── Byline modal ────────────────────────────────────────────────────────── */
+function openBylineModal(onConfirm) {
+  const modal   = document.getElementById('byline-modal');
+  const input   = document.getElementById('byline-input');
+  const errEl   = document.getElementById('byline-error');
+  const confirmBtn = document.getElementById('byline-confirm-btn');
+  const backdrop   = document.getElementById('byline-backdrop');
+
+  // Dismissible only when a name already exists (i.e. opened via "change name").
+  // On first load there is no stored user, so the modal is mandatory.
+  const cancelable = !!getUser();
+
+  input.value = getUser() || '';
+  errEl.hidden = true;
+  modal.hidden = false;
+  input.focus();
+  input.select();
+
+  function doConfirm() {
+    const name = input.value.trim();
+    if (!name) { errEl.hidden = false; return; }
+    modal.hidden = true;
+    setUser(name);
+    cleanup();
+    if (onConfirm) onConfirm();
+  }
+
+  function doCancel() {
+    if (!cancelable) return;
+    modal.hidden = true;
+    cleanup();
+  }
+
+  function cleanup() {
+    confirmBtn.removeEventListener('click', doConfirm);
+    input.removeEventListener('keydown', onKey);
+    if (backdrop) backdrop.removeEventListener('click', doCancel);
+  }
+
+  function onKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); doConfirm(); }
+    else if (e.key === 'Escape') { e.preventDefault(); doCancel(); }
+  }
+
+  confirmBtn.addEventListener('click', doConfirm);
+  input.addEventListener('keydown', onKey);
+  if (backdrop) backdrop.addEventListener('click', doCancel);
+}
+
+/* ── X-User header plumbing: wrap fetch ──────────────────────────────────── */
+const _origFetch = window.fetch.bind(window);
+window.fetch = function(url, opts) {
+  // Only augment same-origin /api/ calls
+  if (typeof url === 'string' && url.startsWith('/api/')) {
+    opts = opts || {};
+    const headers = new Headers(opts.headers || {});
+    const user = getUser();
+    if (user) headers.set('X-User', user);
+    opts = { ...opts, headers };
+  }
+  return _origFetch(url, opts);
+};
+
+/* ── Home screen / routing ───────────────────────────────────────────────── */
+function showHomeScreen() {
+  _hideAllSetupScreens();
+  document.getElementById('home-screen').hidden = false;
 }
 
 async function enterTrainingMode() {
-  document.getElementById('mode-screen').hidden = true;
+  _hideAllSetupScreens();
   const saved = readSession();
   if (saved && availablePairs.some(p => p.id === saved.pairId)) {
     await selectPair(saved.pairId);
@@ -99,7 +179,7 @@ async function enterTrainingMode() {
 }
 
 function enterComparisonMode() {
-  document.getElementById('mode-screen').hidden = true;
+  _hideAllSetupScreens();
   const saved = readCompareSession();
   if (saved) showCompareFork(saved);
   else showCompareSetup();
@@ -113,9 +193,26 @@ function enterComparisonMode() {
   initCompareSetup();
   initCompare();
 
-  const pairs = await fetch('/api/images').then(r => r.json());
-  renderPairList(pairs);
+  // Wire change-name buttons in both headers
+  document.querySelectorAll('.btn-byline-change').forEach(btn => {
+    btn.addEventListener('click', () => openBylineModal(null));
+  });
 
-  document.getElementById('training-mode-btn').addEventListener('click', enterTrainingMode);
-  document.getElementById('compare-mode-btn').addEventListener('click', enterComparisonMode);
+  // First load: show byline modal if no name stored, then load pairs
+  async function afterByline() {
+    const pairs = await fetch('/api/images').then(r => r.json());
+    renderPairList(pairs);
+
+    document.getElementById('tile-manage').addEventListener('click', showManageScreen);
+    document.getElementById('tile-merge').addEventListener('click', enterComparisonMode);
+    document.getElementById('tile-train').addEventListener('click', enterTrainingMode);
+    // tile-analyze and tile-reannotate are disabled (coming in later phases)
+  }
+
+  if (!getUser()) {
+    openBylineModal(afterByline);
+  } else {
+    _syncBylineButtons();
+    await afterByline();
+  }
 })();

@@ -32,7 +32,7 @@ function readCompareSession() {
 
 /* ── Screen helpers ──────────────────────────────────────────────────────── */
 function _hideAllSetupScreens() {
-  ['mode-screen','fork-screen','config-screen','add-pair-screen',
+  ['home-screen','manage-screen','fork-screen','config-screen','add-pair-screen',
    'compare-fork','compare-setup']
     .forEach(id => { document.getElementById(id).hidden = true; });
 }
@@ -169,10 +169,10 @@ function initCompareSetup() {
     showCompareSetup();
   });
 
-  document.getElementById('modes-btn-compare-fork').addEventListener('click',
-    showModeScreen);
-  document.getElementById('modes-btn-compare-setup').addEventListener('click',
-    showModeScreen);
+  document.getElementById('home-btn-compare-fork').addEventListener('click',
+    showHomeScreen);
+  document.getElementById('home-btn-compare-setup').addEventListener('click',
+    showHomeScreen);
 
   document.getElementById('compare-continue-btn').addEventListener('click', async () => {
     const setIds = [...document.querySelectorAll('#compare-set-list input:checked')]
