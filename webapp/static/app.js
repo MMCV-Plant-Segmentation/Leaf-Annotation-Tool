@@ -178,9 +178,9 @@ async function enterTrainingMode() {
   }
 }
 
-function enterComparisonMode() {
+async function enterComparisonMode() {
   _hideAllSetupScreens();
-  const saved = readCompareSession();
+  const saved = await readCompareSession();
   if (saved) showCompareFork(saved);
   else showCompareSetup();
 }

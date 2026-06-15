@@ -1,17 +1,26 @@
 /* ── Comparison session storage ──────────────────────────────────────────── */
-const COMPARE_KEY = 'lesion-compare';
+const MERGE_ID_KEY = 'lesion-compare-id';
 let compareSession = null;
 
 function saveCompareSession() {
-  localStorage.setItem(COMPARE_KEY, JSON.stringify(compareSession));
+  const mergeId = localStorage.getItem(MERGE_ID_KEY);
+  if (!mergeId) return;
+  fetch(`/api/merges/${mergeId}`, {
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ doc: compareSession }),
+  }).catch(e => console.warn('saveCompareSession failed:', e));
 }
 
-function readCompareSession() {
+async function readCompareSession() {
+  const mergeId = localStorage.getItem(MERGE_ID_KEY);
+  if (!mergeId) return null;
   try {
-    const s = localStorage.getItem(COMPARE_KEY);
-    if (!s) return null;
-    const p = JSON.parse(s);
-    if (!p.imageHash || !Array.isArray(p.includedSetIds)) return null;
+    const r = await fetch(`/api/merges/${mergeId}`);
+    if (!r.ok) { localStorage.removeItem(MERGE_ID_KEY); return null; }
+    const data = await r.json();
+    const p = data.doc;
+    if (!p || !p.imageHash || !Array.isArray(p.includedSetIds)) return null;
     if (!availablePairs.some(q => q.image_hash === p.imageHash)) return null;
     if (!p.includedSetIds.some(id => availablePairs.some(q => q.id === id))) return null;
     // Migrations
@@ -19,15 +28,15 @@ function readCompareSession() {
       if (!ann.overlay) ann.overlay = 'outline';
       if (!ann.num)     ann.num     = i + 1;
     });
-    if (p.blind === undefined) p.blind = true;
+    if (p.blind      === undefined) p.blind      = true;
     if (p.finalBlind === undefined) p.finalBlind = true;
     if (!p.globalColors) p.globalColors = _makeGlobalColors(p.includedSetIds || []);
-    if (!p.edges) p.edges = [];
+    if (!p.edges)        p.edges        = [];
     Object.values(p.piles || {}).forEach(pile => {
       if (pile.showBbox === undefined) pile.showBbox = false;
     });
     return p;
-  } catch { return null; }
+  } catch { localStorage.removeItem(MERGE_ID_KEY); return null; }
 }
 
 /* ── Screen helpers ──────────────────────────────────────────────────────── */
@@ -38,6 +47,7 @@ function _hideAllSetupScreens() {
 }
 
 function showCompareFork(saved) {
+  compareSession = saved;
   _hideAllSetupScreens();
   const imgPair = availablePairs.find(p => p.image_hash === saved.imageHash);
   const imgName = imgPair ? imgPair.display_name : saved.imageHash.slice(0, 8) + '…';
@@ -155,16 +165,21 @@ function _makeColors(ids, annById) {
 /* ── Init ────────────────────────────────────────────────────────────────── */
 function initCompareSetup() {
   document.getElementById('compare-resume-btn').addEventListener('click', () => {
-    const saved = readCompareSession();
-    if (!saved) return;
-    compareSession = saved;
+    if (!compareSession) return;
     showCompareGrouping();
   });
 
-  document.getElementById('compare-new-btn').addEventListener('click', showCompareSetup);
+  document.getElementById('compare-new-btn').addEventListener('click', () => {
+    compareSession = null;
+    showCompareSetup();
+  });
 
   document.getElementById('compare-delete-btn').addEventListener('click', () => {
-    localStorage.removeItem(COMPARE_KEY);
+    const mergeId = localStorage.getItem(MERGE_ID_KEY);
+    if (mergeId) {
+      fetch(`/api/merges/${mergeId}`, { method: 'DELETE' }).catch(() => {});
+      localStorage.removeItem(MERGE_ID_KEY);
+    }
     compareSession = null;
     showCompareSetup();
   });
@@ -227,7 +242,18 @@ function initCompareSetup() {
         }],
         piles,
       };
-      saveCompareSession();
+
+      // Create server-side merge row and store its ID
+      const mResp = await fetch('/api/merges', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ imageHash: _selectedImageHash, doc: compareSession }),
+      });
+      if (mResp.ok) {
+        const mData = await mResp.json();
+        localStorage.setItem(MERGE_ID_KEY, mData.id);
+      }
+
       showCompareGrouping();
     } catch (e) {
       console.error('compare seeding failed', e);

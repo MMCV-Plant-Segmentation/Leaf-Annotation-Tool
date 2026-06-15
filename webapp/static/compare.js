@@ -694,6 +694,7 @@ function _updatePhaseUI() {
   const isFinal = compareSession.phase === 'final';
   document.getElementById('compare-done-btn').hidden  =  isFinal;
   document.getElementById('compare-back-btn').hidden  = !isFinal;
+  document.getElementById('compare-save-btn').hidden  = !isFinal;
   document.getElementById('compare-page-title').textContent =
     isFinal ? 'Compare Lesions' : 'Group Distinct Lesions';
 }
@@ -727,6 +728,27 @@ function initCompare() {
     }
     saveCompareSession(); renderCompareTree(); drawCompareCanvas();
   });
+  document.getElementById('compare-save-btn').addEventListener('click', async () => {
+    const mergeId = localStorage.getItem(MERGE_ID_KEY);
+    if (!mergeId) return;
+    const btn = document.getElementById('compare-save-btn');
+    btn.disabled    = true;
+    btn.textContent = 'Saving…';
+    try {
+      const r = await fetch(`/api/merges/${mergeId}/save`, { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).error ?? 'Save failed');
+      const data = await r.json();
+      btn.textContent = '✓ Saved';
+      // Refresh pair list so Manage Sets shows the new set immediately
+      const pairs = await fetch('/api/images').then(res => res.json());
+      renderPairList(pairs);
+    } catch (e) {
+      console.error('Save merge failed:', e);
+      btn.textContent = 'Error';
+      setTimeout(() => { btn.textContent = '💾 Save as set'; btn.disabled = false; }, 2000);
+    }
+  });
+
   document.getElementById('compare-home-btn').addEventListener('click', () => {
     document.getElementById('compare-screen').hidden = true;
     document.getElementById('setup-screen').hidden   = false;

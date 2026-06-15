@@ -517,6 +517,133 @@ def api_image_crop(image_hash: str):
     return send_file(buf, mimetype='image/png')
 
 
+# ── Merge endpoints ───────────────────────────────────────────────────────────
+
+def _get_merge(merge_id: str) -> dict | None:
+    con = _db.get_db()
+    try:
+        return con.execute('SELECT * FROM merge WHERE id = ?', (merge_id,)).fetchone()
+    finally:
+        _db.close_db(con)
+
+
+def _get_image_ext(image_hash: str) -> str:
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT image_ext FROM annotation_set WHERE image_hash = ? LIMIT 1',
+            (image_hash,),
+        ).fetchone()
+        return row['image_ext'] if row else 'tif'
+    finally:
+        _db.close_db(con)
+
+
+@app.post('/api/merges')
+def api_create_merge():
+    body       = request.json or {}
+    doc        = body.get('doc')
+    image_hash = body.get('imageHash') or (doc or {}).get('imageHash')
+    if not doc or not image_hash:
+        return jsonify({'error': 'doc and imageHash required'}), 400
+    merge_id   = str(uuid.uuid4())
+    updated_at = datetime.now(timezone.utc).isoformat()
+    con = _db.get_db()
+    try:
+        con.execute(
+            'INSERT INTO merge (id, set_id, image_hash, doc, created_by, updated_at)'
+            ' VALUES (?, NULL, ?, ?, ?, ?)',
+            (merge_id, image_hash, json.dumps(doc), _xuser(), updated_at),
+        )
+        con.commit()
+    finally:
+        _db.close_db(con)
+    return jsonify({'id': merge_id, 'updatedAt': updated_at}), 201
+
+
+@app.get('/api/merges/<merge_id>')
+def api_get_merge(merge_id: str):
+    row = _get_merge(merge_id)
+    if not row:
+        return jsonify({'error': 'merge not found'}), 404
+    return jsonify({
+        'id':        row['id'],
+        'setId':     row['set_id'],
+        'imageHash': row['image_hash'],
+        'doc':       json.loads(row['doc']),
+        'createdBy': row['created_by'],
+        'updatedAt': row['updated_at'],
+    })
+
+
+@app.patch('/api/merges/<merge_id>')
+def api_update_merge(merge_id: str):
+    if not _get_merge(merge_id):
+        return jsonify({'error': 'merge not found'}), 404
+    doc = (request.json or {}).get('doc')
+    if doc is None:
+        return jsonify({'error': 'doc required'}), 400
+    updated_at = datetime.now(timezone.utc).isoformat()
+    con = _db.get_db()
+    try:
+        con.execute(
+            'UPDATE merge SET doc = ?, updated_at = ? WHERE id = ?',
+            (json.dumps(doc), updated_at, merge_id),
+        )
+        con.commit()
+    finally:
+        _db.close_db(con)
+    return jsonify({'id': merge_id, 'updatedAt': updated_at})
+
+
+@app.post('/api/merges/<merge_id>/save')
+def api_save_merge(merge_id: str):
+    row = _get_merge(merge_id)
+    if not row:
+        return jsonify({'error': 'merge not found'}), 404
+    if row['set_id']:
+        existing = _get_set(row['set_id'])
+        if existing:
+            return jsonify({'setId': existing['id'], 'displayName': existing['display_name']})
+    doc          = json.loads(row['doc'])
+    included_ids = doc.get('includedSetIds', [])
+    names        = [s['display_name'] for sid in included_ids if (s := _get_set(sid))]
+    display_name = ('Merge: ' + ' + '.join(names)) if names else 'Merged annotations'
+    if len(display_name) > 100:
+        display_name = display_name[:97] + '…'
+    set_id     = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    _insert_set({
+        'id':           set_id,
+        'display_name': display_name,
+        'image_hash':   row['image_hash'],
+        'image_ext':    _get_image_ext(row['image_hash']),
+        'kind':         'merged',
+        'provenance':   json.dumps({'source_set_ids': included_ids, 'merge_id': merge_id}),
+        'created_by':   _xuser(),
+        'created_at':   created_at,
+        'terminal':     0,
+    })
+    con = _db.get_db()
+    try:
+        con.execute('UPDATE merge SET set_id = ? WHERE id = ?', (set_id, merge_id))
+        con.commit()
+    finally:
+        _db.close_db(con)
+    return jsonify({'setId': set_id, 'displayName': display_name}), 201
+
+
+@app.delete('/api/merges/<merge_id>')
+def api_delete_merge(merge_id: str):
+    con = _db.get_db()
+    try:
+        con.execute('DELETE FROM merge WHERE id = ?', (merge_id,))
+        con.commit()
+    finally:
+        _db.close_db(con)
+    return '', 204
+
+
 @app.post('/api/compare')
 def api_compare():
     body       = request.json or {}
