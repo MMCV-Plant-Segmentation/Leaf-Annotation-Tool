@@ -192,6 +192,7 @@ async function enterComparisonMode() {
   initSetup();
   initCompareSetup();
   initCompare();
+  initAnalyze();
 
   // Wire change-name buttons in both headers
   document.querySelectorAll('.btn-byline-change').forEach(btn => {
@@ -206,7 +207,8 @@ async function enterComparisonMode() {
     document.getElementById('tile-manage').addEventListener('click', showManageScreen);
     document.getElementById('tile-merge').addEventListener('click', enterComparisonMode);
     document.getElementById('tile-train').addEventListener('click', enterTrainingMode);
-    // tile-analyze and tile-reannotate are disabled (coming in later phases)
+    document.getElementById('tile-analyze').addEventListener('click', showAnalyzeSetup);
+    // tile-reannotate is disabled (coming in a later phase)
   }
 
   if (!getUser()) {

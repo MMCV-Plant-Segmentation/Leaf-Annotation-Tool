@@ -24,11 +24,13 @@ import io
 import json
 import uuid
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
+from shapely.ops import unary_union
 
 import db as _db
 
@@ -753,6 +755,131 @@ def api_compare():
 def api_iou():
     body = request.json
     return jsonify(_iou(body['a'], body['b']))
+
+
+def _geom_to_rings(geom) -> list[list[list[float]]]:
+    """Flatten a Shapely geometry to a list of exterior coordinate rings [[x,y],...]."""
+    if geom is None or geom.is_empty:
+        return []
+    geoms = list(geom.geoms) if hasattr(geom, 'geoms') else [geom]
+    return [[[c[0], c[1]] for c in g.exterior.coords]
+            for g in geoms if hasattr(g, 'exterior')]
+
+
+@app.get('/api/analyze/<set_id>')
+def api_analyze_set(set_id: str):
+    meta = _get_set(set_id)
+    if not meta:
+        return jsonify({'error': 'not found'}), 404
+    if meta['kind'] not in ('merged', 'reannotated'):
+        return jsonify({'error': 'only merged or reannotated sets can be analyzed'}), 400
+
+    if meta['kind'] == 'merged':
+        con = _db.get_db()
+        try:
+            mrow = con.execute(
+                'SELECT doc FROM merge WHERE set_id = ?', (set_id,)
+            ).fetchone()
+        finally:
+            _db.close_db(con)
+        if not mrow:
+            return jsonify({'error': 'merge data not found for this set'}), 404
+        doc         = json.loads(mrow['doc'])
+        ann_by_id   = {a['id']: a for a in doc.get('annotations', [])}
+        piles_doc   = doc.get('piles', {})
+        image_hash  = doc.get('imageHash') or meta['image_hash']
+    else:
+        # reannotated: wired in Phase 6
+        return jsonify({'error': 'reannotated analysis not yet implemented'}), 501
+
+    img    = _get_image(image_hash, meta['image_ext'])
+    iw, ih = img.size
+
+    piles_out = []
+    for pile_id, pile in piles_doc.items():
+        ann_ids = pile.get('annotationIds', [])
+
+        # Group polygon points by source set
+        by_source: dict[str, list] = {}
+        for ann_id in ann_ids:
+            ann = ann_by_id.get(ann_id)
+            if not ann:
+                continue
+            by_source.setdefault(ann['setId'], []).append(ann['points'])
+
+        if not by_source:
+            continue
+
+        # Build per-source footprints, keeping (sid, fp) pairs together
+        fp_pairs: list[tuple[str, object]] = []
+        for sid in sorted(by_source.keys()):
+            polys = [ShapelyPolygon(pts).buffer(0) for pts in by_source[sid]]
+            fp    = unary_union(polys)
+            if not fp.is_empty:
+                fp_pairs.append((sid, fp))
+
+        if not fp_pairs:
+            continue
+
+        source_ids = [sid for sid, _ in fp_pairs]
+        footprints = [fp  for _,  fp in fp_pairs]
+        m          = len(fp_pairs)
+
+        area_1 = unary_union(footprints).area
+
+        # For each k, compute the region covered by >= k footprints.
+        # k=1 is always fraction 1.0 (the union itself) — only k>=2 is meaningful
+        # for the IoU filter, so we start from k=2 when m>1.
+        agreement_by_k: dict[int, dict] = {}
+        for k in range(1, m + 1):
+            parts = []
+            for combo in combinations(footprints, k):
+                isect = combo[0]
+                for fp in combo[1:]:
+                    isect = isect.intersection(fp)
+                if not isect.is_empty:
+                    parts.append(isect)
+            region   = unary_union(parts) if parts else None
+            fraction = (region.area / area_1) if (region and area_1 > 0) else 0.0
+            agreement_by_k[k] = {
+                'fraction': round(fraction, 4),
+                'rings':    _geom_to_rings(region),
+            }
+
+        # Per-source footprint rings for frontend density drawing
+        source_rings = [
+            {'sourceId': sid, 'rings': _geom_to_rings(fp)}
+            for sid, fp in fp_pairs
+        ]
+
+        # Pile bbox from all annotation points
+        all_pts = [pt for ann_id in ann_ids
+                   for pt in (ann_by_id.get(ann_id) or {}).get('points', [])]
+        if all_pts:
+            xs   = [p[0] for p in all_pts]
+            ys   = [p[1] for p in all_pts]
+            bbox = [min(xs), min(ys), max(xs), max(ys)]
+        else:
+            bbox = [0, 0, 0, 0]
+
+        piles_out.append({
+            'id':           pile_id,
+            'bbox':         bbox,
+            'm':            m,
+            'sourceRings':  source_rings,
+            'agreementByK': agreement_by_k,
+        })
+
+    all_source_ids = {sr['sourceId'] for p in piles_out for sr in p['sourceRings']}
+    return jsonify({
+        'setId':       set_id,
+        'displayName': meta['display_name'],
+        'imageHash':   image_hash,
+        'imageWidth':  iw,
+        'imageHeight': ih,
+        'mTotal':      len(all_source_ids),
+        'piles':       piles_out,
+    })
 
 
 if __name__ == '__main__':

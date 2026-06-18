@@ -23,9 +23,9 @@
           <strong>Merge Sets</strong>
           <span>Group overlapping annotations</span>
         </button>
-        <button class="home-tile home-tile-soon" id="tile-analyze" disabled>
+        <button class="home-tile" id="tile-analyze">
           <strong>Analyze</strong>
-          <span>Coming soon</span>
+          <span>Agreement map</span>
         </button>
         <button class="home-tile home-tile-soon" id="tile-reannotate" disabled>
           <strong>Re-annotate</strong>
@@ -119,6 +119,14 @@
       <button id="home-btn-compare-setup" class="btn-text" style="margin-top:6px">← Home</button>
     </div>
 
+    <!-- Analyze setup: pick a merged/reannotated set -->
+    <div id="analyze-setup" hidden>
+      <p class="setup-sub">Select a set to analyze</p>
+      <div id="analyze-pair-list"></div>
+      <button id="analyze-go-btn" class="btn-primary" disabled style="margin-top:12px">Analyze →</button>
+      <button id="home-btn-analyze" class="btn-text" style="margin-top:6px">← Home</button>
+    </div>
+
     <!-- Add pair screen: upload-only, reached from fork menu -->
     <div id="add-pair-screen" hidden>
       <p class="setup-sub">Add new annotation set</p>
@@ -160,6 +168,98 @@
     <div id="compare-tree"></div>
     <canvas id="compare-canvas"></canvas>
     <div id="compare-color-key" hidden></div>
+  </div>
+</div>
+
+<!-- ── Analyze screen ──────────────────────────────────────────────────────── -->
+<div id="analyze-screen" hidden>
+  <header>
+    <div style="display:flex;align-items:baseline;gap:12px">
+      <span id="analyze-set-name" style="font-size:0.9rem;font-weight:600"></span>
+      <span id="analyze-stats" style="font-size:0.78rem;opacity:0.55"></span>
+    </div>
+    <div id="analyze-header-right">
+      <button id="analyze-byline-change-btn" class="btn-byline-change" title="Change display name"></button>
+      <input type="color" id="analyze-color-pick" value="#4a9eff" title="Annotation color" class="analyze-color-pick">
+      <div class="opacity-pick-wrap">
+        <button id="analyze-opacity-btn" class="opacity-pick-btn" title="Annotation opacity"></button>
+        <div id="analyze-opacity-popup" class="opacity-popup" hidden>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:0.8rem;font-weight:600">Opacity</span>
+            <span id="analyze-opacity-val" style="font-size:0.8rem;color:var(--user)">85%</span>
+          </div>
+          <input type="range" id="analyze-opacity-slider" min="0" max="100" value="50" class="range-input">
+        </div>
+      </div>
+      <button id="analyze-blind-btn">🙈 Blind</button>
+      <button id="analyze-bbox-btn" class="active">⬚ Bbox</button>
+      <button id="analyze-home-btn">Home</button>
+    </div>
+  </header>
+  <div id="analyze-main">
+    <canvas id="analyze-canvas"></canvas>
+    <div id="analyze-sidebar">
+      <div class="field">
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="mode-toggle-group">
+            <button id="analyze-mode-abs" class="mode-toggle-btn active">Absolute</button>
+            <button id="analyze-mode-rel" class="mode-toggle-btn">Relative</button>
+          </div>
+          <button class="btn-info" id="analyze-mode-info-btn">?</button>
+        </div>
+        <div id="analyze-mode-tooltip" class="iou-tooltip" hidden>
+          <strong>Absolute:</strong> Missing annotations count as disagreement — a lesion only 2 of 4 annotators drew is half as salient as one all 4 drew.<br><br>
+          <strong>Relative:</strong> Missing annotations are treated as oversight — salience reflects only the annotators who drew this lesion, so a 2-of-2 pile looks the same as a 4-of-4 pile.
+        </div>
+      </div>
+      <div class="field">
+        <div style="display:flex;align-items:center;gap:4px">
+          <label for="analyze-agree-slider">Min. annotators</label>
+          <button class="btn-info" id="analyze-agree-info-btn">?</button>
+        </div>
+        <div id="analyze-agree-tooltip" class="iou-tooltip" hidden>
+          Hides lesions where the fraction of annotators who drew it is below this threshold. At 34%, a lesion only 1 of 3 annotators drew (33%) is hidden; one that 2 of 3 drew (67%) is shown. The stacked footprints show where annotators overlap — darker = more agreement.
+        </div>
+        <div class="count-header" style="margin-top:4px">
+          <span id="analyze-agree-label" style="font-size:0.82rem;color:var(--user);font-weight:600">≥ 1</span>
+        </div>
+        <input type="range" id="analyze-agree-slider" min="0" max="3" step="1" value="0" class="range-input">
+      </div>
+      <div class="field">
+        <div style="display:flex;align-items:center;gap:4px">
+          <label for="analyze-agree-k-slider">Overlap level</label>
+          <button class="btn-info" id="analyze-agree-k-info-btn">?</button>
+          <span id="analyze-agree-k-label" style="margin-left:auto;font-size:0.82rem;color:var(--user);font-weight:600">3/3</span>
+        </div>
+        <div id="analyze-agree-k-tooltip" class="iou-tooltip" hidden>
+          Controls how deeply annotators must overlap for the IoU calculation — higher values require stricter agreement. Click a bar in the pile breakdown to inspect a level's I∩U detail without changing this slider.
+        </div>
+        <div class="k-overlap-grid">
+          <div id="analyze-agree-k-labels" class="k-overlap-left" hidden></div>
+          <div class="k-overlap-right">
+            <div class="k-slider-wrapper">
+              <input type="range" id="analyze-agree-k-slider" min="0" max="3" step="1" value="0" class="range-input">
+            </div>
+            <div id="analyze-agree-k-breakdown" class="k-breakdown" hidden></div>
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <div style="display:flex;align-items:center;gap:4px">
+          <label for="analyze-iou-slider">Min IoU</label>
+          <button class="btn-info" id="analyze-iou-info-btn">?</button>
+        </div>
+        <div id="analyze-iou-tooltip" class="iou-tooltip" hidden>
+          Hides lesions where the highlighted region is smaller than this % of the lesion's total annotated area. Raise it to show only lesions where annotators agreed well on the shape. Note: annotators who didn't draw a lesion at all are not included — the IoU is computed only among those who did.
+        </div>
+        <div class="count-header" style="margin-top:4px">
+          <span id="analyze-iou-label" style="font-size:0.82rem;color:var(--muted);font-weight:600">0%</span>
+        </div>
+        <input type="range" id="analyze-iou-slider" min="0" max="100" value="0" class="range-input">
+      </div>
+      <div id="analyze-pile-detail" style="margin-top:10px"></div>
+      <div id="analyze-k-detail" style="margin-top:8px"></div>
+    </div>
   </div>
 </div>
 
@@ -306,11 +406,13 @@
 <script src="/static/session.js"></script>
 <script src="/static/canvas.js"></script>
 <script src="/static/modal.js"></script>
+<script src="/static/components.js"></script>
 <script src="/static/trainer.js"></script>
 <script src="/static/setup.js"></script>
 <script src="/static/compare_setup.js"></script>
 <script src="/static/compare_canvas.js"></script>
 <script src="/static/compare.js"></script>
+<script src="/static/analyze.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

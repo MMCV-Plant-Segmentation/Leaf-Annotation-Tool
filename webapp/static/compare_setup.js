@@ -42,7 +42,7 @@ async function readCompareSession() {
 /* ── Screen helpers ──────────────────────────────────────────────────────── */
 function _hideAllSetupScreens() {
   ['home-screen','manage-screen','fork-screen','config-screen','add-pair-screen',
-   'compare-fork','compare-setup']
+   'compare-fork','compare-setup','analyze-setup']
     .forEach(id => { document.getElementById(id).hidden = true; });
 }
 

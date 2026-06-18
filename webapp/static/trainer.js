@@ -357,13 +357,10 @@ function initTrainer() {
   iouInfoBtn.addEventListener('click', () => {
     iouTooltip.hidden = !iouTooltip.hidden;
     if (!iouTooltip.hidden && state.result) {
-      const inter = Math.round(state.result.iouIntersection ?? 0);
-      const union  = Math.round(state.result.iouUnion ?? 0);
-      const pct   = Math.round((state.result.iou ?? 0) * 100);
-      iouCalcLines.innerHTML =
-        `<div>∩ Intersection: <strong>${inter.toLocaleString()} px²</strong></div>` +
-        `<div>∪ Union: <strong>${union.toLocaleString()} px²</strong></div>` +
-        `<div>IoU = ${inter.toLocaleString()} / ${union.toLocaleString()} = <strong>${pct}%</strong></div>`;
+      const inter = state.result.iouIntersection ?? 0;
+      const union  = state.result.iouUnion ?? 0;
+      iouCalcLines.innerHTML = '';
+      iouCalcLines.appendChild(buildIoUDetail(inter, union));
     }
   });
 
