@@ -2,21 +2,33 @@
 
 Canonical reference for the application as built.
 
-The app has two tools that share a backend and a setup screen:
+The app opens on a **home screen** of tiles that route to several tools sharing
+one backend, one `index.html`, and a byline identity:
 
-1. **Training tool** — practice annotating to match a reference ("ground truth").
-2. **Comparison tool** — pool independent annotations from several annotators,
-   group them into distinct lesions, and reconcile a shared truth.
+1. **Manage Sets** — the set-management UI (upload, rename, replace, delete).
+2. **Merge Sets** — the Comparison tool: pool independent annotations from
+   several annotators, group them into distinct lesions, reconcile a shared
+   truth, and optionally save the result as a `merged` set.
+3. **Analyze** — render a footprint k-of-N agreement map over a `merged` (or
+   `reannotated`) set, with live agreement-threshold and IoU filters.
+4. **Train** — practice annotating to match a reference ("ground truth").
+5. **Re-annotate** — *tile disabled.* The collaborative consensus builder is not
+   built yet; see [`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md).
+
+Forward-looking work lives in two parked docs:
+[`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md) (the unbuilt
+re-annotation tool) and [`Annotator Plan.md`](./Annotator%20Plan.md) (the
+labelme-replacement annotator).
 
 ---
 
 ## 1. Architecture
 
 - **Flask backend** (`webapp/app.py`) serving a single-page web app. The backend
-  holds the **annotation-set registry** in SQLite (`data/app.db`,
-  `webapp/db.py`); **session state** (practice and comparison) still lives in the
-  browser's `localStorage`. (Moving sessions server-side is later-phase work — see
-  `docs/Restructure & Reannotation Plan.md`.)
+  holds the **annotation-set registry** and **merge documents** in SQLite
+  (`data/app.db`, `webapp/db.py`); **practice (training) session state** still
+  lives in the browser's `localStorage`, while **comparison/merge state** is now
+  server-persisted in the `merge` table (only the merge ID is kept client-side).
 - **Identity (byline):** on first load the user enters a display name (no
   password — attribution, not access control), stored in
   `localStorage['lesion-user']` and sent as an `X-User` header on every `/api/`
@@ -27,8 +39,9 @@ The app has two tools that share a backend and a setup screen:
   registry lives in the `annotation_set` table (`id`, `display_name`,
   `image_hash`, `image_ext`, `kind`, `provenance`, `created_by`, `created_at`,
   `terminal`); `data/manifest.json` is retained as a read-only backup but is no
-  longer authoritative. `data/app.db` also contains empty scaffolding tables
-  (`merge`, `reannot_*`) for future phases.
+  longer authoritative. The `merge` table holds comparison/merge documents (§4).
+  `data/app.db` also contains empty scaffolding tables (`reannot_*`) for the
+  unbuilt consensus tool.
 - **Frontend** is multi-file plain `<script>` JavaScript (no ES modules). Shared
   globals; each file exposes a deferred `initX()` wired from `app.js`. Screens
   are shown/hidden via the `hidden` attribute.
@@ -71,11 +84,31 @@ auto-creates the schema and runs a one-time idempotent import of
 | `GET`  | `/api/image/<hash>/crop?x=&y=&w=&h=` | Full-resolution PNG **crop** for pile zoom. |
 | `POST` | `/api/compare` | Seed a comparison session (see §4.2). |
 
+### Merge persistence endpoints
+
+The comparison-session document (§4.2) is stored server-side in the `merge`
+table; the client keeps only the merge ID in
+`localStorage['lesion-compare-id']`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST`   | `/api/merges` | Create a merge row from a seeded session; returns its `id`. |
+| `GET`    | `/api/merges/<id>` | Read the stored merge doc (used on resume). |
+| `PATCH`  | `/api/merges/<id>` | Update the stored doc (fire-and-forget autosave). |
+| `POST`   | `/api/merges/<id>/save` | Save the merge as a `merged` `annotation_set`. Idempotent (re-save returns the existing set); display name auto-generated from source set names; links `merge.set_id`. |
+| `DELETE` | `/api/merges/<id>` | Delete the merge draft. The saved `annotation_set`, if any, survives. |
+
+### Analyze endpoint
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/analyze/<set_id>` | Footprint k-of-N agreement geometry for a `merged` set (see §5). Rejects `raw` sets (400); `reannotated` returns 501 until the consensus tool ships. |
+
 `/api/compare` pools all polygons from the selected sets, runs a broad-phase
 bbox-overlap check then a Shapely narrow-phase intersection, builds union-find
 connected components, and returns the components as initial pile groupings
 **plus the intersection edges**. The edges are kept client-side and used for the
-connected-component check during splitting (§5.6); the graph itself is otherwise
+connected-component check during splitting (§4.5); the graph itself is otherwise
 discarded after seeding.
 
 **Implementation note:** `img.load()` is called immediately after
@@ -147,10 +180,10 @@ Layer   (visibility, collapse, reorder, delete-when-empty)
 
 ### 4.1 Setup & persistence
 
-- Landing screen adds a **Training / Comparison** mode chooser before the
-  existing fork/config flow. Training entry is deferred until the mode is
-  chosen — `enterTrainingMode()` does the `pairs[0]` pre-select and `/api/shapes`
-  fetch — so choosing Comparison never pays for a training-only shapes fetch.
+- Reached from the **home screen** (Merge Sets tile). Training entry is a
+  separate tile — `enterTrainingMode()` does the `pairs[0]` pre-select and
+  `/api/shapes` fetch — so choosing Merge never pays for a training-only shapes
+  fetch.
 - Comparison setup: single-select image list (**one image per session**), per-set
   include toggles (all checked by default), Continue.
 - On Continue: `POST /api/compare` seeds the session; the full doc is stored
@@ -320,9 +353,102 @@ available on both pages; all pile bboxes default on when entering this page.
 **Navigation**: "← Back to Grouping" returns to the grouping page; focus state
 and selection are cleared on both transitions.
 
+**Save as set**: a 💾 button in the Compare Lesions header calls
+`POST /api/merges/<id>/save`, persisting the merge as a `merged` annotation set
+(idempotent; auto-named from the source sets). On success the set appears in the
+pair list and in Manage Sets, and becomes selectable by the Analyze tool (§5).
+
 ---
 
-## 5. Invariants (test targets)
+## 5. Analyze Tool
+
+Visualises **where annotators agree** across a `merged` set, without collapsing
+disagreement. Reached from the Analyze home tile. (`reannotated` sets are an
+intended input too, but the endpoint returns 501 for them until the consensus
+tool ships.)
+
+### 5.1 Footprint k-of-N agreement
+
+For each pile (lesion), collapse each source to a **footprint** =
+`unary_union` of all that source's polygons in the pile. With `m` = number of
+sources that drew the pile, for each `k = 1..m` compute `area_k` = the region
+covered by **≥ k** footprints (union over all `m-choose-k` intersections), and
+`fraction = area_k / area_1`. `k=1` is the union (fraction 1.0); `k=m` is the
+core intersection. The level-`k` rings are **nested**: `k=m ⊆ … ⊆ k=1`. All
+geometry is computed server-side with Shapely.
+
+### 5.2 `/api/analyze/<set_id>` response
+
+```jsonc
+{
+  "displayName": "…", "imageHash": "…",
+  "imageWidth": 0, "imageHeight": 0,
+  "mTotal": 3,                       // distinct sources in the whole set
+  "piles": [{
+    "id": 1, "m": 2,                 // sources that drew THIS pile (≤ mTotal)
+    "bbox": [x0,y0,x1,y1],           // world space (original pixels)
+    "sourceRings": [{ "sourceId": "…", "rings": [[[x,y],…]] }],
+    "agreementByK": {                // string keys "1".."m"
+      "1": { "fraction": 1.0, "rings": [[[x,y],…]] },
+      "2": { "fraction": 0.6, "rings": [[[x,y],…]] }
+    }
+  }]
+}
+```
+
+JSON integer keys come back as strings; the frontend looks up with `String(k)`.
+
+### 5.3 Viewer (`analyze.js`)
+
+Set picker (filtered to `merged`/`reannotated`), then a pan/zoom canvas with a
+control sidebar. The viewer went **beyond the original single-slider plan** —
+the as-built behavior is:
+
+- **Two threshold modes**, a toggle:
+  - **Relative** — the planned percentage control; the slider is 0–100% and maps
+    per pile to `k = max(1, ceil(pct/100 · pile.m))`.
+  - **Absolute** — the slider is a literal count `0..mTotal`, same denominator
+    for every pile. **Default mode**, default value `mTotal` (all-agree).
+- **Min annotators** slider (`k`) — hides piles drawn by fewer than `k` sources.
+- **Overlap level** slider — the agreement threshold above; drives which nested
+  ring is drawn per pile. A two-column **k-breakdown** beside it shows the
+  per-level bars.
+- **Min IoU** slider — hides piles whose agreement fraction (at the chosen
+  overlap level) falls below the cutoff ("show me only the contested lesions").
+- **Blind** toggle (hide per-source colors), **Bbox** toggle (dashed per-pile
+  boxes), a **color** picker, and an **opacity** popup.
+- Clicking a pile selects it: per-source outlines in per-annotator colors, plus a
+  sidebar **pile detail** (the k-breakdown bar chart) and, on clicking a bar, a
+  **k-detail** panel with intersection/union pixel areas. `analyzeDetailK` tracks
+  the sidebar selection independently of the main overlap slider.
+
+### 5.4 Delta-alpha rendering (preserve exactly)
+
+Agreement depth is drawn by stacking the nested rings with per-ring alpha so the
+cumulative opacity after ring `ki` equals `ki/N · T` (`T` = chosen opacity,
+`N = mTotal` in absolute mode / `pile.m` in relative mode):
+
+```
+step          = T / N
+drawAlpha_ki  = step / (1 - (ki-1) · step)     for ki = 1 .. pile.m
+```
+
+Deeper-agreement regions appear more opaque, in the user's chosen color. This
+relies on the rings being nested (each ring fully covers all lower-k rings).
+
+### 5.5 Cross-file dependencies (as-built, to be made explicit)
+
+`analyze.js` reads the `availablePairs` global and calls `_makeKindTag` /
+`_countLabel` from `setup.js`, `openBylineModal` from `app.js`, and
+`buildIoUDetail` from `components.js` — undocumented shared globals. The SolidJS
+migration (see [`Analyze SolidJS Migration.md`](./Analyze%20SolidJS%20Migration.md))
+formalises these into an explicit bridge. Known nit: `#analyze-opacity-val`
+HTML initialises to `85%` though the JS default is 50% (corrected once a set
+loads).
+
+---
+
+## 6. Invariants (test targets)
 
 These should hold at all times and are the natural assertions for a future test
 suite. Grouped by concern.
@@ -383,13 +509,16 @@ suite. Grouped by concern.
 
 ---
 
-## 6. Known future work
+## 7. Known future work
 
-- **Per-pile k-of-n agreement IoU** — the real comparison metric and the intended
-  evolution of the Compare Lesions page. Group a pile's annotations by annotator,
-  union each annotator's shapes into one region, then compute
-  `area(≥k members) / area(≥1 member)`. `k` is user-chosen (default = majority);
-  "all annotators" is expected to be too strict.
+- **Consensus builder (re-annotation)** — the unbuilt collaborative tool; see
+  [`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md). (The footprint
+  k-of-N agreement metric it depends on is already built in the Analyze tool, §5.)
+- **New annotator** — labelme replacement (projects/tiles/batches); see
+  [`Annotator Plan.md`](./Annotator%20Plan.md).
+- **Analyze SolidJS migration** — refactor `analyze.js` into typed Solid
+  components as the pilot for a frontend framework migration; see
+  [`Analyze SolidJS Migration.md`](./Analyze%20SolidJS%20Migration.md).
 - **Layer rename** — names default to "Layer N"; renaming deferred.
 - **Labels** — annotation label fields exist in the data but are ignored by the
   comparison tool.
