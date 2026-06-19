@@ -1,6 +1,6 @@
 /* ── Pair state ──────────────────────────────────────────────────────────── */
 let selectedPairId = null;
-let availablePairs = [];
+var availablePairs = []; // var so window.availablePairs is visible to ES-module bundle
 
 /* ── Count label helper ──────────────────────────────────────────────────── */
 function _countLabel(p) {

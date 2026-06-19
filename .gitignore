@@ -2,3 +2,4 @@ data/
 .claude/
 __pycache__/
 *.pyc
+webapp/frontend/node_modules/
