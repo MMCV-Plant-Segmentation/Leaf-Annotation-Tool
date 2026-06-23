@@ -1,0 +1,48 @@
+.pairItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.pairItem:hover:not([data-disabled]), .pairItem[data-highlighted] { border-color: #555; }
+.pairItem[data-selected] {
+  border-color: var(--user);
+  background: rgba(74, 158, 255, 0.08);
+}
+/* When a replace-form is expanded below the item (ManageScreen) */
+.pairItemReplacing {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.pairItemLeft { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.pairItemLeft strong { font-size: 0.88rem; }
+.pairItemLeft span   { font-size: 0.75rem; color: var(--muted); }
+
+.pairActionBtns {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.pairItem:hover .pairActionBtns { opacity: 1; }
+
+.pairTagsRow { display: flex; gap: 4px; flex-wrap: wrap; }
+.pairEmpty   { font-size: 0.82rem; color: var(--muted); padding: 4px 0; }
+.setupSub    { color: var(--muted); font-size: 0.9rem; }
+
+.resumeInfo {
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: rgba(74, 158, 255, 0.07);
+  border: 1px solid rgba(74, 158, 255, 0.2);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  line-height: 1.6;
+}

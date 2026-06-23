@@ -1,7 +1,10 @@
-import { Component, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { Component, createSignal, For, Show } from 'solid-js';
+import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox';
+import { useNavigate } from '@solidjs/router';
 import type { AnalyzeData, PairSummary } from './lib/types';
-import { getAvailablePairs, showHomeScreen } from './lib/bridge';
+import { getAvailablePairs } from './lib/bridge';
 import { fetchAnalyze } from './lib/api';
+import pairStyles from '../shared/PairList.module.css';
 
 function countLabel(p: PairSummary): string {
   if (p.kind === 'merged') return p.pile_count != null ? `${p.pile_count} piles` : '— piles';
@@ -13,6 +16,7 @@ interface Props {
 }
 
 const AnalyzeSetup: Component<Props> = (props) => {
+  const navigate = useNavigate();
   const eligible = getAvailablePairs().filter(
     p => p.kind === 'merged' || p.kind === 'reannotated',
   );
@@ -20,16 +24,6 @@ const AnalyzeSetup: Component<Props> = (props) => {
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-
-  // Hide the vanilla Go/Home buttons while Solid owns the setup UI
-  onMount(() => {
-    document.getElementById('analyze-go-btn')!.style.display = 'none';
-    document.getElementById('home-btn-analyze')!.style.display = 'none';
-  });
-  onCleanup(() => {
-    document.getElementById('analyze-go-btn')!.style.display = '';
-    document.getElementById('home-btn-analyze')!.style.display = '';
-  });
 
   async function handleGo() {
     const id = selectedId();
@@ -48,29 +42,34 @@ const AnalyzeSetup: Component<Props> = (props) => {
   return (
     <>
       <Show when={eligible.length === 0}>
-        <p class="pair-empty">No merged or reannotated sets yet. Save a comparison first.</p>
+        <p class={pairStyles.pairEmpty}>No merged or reannotated sets yet. Save a comparison first.</p>
       </Show>
 
-      <For each={eligible}>
-        {(p) => (
-          <div
-            class={`pair-item${selectedId() === p.id ? ' selected' : ''}`}
-            data-id={p.id}
-            onClick={() => setSelectedId(p.id)}
-          >
-            <div class="pair-item-left">
-              <strong class="pair-name">{p.display_name}</strong>
-              <div class="pair-tags-row">
-                <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
-                <Show when={p.terminal}>
+      <ListboxRoot
+        as="div"
+        options={eligible}
+        optionValue="id"
+        optionTextValue="display_name"
+        value={selectedId() ? [selectedId()!] : []}
+        onChange={(set: Set<string>) => {
+          const id = [...set][0];
+          if (id) setSelectedId(id);
+        }}
+        renderItem={(node: any) => (
+          <ListboxItem item={node} as="div" class={pairStyles.pairItem} data-id={node.rawValue.id}>
+            <div class={pairStyles.pairItemLeft}>
+              <strong>{node.rawValue.display_name}</strong>
+              <div class={pairStyles.pairTagsRow}>
+                <span class={`set-kind-tag set-kind-${node.rawValue.kind}`}>{node.rawValue.kind}</span>
+                <Show when={node.rawValue.terminal}>
                   <span class="set-kind-tag set-kind-terminal">locked</span>
                 </Show>
               </div>
-              <span>{countLabel(p)}</span>
+              <span>{countLabel(node.rawValue)}</span>
             </div>
-          </div>
+          </ListboxItem>
         )}
-      </For>
+      />
 
       <Show when={error()}>
         <p style="color:var(--danger,#f03e3e);font-size:0.82rem;margin-top:8px">{error()}</p>
@@ -88,7 +87,7 @@ const AnalyzeSetup: Component<Props> = (props) => {
       <button
         class="btn-text"
         style="margin-top:6px"
-        onClick={showHomeScreen}
+        onClick={() => navigate('/')}
       >
         ← Home
       </button>

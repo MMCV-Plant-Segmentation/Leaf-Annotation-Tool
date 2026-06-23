@@ -9,8 +9,8 @@ export default defineConfig({
     rollupOptions: {
       input: 'src/mount.tsx',
       output: {
-        entryFileNames: 'analyze.bundle.js',
-        assetFileNames: 'analyze.bundle.[ext]',
+        entryFileNames: 'app.bundle.js',
+        assetFileNames: 'app.bundle.[ext]',
       },
     },
   },

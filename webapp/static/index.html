@@ -12,139 +12,8 @@
   <div class="setup-card">
     <h1>Lesion Annotation Trainer</h1>
 
-    <!-- Home screen: default landing -->
-    <div id="home-screen">
-      <div class="home-tiles">
-        <button class="home-tile" id="tile-manage">
-          <strong>Manage Sets</strong>
-          <span>Upload, rename, delete</span>
-        </button>
-        <button class="home-tile" id="tile-merge">
-          <strong>Merge Sets</strong>
-          <span>Group overlapping annotations</span>
-        </button>
-        <button class="home-tile" id="tile-analyze">
-          <strong>Analyze</strong>
-          <span>Agreement map</span>
-        </button>
-        <button class="home-tile home-tile-soon" id="tile-reannotate" disabled>
-          <strong>Re-annotate</strong>
-          <span>Coming soon</span>
-        </button>
-        <button class="home-tile home-tile-wide" id="tile-train">
-          <strong>Train</strong>
-          <span>Practice annotation</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Manage Sets screen -->
-    <div id="manage-screen" hidden>
-      <p class="setup-sub">Annotation sets</p>
-      <div id="manage-pair-list"></div>
-      <button id="manage-add-btn" class="btn-text" style="margin-top:10px">+ Add new annotation set</button>
-      <button id="manage-home-btn" class="btn-text" style="margin-top:8px">← Home</button>
-    </div>
-
-    <!-- Fork: shown when a saved training session exists -->
-    <div id="fork-screen" hidden>
-      <div id="fork-session-info" class="resume-info"></div>
-      <button id="resume-btn" class="btn-primary" style="margin-top:10px">Continue session</button>
-      <button id="new-session-btn" class="btn-secondary" style="width:100%;margin-top:8px">New session →</button>
-      <button id="home-btn-fork" class="btn-text" style="margin-top:8px">← Home</button>
-    </div>
-
-    <!-- Config: shown when no session, or after clicking "New session" -->
-    <div id="config-screen" hidden>
-      <div id="pair-section">
-        <p class="setup-sub">Annotation set</p>
-        <div id="session-deleted-notice" class="notice-banner" hidden>
-          <span>Your previous session's annotation set was deleted.</span>
-          <button id="dismiss-deleted-notice" class="notice-dismiss">✕</button>
-        </div>
-        <div id="pair-list"></div>
-      </div>
-
-      <p class="setup-sub">What would you like to practice?</p>
-
-      <div class="mode-checks">
-        <label class="mode-check">
-          <input type="checkbox" id="cb-polygon">
-          <div class="mode-check-text">
-            <strong>Polygon drawing</strong>
-            <span>Trace the lesion boundary</span>
-          </div>
-        </label>
-        <label class="mode-check">
-          <input type="checkbox" id="cb-label">
-          <div class="mode-check-text">
-            <strong>Label identification</strong>
-            <span>Name the lesion type</span>
-          </div>
-        </label>
-      </div>
-
-      <div class="count-field">
-        <div class="count-header">
-          <label for="n-slider">Cards per session</label>
-          <span id="n-display">–</span>
-        </div>
-        <input type="range" id="n-slider" min="1" max="38" value="38" class="range-input">
-      </div>
-
-      <p id="mode-error" class="error-text" hidden>Please select at least one mode.</p>
-      <button id="start-btn" class="btn-primary" disabled>Start Training</button>
-      <button id="back-fork-btn" class="btn-text" hidden style="margin-top:6px">← Back</button>
-      <button id="home-btn-config" class="btn-text" style="margin-top:6px">← Home</button>
-    </div>
-
-    <!-- Comparison fork: shown when a saved comparison exists -->
-    <div id="compare-fork" hidden>
-      <div id="compare-fork-info" class="resume-info"></div>
-      <button id="compare-resume-btn" class="btn-primary" style="margin-top:10px">Continue comparison</button>
-      <button id="compare-new-btn" class="btn-secondary" style="width:100%;margin-top:8px">New comparison →</button>
-      <button id="compare-delete-btn" class="btn-text" style="margin-top:4px;color:var(--fail)">✕ Delete saved comparison</button>
-      <button id="home-btn-compare-fork" class="btn-text" style="margin-top:8px">← Home</button>
-    </div>
-
-    <!-- Comparison setup: image + set selection -->
-    <div id="compare-setup" hidden>
-      <p class="setup-sub">Image</p>
-      <div id="compare-image-list"></div>
-      <div id="compare-sets-section" hidden>
-        <p class="setup-sub">Annotation sets</p>
-        <div id="compare-set-list"></div>
-      </div>
-      <button id="compare-continue-btn" class="btn-primary" disabled style="margin-top:12px">Continue →</button>
-      <button id="home-btn-compare-setup" class="btn-text" style="margin-top:6px">← Home</button>
-    </div>
-
-    <!-- Analyze setup: pick a merged/reannotated set -->
-    <div id="analyze-setup" hidden>
-      <p class="setup-sub">Select a set to analyze</p>
-      <div id="analyze-pair-list"></div>
-      <button id="analyze-go-btn" class="btn-primary" disabled style="margin-top:12px">Analyze →</button>
-      <button id="home-btn-analyze" class="btn-text" style="margin-top:6px">← Home</button>
-    </div>
-
-    <!-- Add pair screen: upload-only, reached from fork menu -->
-    <div id="add-pair-screen" hidden>
-      <p class="setup-sub">Add new annotation set</p>
-      <input type="text" id="add-name" placeholder="Display name" class="text-input">
-      <div class="upload-file-row">
-        <label class="upload-file-btn">
-          <span id="add-img-label">Image…</span>
-          <input type="file" id="add-image" accept=".tif,.tiff,.png,.jpg,.jpeg">
-        </label>
-        <label class="upload-file-btn">
-          <span id="add-json-label">JSON…</span>
-          <input type="file" id="add-json" accept=".json">
-        </label>
-      </div>
-      <button id="add-upload-btn" class="btn-secondary" style="width:100%">Upload</button>
-      <p id="add-status" class="upload-status" hidden></p>
-      <button id="back-add-btn" class="btn-text" style="margin-top:6px">← Back</button>
-    </div>
+    <!-- All setup screens are Solid routes rendered into #home-screen -->
+    <div id="home-screen"></div>
   </div>
 </div>
 
@@ -391,18 +260,6 @@
   </div>
 </div>
 
-<!-- ── Byline modal ────────────────────────────────────────────────────────── -->
-<div id="byline-modal" hidden>
-  <div id="byline-backdrop"></div>
-  <div id="byline-panel">
-    <h2>Who are you?</h2>
-    <p id="byline-sub">Enter a display name. This is shown alongside your annotations — no password needed.</p>
-    <input type="text" id="byline-input" class="text-input" placeholder="Your name" autocomplete="off" maxlength="64">
-    <p id="byline-error" class="error-text" hidden>Please enter a name.</p>
-    <button id="byline-confirm-btn" class="btn-primary">Continue</button>
-  </div>
-</div>
-
 <script src="/static/session.js"></script>
 <script src="/static/canvas.js"></script>
 <script src="/static/modal.js"></script>
@@ -412,8 +269,8 @@
 <script src="/static/compare_setup.js"></script>
 <script src="/static/compare_canvas.js"></script>
 <script src="/static/compare.js"></script>
-<link rel="stylesheet" href="/static/dist/analyze.bundle.css">
-<script type="module" src="/static/dist/analyze.bundle.js"></script>
+<link rel="stylesheet" href="/static/dist/app.bundle.css">
+<script type="module" src="/static/dist/app.bundle.js"></script>
 <script src="/static/app.js" defer></script>
 </body>
 </html>

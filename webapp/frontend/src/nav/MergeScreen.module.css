@@ -1,0 +1,34 @@
+.checkCtrl {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.checkCtrl[data-checked] {
+  background: var(--user);
+  border-color: var(--user);
+}
+
+.checkIndicator {
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.compareSetRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  padding: 6px 2px;
+  cursor: pointer;
+}

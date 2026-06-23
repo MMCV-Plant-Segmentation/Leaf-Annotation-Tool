@@ -1,4 +1,8 @@
-import { Component, For, Show, createEffect, createMemo, createSignal, onMount, onCleanup } from 'solid-js';
+import { Component, For, Show, createEffect, createMemo, onMount, onCleanup } from 'solid-js';
+import { Root as SliderRoot, Track as SliderTrack,
+         Thumb as SliderThumb, Input as SliderInput } from '@kobalte/core/slider';
+import { Root as PopoverRoot, Trigger as PopoverTrigger,
+         Portal as PopoverPortal, Content as PopoverContent } from '@kobalte/core/popover';
 import * as store from './store';
 import { computeVisiblePiles } from './lib/agreement';
 import { hexToRgba } from './lib/geometry';
@@ -6,14 +10,10 @@ import ModeToggle from '../shared/ModeToggle';
 import SliderField from '../shared/SliderField';
 import KBreakdown from '../shared/KBreakdown';
 import PileDetailPanel from './PileDetailPanel';
+import styles from './AnalyzeSidebar.module.css';
 
 const AnalyzeSidebar: Component = () => {
   const d = store.data!;
-
-  const [modeOpen,   setModeOpen]   = createSignal(false);
-  const [agreeOpen,  setAgreeOpen]  = createSignal(false);
-  const [kAgreeOpen, setKAgreeOpen] = createSignal(false);
-  const [iouOpen,    setIouOpen]    = createSignal(false);
 
   // Visible piles — used for stats header and selection guard
   const vpResult = createMemo(() =>
@@ -54,7 +54,7 @@ const AnalyzeSidebar: Component = () => {
   });
 
   // k-agree slider wheel handler (needs passive:false for preventDefault)
-  let kSliderRef: HTMLInputElement | undefined;
+  let kSliderRef: HTMLElement | undefined;
   onMount(() => {
     if (!kSliderRef) return;
     const handler = (e: WheelEvent) => {
@@ -95,14 +95,16 @@ const AnalyzeSidebar: Component = () => {
       <div class="field">
         <div style="display:flex;align-items:center;gap:6px">
           <ModeToggle value={store.mode} onChange={store.setMode} />
-          <button class="btn-info" onClick={() => setModeOpen(o => !o)}>?</button>
+          <PopoverRoot>
+            <PopoverTrigger class="btn-info">?</PopoverTrigger>
+            <PopoverPortal>
+              <PopoverContent class="iou-tooltip">
+                <strong>Absolute:</strong> Missing annotations count as disagreement — a lesion only 2 of 4 annotators drew is half as salient as one all 4 drew.<br /><br />
+                <strong>Relative:</strong> Missing annotations are treated as oversight — salience reflects only the annotators who drew this lesion, so a 2-of-2 pile looks the same as a 4-of-4 pile.
+              </PopoverContent>
+            </PopoverPortal>
+          </PopoverRoot>
         </div>
-        <Show when={modeOpen()}>
-          <div class="iou-tooltip">
-            <strong>Absolute:</strong> Missing annotations count as disagreement — a lesion only 2 of 4 annotators drew is half as salient as one all 4 drew.<br /><br />
-            <strong>Relative:</strong> Missing annotations are treated as oversight — salience reflects only the annotators who drew this lesion, so a 2-of-2 pile looks the same as a 4-of-4 pile.
-          </div>
-        </Show>
       </div>
 
       {/* Min. annotators */}
@@ -121,17 +123,19 @@ const AnalyzeSidebar: Component = () => {
       {/* Overlap level */}
       <div class="field">
         <div style="display:flex;align-items:center;gap:4px">
-          <label for="analyze-agree-k-slider">Overlap level</label>
-          <button class="btn-info" onClick={() => setKAgreeOpen(o => !o)}>?</button>
+          <label>Overlap level</label>
+          <PopoverRoot>
+            <PopoverTrigger class="btn-info">?</PopoverTrigger>
+            <PopoverPortal>
+              <PopoverContent class="iou-tooltip">
+                Controls how deeply annotators must overlap for the IoU calculation — higher values require stricter agreement. Click a bar in the pile breakdown to inspect a level's I∩U detail without changing this slider.
+              </PopoverContent>
+            </PopoverPortal>
+          </PopoverRoot>
           <span style="margin-left:auto;font-size:0.82rem;color:var(--user);font-weight:600">
             {kAgreeLabel()}
           </span>
         </div>
-        <Show when={kAgreeOpen()}>
-          <div class="iou-tooltip">
-            Controls how deeply annotators must overlap for the IoU calculation — higher values require stricter agreement. Click a bar in the pile breakdown to inspect a level's I∩U detail without changing this slider.
-          </div>
-        </Show>
         <div class="k-overlap-grid">
           <div class="k-overlap-left">
             <div class="k-bd-spacer" />
@@ -141,21 +145,24 @@ const AnalyzeSidebar: Component = () => {
           </div>
           <div class="k-overlap-right">
             <div class="k-slider-wrapper">
-              <input
-                type="range"
-                id="analyze-agree-k-slider"
-                class="range-input"
-                min={0}
-                max={kMax()}
+              <SliderRoot
+                class={styles.kSlider}
+                value={[store.kAgree()]}
+                minValue={0}
+                maxValue={kMax()}
                 step={1}
-                value={store.kAgree()}
-                style={{ background: kSliderBg() }}
-                ref={kSliderRef}
-                onInput={e => {
-                  store.setKAgree(+(e.target as HTMLInputElement).value);
-                  store.setDetailK(null);
-                }}
-              />
+                onChange={([v]) => { store.setKAgree(v); store.setDetailK(null); }}
+              >
+                <SliderTrack
+                  ref={(el: HTMLElement) => { kSliderRef = el; }}
+                  class={styles.kTrack}
+                  style={{ background: kSliderBg() }}
+                >
+                  <SliderThumb class={styles.kThumb}>
+                    <SliderInput id="analyze-agree-k-slider" />
+                  </SliderThumb>
+                </SliderTrack>
+              </SliderRoot>
             </div>
             <KBreakdown
               mTotal={d.mTotal}

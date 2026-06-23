@@ -65,12 +65,6 @@ const canvasHint     = document.getElementById('canvas-hint');
 const doneScreen     = document.getElementById('done-screen');
 const setupScreen    = document.getElementById('setup-screen');
 const appDiv         = document.getElementById('app');
-const cbPolygon      = document.getElementById('cb-polygon');
-const cbLabel        = document.getElementById('cb-label');
-const startBtn       = document.getElementById('start-btn');
-const modeError      = document.getElementById('mode-error');
-const nSlider        = document.getElementById('n-slider');
-const nDisplay       = document.getElementById('n-display');
 
 /* ── B.1 Byline identity ─────────────────────────────────────────────────── */
 const BYLINE_KEY = 'lesion-user';
@@ -84,6 +78,10 @@ function setUser(name) {
   _syncBylineButtons();
 }
 
+// Expose for bridge.ts (Solid reads/writes byline through these)
+window.getUser = getUser;
+window.setUser = setUser;
+
 function _syncBylineButtons() {
   const name = getUser() || 'anonymous';
   const label = name.length > 18 ? name.slice(0, 16) + '…' : name;
@@ -91,55 +89,6 @@ function _syncBylineButtons() {
     btn.textContent = label;
     btn.title = 'Signed in as ' + name + ' — click to change';
   });
-}
-
-/* ── Byline modal ────────────────────────────────────────────────────────── */
-function openBylineModal(onConfirm) {
-  const modal   = document.getElementById('byline-modal');
-  const input   = document.getElementById('byline-input');
-  const errEl   = document.getElementById('byline-error');
-  const confirmBtn = document.getElementById('byline-confirm-btn');
-  const backdrop   = document.getElementById('byline-backdrop');
-
-  // Dismissible only when a name already exists (i.e. opened via "change name").
-  // On first load there is no stored user, so the modal is mandatory.
-  const cancelable = !!getUser();
-
-  input.value = getUser() || '';
-  errEl.hidden = true;
-  modal.hidden = false;
-  input.focus();
-  input.select();
-
-  function doConfirm() {
-    const name = input.value.trim();
-    if (!name) { errEl.hidden = false; return; }
-    modal.hidden = true;
-    setUser(name);
-    cleanup();
-    if (onConfirm) onConfirm();
-  }
-
-  function doCancel() {
-    if (!cancelable) return;
-    modal.hidden = true;
-    cleanup();
-  }
-
-  function cleanup() {
-    confirmBtn.removeEventListener('click', doConfirm);
-    input.removeEventListener('keydown', onKey);
-    if (backdrop) backdrop.removeEventListener('click', doCancel);
-  }
-
-  function onKey(e) {
-    if (e.key === 'Enter') { e.preventDefault(); doConfirm(); }
-    else if (e.key === 'Escape') { e.preventDefault(); doCancel(); }
-  }
-
-  confirmBtn.addEventListener('click', doConfirm);
-  input.addEventListener('keydown', onKey);
-  if (backdrop) backdrop.addEventListener('click', doCancel);
 }
 
 /* ── X-User header plumbing: wrap fetch ──────────────────────────────────── */
@@ -158,31 +107,15 @@ window.fetch = function(url, opts) {
 
 /* ── Home screen / routing ───────────────────────────────────────────────── */
 function showHomeScreen() {
-  _hideAllSetupScreens();
-  document.getElementById('home-screen').hidden = false;
+  window._navigate?.('/');
 }
 
-async function enterTrainingMode() {
-  _hideAllSetupScreens();
-  const saved = readSession();
-  if (saved && availablePairs.some(p => p.id === saved.pairId)) {
-    await selectPair(saved.pairId);
-    showFork(saved);
-  } else {
-    if (saved) {
-      document.getElementById('session-deleted-notice').hidden = false;
-      localStorage.removeItem(SESSION_KEY);
-    }
-    if (availablePairs.length > 0) await selectPair(availablePairs[0].id);
-    showConfig(false);
-  }
+function enterTrainingMode() {
+  window._navigate?.('/train');
 }
 
-async function enterComparisonMode() {
-  _hideAllSetupScreens();
-  const saved = await readCompareSession();
-  if (saved) showCompareFork(saved);
-  else showCompareSetup();
+function enterComparisonMode() {
+  window._navigate?.('/merge');
 }
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
@@ -194,25 +127,18 @@ async function enterComparisonMode() {
   initCompare();
   initAnalyze();
 
-  // Wire change-name buttons in both headers
+  // Wire vanilla change-name buttons (Solid AnalyzeHeader handles its own)
   document.querySelectorAll('.btn-byline-change').forEach(btn => {
-    btn.addEventListener('click', () => openBylineModal(null));
+    btn.addEventListener('click', () => window.openBylineModal(null));
   });
 
   // First load: show byline modal if no name stored, then load pairs
   async function afterByline() {
-    const pairs = await fetch('/api/images').then(r => r.json());
-    renderPairList(pairs);
-
-    document.getElementById('tile-manage').addEventListener('click', showManageScreen);
-    document.getElementById('tile-merge').addEventListener('click', enterComparisonMode);
-    document.getElementById('tile-train').addEventListener('click', enterTrainingMode);
-    document.getElementById('tile-analyze').addEventListener('click', showAnalyzeSetup);
-    // tile-reannotate is disabled (coming in a later phase)
+    availablePairs = await fetch('/api/images').then(r => r.json());
   }
 
   if (!getUser()) {
-    openBylineModal(afterByline);
+    window.openBylineModal(afterByline);
   } else {
     _syncBylineButtons();
     await afterByline();

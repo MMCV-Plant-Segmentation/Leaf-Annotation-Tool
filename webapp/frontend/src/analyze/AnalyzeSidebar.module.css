@@ -1,0 +1,34 @@
+.kSlider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.kTrack {
+  position: relative;
+  flex-grow: 1;
+  height: 4px;
+  border-radius: 2px;
+  /* background set dynamically via kSliderBg() */
+}
+
+.kThumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--user);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  outline: none;
+  cursor: pointer;
+}
+
+.kThumb:focus-visible {
+  box-shadow: 0 0 0 2px var(--user);
+}

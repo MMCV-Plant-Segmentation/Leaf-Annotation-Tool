@@ -53,14 +53,15 @@ describe('SliderField', () => {
     expect(screen.getByText('7 of 10')).toBeInTheDocument();
   });
 
-  it('calls onChange with a parsed numeric value on input', () => {
+  it('calls onChange with a parsed numeric value on change', () => {
     const onChange = vi.fn();
-    render(() => (
+    const { container } = render(() => (
       <SliderField label="X" id="s3"
         value={() => 0} onChange={onChange} min={0} max={100}
         displayValue={() => '0'} />
     ));
-    fireEvent.input(screen.getByRole('slider'), { target: { value: '42' } });
+    // Kobalte Slider renders a visually-hidden <input type="range"> that fires the change event
+    fireEvent.change(container.querySelector('input[type="range"]')!, { target: { value: '42' } });
     expect(onChange).toHaveBeenCalledWith(42);
   });
 
@@ -95,7 +96,8 @@ describe('SliderField', () => {
     const btn = screen.getByText('?');
     fireEvent.click(btn);
     fireEvent.click(btn);
-    expect(screen.queryByText('A helpful tip')).not.toBeInTheDocument();
+    // Kobalte Popover marks closed content with data-closed rather than unmounting it
+    expect(btn).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('renders no ? button when tooltip prop is omitted', () => {
@@ -111,16 +113,16 @@ describe('SliderField', () => {
 // ── ModeToggle ─────────────────────────────────────────────────────────────────
 
 describe('ModeToggle', () => {
-  it('Absolute button has active class when value is "absolute"', () => {
+  it('Absolute button is pressed when value is "absolute"', () => {
     render(() => <ModeToggle value={() => 'absolute'} onChange={() => {}} />);
-    expect(screen.getByText('Absolute')).toHaveClass('active');
-    expect(screen.getByText('Relative')).not.toHaveClass('active');
+    expect(screen.getByText('Absolute')).toHaveAttribute('data-pressed');
+    expect(screen.getByText('Relative')).not.toHaveAttribute('data-pressed');
   });
 
-  it('Relative button has active class when value is "relative"', () => {
+  it('Relative button is pressed when value is "relative"', () => {
     render(() => <ModeToggle value={() => 'relative'} onChange={() => {}} />);
-    expect(screen.getByText('Relative')).toHaveClass('active');
-    expect(screen.getByText('Absolute')).not.toHaveClass('active');
+    expect(screen.getByText('Relative')).toHaveAttribute('data-pressed');
+    expect(screen.getByText('Absolute')).not.toHaveAttribute('data-pressed');
   });
 
   it('clicking Absolute calls onChange with "absolute"', () => {

@@ -1,0 +1,34 @@
+.tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+}
+.tile:hover:not(:disabled) {
+  border-color: var(--user);
+  background: rgba(74,158,255,0.06);
+}
+.tile strong { font-size: 0.88rem; color: var(--text); }
+.tile span   { font-size: 0.75rem; color: var(--muted); }
+
+.tileWide {
+  grid-column: 1 / -1;
+}
+.tileSoon {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

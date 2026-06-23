@@ -1,6 +1,7 @@
 import { Component, Show, createSignal, onMount, onCleanup, type JSX } from 'solid-js';
 import * as store from './store';
 import { openBylineModal, showHomeScreen } from './lib/bridge';
+import styles from './AnalyzeHeader.module.css';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const w = window as any;
@@ -36,10 +37,11 @@ const OpacitySlider: Component = () => {
 
 const AnalyzeHeader: Component = () => {
   const [popupOpen, setPopupOpen] = createSignal(false);
+  let wrapRef: HTMLDivElement | undefined;
 
   const onDocClick = (e: MouseEvent) => {
     if (!popupOpen()) return;
-    if ((e.target as Element).closest('.opacity-pick-wrap')) return;
+    if (wrapRef?.contains(e.target as Node)) return;
     setPopupOpen(false);
   };
   onMount(() => document.addEventListener('click', onDocClick));
@@ -54,19 +56,19 @@ const AnalyzeHeader: Component = () => {
       />
       <input
         type="color"
-        class="analyze-color-pick"
+        class={styles.colorPick}
         value={store.annotColor()}
         title="Annotation color"
         onInput={e => store.setAnnotColor((e.target as HTMLInputElement).value)}
       />
-      <div class="opacity-pick-wrap">
+      <div class={styles.opacityPickWrap} ref={wrapRef}>
         <button
-          class="opacity-pick-btn"
+          class={styles.opacityPickBtn}
           title="Annotation opacity"
           onClick={() => setPopupOpen(o => !o)}
         />
         <Show when={popupOpen()}>
-          <div class="opacity-popup">
+          <div class={styles.opacityPopup}>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
               <span style="font-size:0.8rem;font-weight:600">Opacity</span>
               <span style="font-size:0.8rem;color:var(--user)">
