@@ -42,9 +42,22 @@ labelme-replacement annotator).
   longer authoritative. The `merge` table holds comparison/merge documents (§4).
   `data/app.db` also contains empty scaffolding tables (`reannot_*`) for the
   unbuilt consensus tool.
-- **Frontend** is multi-file plain `<script>` JavaScript (no ES modules). Shared
-  globals; each file exposes a deferred `initX()` wired from `app.js`. Screens
-  are shown/hidden via the `hidden` attribute.
+- **Frontend is two layers** (see [`Nav Layer to SolidJS Plan.md`](./Nav%20Layer%20to%20SolidJS%20Plan.md)):
+  - **Nav/setup layer** — **SolidJS + TypeScript**, source in `webapp/frontend/src/`,
+    built by **Vite** to a committed bundle `webapp/static/dist/app.bundle.{js,css}`.
+    A Solid **router** (`@solidjs/router`) owns every screen before a viewer launches
+    (`/`, `/manage`, `/train`, `/merge`, `/analyze`); **Kobalte** provides the
+    accessible widgets and styling is **CSS Modules** over global `:root` tokens. A
+    Flask **catch-all** route serves the app shell for any nav path (`/api` and
+    `/static` keep priority). The bundle is the runtime artifact — `uv run app.py`
+    serves it as-is, so frontend source edits require `npm run build` (a pre-commit
+    hook and a startup staleness check enforce this; see HANDOFF.md).
+  - **Image viewers** — still multi-file plain `<script>` JavaScript (no ES modules):
+    training (`trainer.js`), compare/merge (`compare*.js`). Shared globals; each
+    exposes a deferred `initX()` wired from `app.js`. A nav route hands off to the
+    vanilla viewer through a small `window._*` bridge. (The **Analyze** viewer is
+    itself SolidJS — §5.) The byline modal and the `X-User` fetch wrapper remain
+    single-sourced in `app.js`.
 - **labelme JSON** (v6.3.1) is the annotation interchange format. Only
   `shape_type == 'polygon'` shapes are used; the `fused_exterior` label is
   excluded.
@@ -398,7 +411,12 @@ geometry is computed server-side with Shapely.
 
 JSON integer keys come back as strings; the frontend looks up with `String(k)`.
 
-### 5.3 Viewer (`analyze.js`)
+### 5.3 Viewer (SolidJS — `webapp/frontend/src/analyze/`)
+
+Originally `analyze.js`; migrated to typed **SolidJS** (the framework pilot, see
+[`Analyze SolidJS Migration.md`](./Analyze%20SolidJS%20Migration.md)). Pure logic
+(`lib/agreement`, `geometry`, `draw`) is unit-tested under Vitest; the canvas is a
+vanilla leaf driven by a Solid store. Behavior below is unchanged by the migration.
 
 Set picker (filtered to `merged`/`reannotated`), then a pan/zoom canvas with a
 control sidebar. The viewer went **beyond the original single-slider plan** —
@@ -436,15 +454,18 @@ drawAlpha_ki  = step / (1 - (ki-1) · step)     for ki = 1 .. pile.m
 Deeper-agreement regions appear more opaque, in the user's chosen color. This
 relies on the rings being nested (each ring fully covers all lower-k rings).
 
-### 5.5 Cross-file dependencies (as-built, to be made explicit)
+### 5.5 Solid ↔ vanilla bridge (as-built)
 
-`analyze.js` reads the `availablePairs` global and calls `_makeKindTag` /
-`_countLabel` from `setup.js`, `openBylineModal` from `app.js`, and
-`buildIoUDetail` from `components.js` — undocumented shared globals. The SolidJS
-migration (see [`Analyze SolidJS Migration.md`](./Analyze%20SolidJS%20Migration.md))
-formalises these into an explicit bridge. Known nit: `#analyze-opacity-val`
-HTML initialises to `85%` though the JS default is 50% (corrected once a set
-loads).
+The old undocumented globals (`analyze.js` reaching into `setup.js` / `app.js` /
+`components.js`) are now an **explicit typed bridge** (`src/analyze/lib/bridge.ts`):
+Solid reads the pair registry via `getAvailablePairs()` (← `window.availablePairs`),
+the byline via `getUser()`/`setUser()`, and shares `buildIoUDetail` with the still-vanilla
+trainer. The full nav-layer `window._*` contract is tabulated in HANDOFF.md.
+
+Known issue (open, see HANDOFF "Analyze viewer — de-imperative"): the picker reads
+`window.availablePairs` **non-reactively at setup**, so a direct navigation / refresh to
+`/analyze` (before the global is populated) shows an empty list; arriving via Home works.
+To be fixed by sourcing the list from a reactive store.
 
 ---
 
@@ -516,9 +537,14 @@ suite. Grouped by concern.
   k-of-N agreement metric it depends on is already built in the Analyze tool, §5.)
 - **New annotator** — labelme replacement (projects/tiles/batches); see
   [`Annotator Plan.md`](./Annotator%20Plan.md).
-- **Analyze SolidJS migration** — refactor `analyze.js` into typed Solid
-  components as the pilot for a frontend framework migration; see
-  [`Analyze SolidJS Migration.md`](./Analyze%20SolidJS%20Migration.md).
+- **Analyze viewer routing** — the analyze viewer still launches via an imperative
+  overlay rather than its own route, so browser Back doesn't dismiss it; pair with the
+  reactive-picker fix in §5.5. Small, next on the frontend list (see HANDOFF.md).
+
+Shipped since the original spec: the **frontend framework migration** — the Analyze
+tool (§5.3) and the whole **nav/setup layer** are now SolidJS + TypeScript + Vite with
+client-side routing (§1). The Analyze SolidJS migration and the Nav Layer migration +
+polish are done; see their plan docs and HANDOFF.md.
 - **Layer rename** — names default to "Layer N"; renaming deferred.
 - **Labels** — annotation label fields exist in the data but are ignored by the
   comparison tool.

@@ -22,12 +22,13 @@ Endpoints:
 import hashlib
 import io
 import json
+import sys
 import uuid
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, abort, jsonify, request, send_file
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
@@ -195,11 +196,38 @@ def _xuser() -> str | None:
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
+def _warn_if_bundle_stale() -> None:
+    """Warn loudly if the committed Solid bundle is older than its source.
+
+    static/dist/app.bundle.* is the runtime artifact — `uv run app.py` serves it
+    as-is. If frontend/src was edited without `npm run build`, the app shows stale
+    UI while Vitest (which runs against source) stays green. The pre-commit hook
+    prevents committing a stale bundle; this catches the gap while iterating.
+    """
+    try:
+        src    = Path(__file__).parent / 'frontend' / 'src'
+        bundle = STATIC / 'dist' / 'app.bundle.js'
+        if not src.is_dir() or not bundle.exists():
+            return
+        newest_src = max((p.stat().st_mtime for p in src.rglob('*') if p.is_file()),
+                         default=0.0)
+        if newest_src > bundle.stat().st_mtime:
+            print(
+                '\n  \033[33m⚠  webapp/frontend/src is newer than '
+                'static/dist/app.bundle.js — serving a STALE bundle.\033[0m'
+                '\n     Rebuild it:  cd webapp/frontend && npm run build\n',
+                file=sys.stderr,
+            )
+    except Exception:
+        pass  # a dev-convenience check must never break startup
+
+
 def _startup() -> None:
     """Create schema, run manifest migration, and handle legacy file migration."""
     _db.auto_create_schema()
     _db.migrate_manifest(MANIFEST)
     _auto_migrate_legacy()
+    _warn_if_bundle_stale()
 
 
 def _auto_migrate_legacy() -> None:
@@ -241,6 +269,13 @@ def _auto_migrate_legacy() -> None:
 
 @app.get('/')
 def index():
+    return send_file(STATIC / 'index.html')
+
+
+@app.get('/<path:path>')
+def catch_all(path: str):
+    if path.startswith(('api/', 'static/')):
+        abort(404)
     return send_file(STATIC / 'index.html')
 
 
