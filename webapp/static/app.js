@@ -125,7 +125,6 @@ function enterComparisonMode() {
   initSetup();
   initCompareSetup();
   initCompare();
-  initAnalyze();
 
   // Wire vanilla change-name buttons (Solid AnalyzeHeader handles its own)
   document.querySelectorAll('.btn-byline-change').forEach(btn => {

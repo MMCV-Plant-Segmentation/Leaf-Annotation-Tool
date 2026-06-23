@@ -1,8 +1,10 @@
-import { Component, createSignal, For, Show, onMount } from 'solid-js';
+import { type Component, createSignal, For, Show, onMount } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import { Root as DialogRoot, Portal as DialogPortal, Overlay as DialogOverlay,
          Content as DialogContent, Title as DialogTitle } from '@kobalte/core/dialog';
 import type { PairSummary } from '../analyze/lib/types';
+import ReplaceForm from './ReplaceForm';
+import AddSetForm from './AddSetForm';
 import styles from './ManageScreen.module.css';
 import pairStyles from '../shared/PairList.module.css';
 
@@ -11,79 +13,15 @@ function countLabel(p: PairSummary) {
   return `${p.shape_count} shapes`;
 }
 
-// ── Replace-files sub-form ────────────────────────────────────────────────────
-const ReplaceForm: Component<{
-  pair: PairSummary;
-  onDone: (updated: PairSummary) => void;
-  onCancel: () => void;
-}> = (props) => {
-  const [imgFile, setImgFile]   = createSignal<File | null>(null);
-  const [jsonFile, setJsonFile] = createSignal<File | null>(null);
-  const [saving, setSaving]     = createSignal(false);
-  const [status, setStatus]     = createSignal('');
-
-  async function save() {
-    if (!imgFile() && !jsonFile()) { setStatus('Select at least one file.'); return; }
-    setSaving(true); setStatus('Saving…');
-    const fd = new FormData();
-    if (imgFile())  fd.append('image', imgFile()!);
-    if (jsonFile()) fd.append('json',  jsonFile()!);
-    try {
-      const r = await fetch(`/api/images/${encodeURIComponent(props.pair.id)}`,
-                            { method: 'PUT', body: fd });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.error ?? 'Replace failed'); }
-      props.onDone(await r.json());
-    } catch (e: any) {
-      setStatus(e.message);
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div class={styles.pairReplaceForm}>
-      <div class="upload-file-row">
-        <label class="upload-file-btn">
-          <span class={imgFile() ? '' : 'replace-file-hint'}>
-            {imgFile()?.name ?? `current (.${props.pair.image_ext})`}
-          </span>
-          <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg"
-                 onChange={e => setImgFile((e.target as HTMLInputElement).files?.[0] ?? null)} />
-        </label>
-        <label class="upload-file-btn">
-          <span class={jsonFile() ? '' : 'replace-file-hint'}>
-            {jsonFile()?.name ?? 'current (.json)'}
-          </span>
-          <input type="file" accept=".json"
-                 onChange={e => setJsonFile((e.target as HTMLInputElement).files?.[0] ?? null)} />
-        </label>
-      </div>
-      <div class={styles.pairReplaceFooter}>
-        <button class="btn-secondary" style="flex:none;padding:5px 14px"
-                disabled={saving()} onClick={save}>Save</button>
-        <button class="btn-text" onClick={props.onCancel}>Cancel</button>
-        <Show when={status()}>
-          <p class="upload-status" style="margin-left:4px">{status()}</p>
-        </Show>
-      </div>
-    </div>
-  );
-};
-
-// ── Manage screen ─────────────────────────────────────────────────────────────
 const ManageScreen: Component = () => {
   const navigate = useNavigate();
-  const [pairs,      setPairs]      = createSignal<PairSummary[]>([]);
-  const [loading,    setLoading]    = createSignal(true);
-  const [renamingId, setRenamingId] = createSignal<string | null>(null);
-  const [renameVal,  setRenameVal]  = createSignal('');
-  const [deletingId, setDeletingId] = createSignal<string | null>(null);
+  const [pairs,       setPairs]       = createSignal<PairSummary[]>([]);
+  const [loading,     setLoading]     = createSignal(true);
+  const [renamingId,  setRenamingId]  = createSignal<string | null>(null);
+  const [renameVal,   setRenameVal]   = createSignal('');
+  const [deletingId,  setDeletingId]  = createSignal<string | null>(null);
   const [replacingId, setReplacingId] = createSignal<string | null>(null);
-  const [showAdd,    setShowAdd]    = createSignal(false);
-  const [addName,    setAddName]    = createSignal('');
-  const [addImg,     setAddImg]     = createSignal<File | null>(null);
-  const [addJson,    setAddJson]    = createSignal<File | null>(null);
-  const [addStatus,  setAddStatus]  = createSignal('');
-  const [uploading,  setUploading]  = createSignal(false);
+  const [showAdd,     setShowAdd]     = createSignal(false);
 
   onMount(async () => {
     const data = await fetch('/api/images').then(r => r.json());
@@ -113,29 +51,6 @@ const ManageScreen: Component = () => {
     const next = pairs().filter(q => q.id !== id);
     setPairs(next); syncGlobal(next);
     setDeletingId(null);
-  }
-
-  async function upload() {
-    if (!addName().trim() || !addImg() || !addJson()) {
-      setAddStatus('Display name, image, and JSON are all required.'); return;
-    }
-    setUploading(true); setAddStatus('Uploading…');
-    const fd = new FormData();
-    fd.append('image', addImg()!);
-    fd.append('json',  addJson()!);
-    fd.append('display_name', addName().trim());
-    try {
-      const r = await fetch('/api/upload', { method: 'POST', body: fd });
-      if (!r.ok) { const e = await r.json(); throw new Error(e.error ?? 'Upload failed'); }
-      const newPair = await r.json();
-      const next = [...pairs(), newPair];
-      setPairs(next); syncGlobal(next);
-      setShowAdd(false); setAddName(''); setAddImg(null); setAddJson(null); setAddStatus('');
-    } catch (e: any) {
-      setAddStatus(e.message);
-    } finally {
-      setUploading(false);
-    }
   }
 
   return (
@@ -209,35 +124,14 @@ const ManageScreen: Component = () => {
       </Show>
 
       <Show when={showAdd()}>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;padding:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius)">
-          <input type="text" class="text-input" placeholder="Display name"
-                 value={addName()}
-                 onInput={e => setAddName((e.target as HTMLInputElement).value)} />
-          <div class="upload-file-row">
-            <label class="upload-file-btn">
-              <span>{addImg()?.name ?? 'Image…'}</span>
-              <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg"
-                     onChange={e => setAddImg((e.target as HTMLInputElement).files?.[0] ?? null)} />
-            </label>
-            <label class="upload-file-btn">
-              <span>{addJson()?.name ?? 'JSON…'}</span>
-              <input type="file" accept=".json"
-                     onChange={e => setAddJson((e.target as HTMLInputElement).files?.[0] ?? null)} />
-            </label>
-          </div>
-          <button class="btn-secondary" style="width:100%" disabled={uploading()} onClick={upload}>
-            {uploading() ? 'Uploading…' : 'Upload'}
-          </button>
-          <Show when={addStatus()}>
-            <p class="upload-status"
-               style={addStatus().includes('fail') || addStatus().includes('required')
-                        ? 'color:var(--fail)' : ''}>
-              {addStatus()}
-            </p>
-          </Show>
-          <button class="btn-text" style="margin-top:2px"
-                  onClick={() => { setShowAdd(false); setAddStatus(''); }}>← Cancel</button>
-        </div>
+        <AddSetForm
+          onDone={newPair => {
+            const next = [...pairs(), newPair];
+            setPairs(next); syncGlobal(next);
+            setShowAdd(false);
+          }}
+          onCancel={() => setShowAdd(false)}
+        />
       </Show>
 
       <Show when={!showAdd()}>

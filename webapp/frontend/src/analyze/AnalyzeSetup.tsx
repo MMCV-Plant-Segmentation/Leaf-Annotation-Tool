@@ -1,9 +1,7 @@
-import { Component, createSignal, For, Show } from 'solid-js';
-import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox';
+import { type Component, createSignal, Show, onMount } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import type { AnalyzeData, PairSummary } from './lib/types';
-import { getAvailablePairs } from './lib/bridge';
-import { fetchAnalyze } from './lib/api';
+import type { PairSummary } from './lib/types';
+import PairList from '../shared/PairList';
 import pairStyles from '../shared/PairList.module.css';
 
 function countLabel(p: PairSummary): string {
@@ -11,84 +9,55 @@ function countLabel(p: PairSummary): string {
   return `${p.shape_count} shapes`;
 }
 
-interface Props {
-  onData: (data: AnalyzeData) => void;
-}
-
-const AnalyzeSetup: Component<Props> = (props) => {
+const AnalyzeSetup: Component = () => {
   const navigate = useNavigate();
-  const eligible = getAvailablePairs().filter(
-    p => p.kind === 'merged' || p.kind === 'reannotated',
-  );
-
+  const [pairs,      setPairs]      = createSignal<PairSummary[]>([]);
+  const [loading,    setLoading]    = createSignal(true);
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
-  const [loading, setLoading] = createSignal(false);
-  const [error, setError] = createSignal<string | null>(null);
 
-  async function handleGo() {
-    const id = selectedId();
-    if (!id || loading()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchAnalyze(id);
-      props.onData(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setLoading(false);
-    }
-  }
+  onMount(async () => {
+    const data: PairSummary[] = await fetch('/api/images').then(r => r.json());
+    const eligible = data.filter(p => p.kind === 'merged' || p.kind === 'reannotated');
+    setPairs(eligible);
+    if (eligible.length > 0) setSelectedId(eligible[0].id);
+    setLoading(false);
+  });
 
   return (
     <>
-      <Show when={eligible.length === 0}>
-        <p class={pairStyles.pairEmpty}>No merged or reannotated sets yet. Save a comparison first.</p>
-      </Show>
+      <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>Loading…</p>}>
+        <Show when={pairs().length === 0}>
+          <p class={pairStyles.pairEmpty}>No merged or reannotated sets yet. Save a comparison first.</p>
+        </Show>
 
-      <ListboxRoot
-        as="div"
-        options={eligible}
-        optionValue="id"
-        optionTextValue="display_name"
-        value={selectedId() ? [selectedId()!] : []}
-        onChange={(set: Set<string>) => {
-          const id = [...set][0];
-          if (id) setSelectedId(id);
-        }}
-        renderItem={(node: any) => (
-          <ListboxItem item={node} as="div" class={pairStyles.pairItem} data-id={node.rawValue.id}>
-            <div class={pairStyles.pairItemLeft}>
-              <strong>{node.rawValue.display_name}</strong>
+        <PairList
+          pairs={pairs()}
+          selectedId={selectedId()}
+          onSelect={(p) => setSelectedId(p.id)}
+          renderDetail={(p) => (
+            <>
               <div class={pairStyles.pairTagsRow}>
-                <span class={`set-kind-tag set-kind-${node.rawValue.kind}`}>{node.rawValue.kind}</span>
-                <Show when={node.rawValue.terminal}>
+                <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
+                <Show when={p.terminal}>
                   <span class="set-kind-tag set-kind-terminal">locked</span>
                 </Show>
               </div>
-              <span>{countLabel(node.rawValue)}</span>
-            </div>
-          </ListboxItem>
-        )}
-      />
-
-      <Show when={error()}>
-        <p style="color:var(--danger,#f03e3e);font-size:0.82rem;margin-top:8px">{error()}</p>
+              <span>{countLabel(p)}</span>
+            </>
+          )}
+        />
       </Show>
 
       <button
         class="btn-primary"
         style="margin-top:12px"
         disabled={!selectedId() || loading()}
-        onClick={handleGo}
+        onClick={() => { const id = selectedId(); if (id) navigate(`/analyze/${id}`); }}
       >
-        {loading() ? 'Loading…' : 'Analyze →'}
+        Analyze →
       </button>
 
-      <button
-        class="btn-text"
-        style="margin-top:6px"
-        onClick={() => navigate('/')}
-      >
+      <button class="btn-text" style="margin-top:6px" onClick={() => navigate('/')}>
         ← Home
       </button>
     </>

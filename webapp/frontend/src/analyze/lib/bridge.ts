@@ -9,7 +9,6 @@ declare global {
     setUser: (name: string) => void;
     // buildIoUDetail will be replaced by shared/IoUDetail.tsx in Step 7
     buildIoUDetail: (intersectionPx: number, unionPx: number) => Node;
-    initAnalyze: () => void;
   }
 }
 

@@ -3,9 +3,6 @@ import * as store from './store';
 import { openBylineModal, showHomeScreen } from './lib/bridge';
 import styles from './AnalyzeHeader.module.css';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const w = window as any;
-
 // Separate component so onMount/onCleanup track the Show lifecycle, not the header's
 const OpacitySlider: Component = () => {
   let ref: HTMLInputElement | undefined;
@@ -89,14 +86,7 @@ const AnalyzeHeader: Component = () => {
         class={store.showBbox() ? 'active' : ''}
         onClick={() => store.setShowBbox(!store.showBbox())}
       >⬚ Bbox</button>
-      <button
-        onClick={() => {
-          document.getElementById('analyze-screen')!.hidden = true;
-          document.getElementById('setup-screen')!.hidden   = false;
-          w.analyzeData = null;
-          showHomeScreen();
-        }}
-      >Home</button>
+      <button onClick={showHomeScreen}>Home</button>
     </>
   );
 };

@@ -5,6 +5,7 @@ import type { Component } from 'solid-js';
 import ManageScreen from '../src/nav/ManageScreen';
 import TrainScreen from '../src/nav/TrainScreen';
 import MergeScreen from '../src/nav/MergeScreen';
+import AnalyzeSetup from '../src/analyze/AnalyzeSetup';
 import type { PairSummary } from '../src/analyze/lib/types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,6 +132,41 @@ describe('TrainScreen', () => {
     render(inRoute(TrainScreen));
     await screen.findByText('Annotation set');
     expect(screen.queryByText('Continue session')).not.toBeInTheDocument();
+  });
+});
+
+// ── AnalyzeSetup ─────────────────────────────────────────────────────────────
+
+describe('AnalyzeSetup', () => {
+  beforeEach(() => mockFetch([]));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('shows "Loading…" while fetching', () => {
+    render(inRoute(AnalyzeSetup));
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+  });
+
+  it('shows eligible pairs after fetch', async () => {
+    mockFetch([
+      makePair({ id: 'm1', display_name: 'Merged Set', kind: 'merged', pile_count: 5 }),
+      makePair({ id: 'r1', display_name: 'Raw Set', kind: 'raw' }),
+    ]);
+    render(inRoute(AnalyzeSetup));
+    await screen.findByText('Merged Set');
+    expect(screen.queryByText('Raw Set')).not.toBeInTheDocument();
+  });
+
+  it('shows empty state when no eligible sets', async () => {
+    mockFetch([makePair({ kind: 'raw' })]);
+    render(inRoute(AnalyzeSetup));
+    await screen.findByText(/No merged or reannotated sets/);
+  });
+
+  it('does not read window.availablePairs — fetches independently', async () => {
+    (window as any).availablePairs = [];
+    mockFetch([makePair({ id: 'm1', display_name: 'Should Appear', kind: 'merged' })]);
+    render(inRoute(AnalyzeSetup));
+    await screen.findByText('Should Appear');
   });
 });
 

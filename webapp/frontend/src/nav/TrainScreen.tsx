@@ -1,23 +1,14 @@
-import { Component, createSignal, For, Show, onMount } from 'solid-js';
+import { type Component, createSignal, Show, onMount } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
 import { Root as CheckboxRoot, Control as CheckboxControl, Indicator as CheckboxIndicator }
   from '@kobalte/core/checkbox';
 import { Root as SliderRoot, Track as SliderTrack, Fill as SliderFill,
          Thumb as SliderThumb, Input as SliderInput } from '@kobalte/core/slider';
-import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox';
 import type { PairSummary } from '../analyze/lib/types';
+import { type TrainSession, calcForkInfo } from './trainHelpers';
+import PairList from '../shared/PairList';
 import styles from './TrainScreen.module.css';
 import pairStyles from '../shared/PairList.module.css';
-
-interface TrainSession {
-  pairId: string;
-  mode: 'both' | 'polygon' | 'label';
-  shapePool: number[];
-  polygonScores: Record<number, number>;
-  labelScores: Record<number, number>;
-  attempts: Record<number, number>;
-  suspended: number[];
-}
 
 const w = window as any;
 
@@ -81,36 +72,11 @@ const TrainScreen: Component = () => {
     await w._launchTrainer?.(selectedId(), mode, n());
   }
 
-  function forkInfo() {
-    const saved = savedSession();
-    if (!saved) return '';
-    const pair = pairs().find(p => p.id === saved.pairId);
-    if (!pair) return '';
-    const tried = saved.shapePool.filter(i => (saved.attempts[i] ?? 0) > 0);
-    const nt  = tried.length;
-    const avg = {
-      polygon: nt ? tried.reduce((a, i) => a + (saved.polygonScores[i] ?? 0), 0) / nt : 0,
-      label:   nt ? tried.reduce((a, i) => a + (saved.labelScores[i]   ?? 0), 0) / nt : 0,
-    };
-    const modeLabel = { both: 'polygon + label', polygon: 'polygon only', label: 'label only' }
-                        [saved.mode] ?? saved.mode;
-    const parts = [
-      `<strong>${pair.display_name}</strong>`,
-      `${modeLabel} · ${saved.shapePool.length} cards · ${nt} attempted`,
-    ];
-    if (nt > 0) {
-      if (saved.mode !== 'label')   parts.push(`Draw avg: ${Math.round(avg.polygon * 100)}%`);
-      if (saved.mode !== 'polygon') parts.push(`Label avg: ${Math.round(avg.label * 100)}%`);
-    }
-    if (saved.suspended.length > 0) parts.push(`${saved.suspended.length} suspended`);
-    return parts.join('<br>');
-  }
-
   return (
     <>
       {/* ── Fork view: resume or start fresh ── */}
       <Show when={view() === 'fork'}>
-        <div class={pairStyles.resumeInfo} innerHTML={forkInfo()} />
+        <div class={pairStyles.resumeInfo} innerHTML={calcForkInfo(savedSession(), pairs())} />
         <button class="btn-primary" style="margin-top:10px"
                 disabled={launching()} onClick={resume}>
           {launching() ? 'Starting…' : 'Continue session'}
@@ -137,29 +103,17 @@ const TrainScreen: Component = () => {
           <Show when={pairs().length === 0}>
             <p class={pairStyles.pairEmpty}>No annotation sets yet.</p>
           </Show>
-          <ListboxRoot
-            as="div"
-            options={pairs()}
-            optionValue="id"
-            optionTextValue="display_name"
-            value={selectedId() ? [selectedId()!] : []}
-            onChange={(set: Set<string>) => {
-              const id = [...set][0];
-              if (id) {
-                const p = pairs().find(q => q.id === id);
-                if (p) selectPair(p);
-              }
-            }}
-            renderItem={(node: any) => (
-              <ListboxItem item={node} as="div" class={pairStyles.pairItem} data-id={node.rawValue.id}>
-                <div class={pairStyles.pairItemLeft}>
-                  <strong>{node.rawValue.display_name}</strong>
-                  <div class={pairStyles.pairTagsRow}>
-                    <span class={`set-kind-tag set-kind-${node.rawValue.kind}`}>{node.rawValue.kind}</span>
-                  </div>
-                  <span style="font-size:0.75rem;color:var(--muted)">{node.rawValue.shape_count} shapes</span>
+          <PairList
+            pairs={pairs()}
+            selectedId={selectedId()}
+            onSelect={selectPair}
+            renderDetail={(p) => (
+              <>
+                <div class={pairStyles.pairTagsRow}>
+                  <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
                 </div>
-              </ListboxItem>
+                <span style="font-size:0.75rem;color:var(--muted)">{p.shape_count} shapes</span>
+              </>
             )}
           />
         </Show>
