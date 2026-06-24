@@ -1,5 +1,6 @@
 data/
 .claude/
+.venv/
 __pycache__/
 *.pyc
 webapp/frontend/node_modules/

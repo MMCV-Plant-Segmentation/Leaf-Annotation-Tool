@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["flask", "pillow", "numpy", "shapely"]
-# ///
 """
 Backend — registry lives in SQLite (data/app.db); images and per-set
 labelme JSONs stay on disk unchanged.

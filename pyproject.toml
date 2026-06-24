@@ -1,0 +1,16 @@
+[project]
+name = "leaf-annotation"
+version = "0.1.0"
+description = "Lesion annotation trainer / comparison / analyze tool (Flask backend)."
+requires-python = ">=3.10"
+dependencies = [
+    "flask",
+    "pillow",
+    "numpy",
+    "shapely",
+]
+
+# Script-based app, not an installable package: uv manages the dependency
+# environment but does not build/install this project itself.
+[tool.uv]
+package = false
