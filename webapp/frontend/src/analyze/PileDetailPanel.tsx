@@ -47,6 +47,8 @@ const PileDetailPanel: Component<Props> = (props) => {
             return (
               <div
                 class={`${styles.breakdownRow}${isActive() ? ' ' + styles.breakdownRowActive : ''}`}
+                data-testid="breakdown-row"
+                data-active={isActive() ? 'true' : undefined}
                 style="cursor:pointer"
                 onClick={() => store.setDetailK(ki)}
               >

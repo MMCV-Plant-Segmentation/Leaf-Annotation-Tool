@@ -1,6 +1,6 @@
-import type * as CSSModule from './ui.module.css';
+import type uiStyles from './ui.module.css';
 
-type UiModule = typeof CSSModule;
+type UiModule = typeof uiStyles;
 
 export function setKindClass(ui: UiModule, kind: string): string {
   const map: Record<string, string> = {

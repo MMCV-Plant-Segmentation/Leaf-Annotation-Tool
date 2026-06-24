@@ -7,7 +7,6 @@ import * as store from './store';
 
 const SRC_COLORS = ['#ff6b6b', '#51cf66', '#ffd43b', '#74c0fc', '#f783ac', '#a9e34b'];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const w = window as any;
 
 export function mountAnalyzeViewer(data: AnalyzeData): () => void {

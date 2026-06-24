@@ -135,6 +135,8 @@ describe('convertMode', () => {
 function makeData(piles: { m: number; fractions: number[] }[]): AnalyzeData {
   return {
     setId: 'test',
+    displayName: 'Test Set',
+    imageHash: 'testhash',
     imageWidth: 100,
     imageHeight: 100,
     mTotal: 3,

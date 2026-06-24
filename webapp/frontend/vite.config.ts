@@ -18,6 +18,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    css: true,
+    include: ['test/**/*.{test,spec}.{ts,tsx}'],
     server: { deps: { inline: [/solid-js/, /@solidjs/] } },
     setupFiles: ['./test/setup.ts'],
   },
