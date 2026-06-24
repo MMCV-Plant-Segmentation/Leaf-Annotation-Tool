@@ -6,7 +6,8 @@
     "build": "vite build",
     "build:watch": "vite build --watch",
     "test": "vitest run",
-    "e2e": "node e2e/probe.mjs"
+    "e2e": "node e2e/probe.mjs",
+    "smoke": "playwright test --project=smoke"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
@@ -14,6 +15,7 @@
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@solidjs/testing-library": "^0.8.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@types/node": "^22.15.21",
