@@ -4,6 +4,7 @@ import { polygonArea, hexToRgba } from './lib/geometry';
 import * as store from './store';
 import type { Pile } from './lib/types';
 import IoUDetail from '../shared/IoUDetail';
+import styles from './PileDetailPanel.module.css';
 
 interface Props {
   pile: Pile;
@@ -29,8 +30,8 @@ const PileDetailPanel: Component<Props> = (props) => {
 
   return (
     <>
-      <div class="agreement-breakdown">
-        <div class="breakdown-title">
+      <div class={styles.agreementBreakdown}>
+        <div class={styles.breakdownTitle}>
           {props.pile.m} annotator{props.pile.m !== 1 ? 's' : ''} drew this lesion
         </div>
         <For each={Array.from({ length: props.pile.m }, (_, i) => i + 1)}>
@@ -45,18 +46,18 @@ const PileDetailPanel: Component<Props> = (props) => {
 
             return (
               <div
-                class={`breakdown-row${isActive() ? ' breakdown-row-active' : ''}`}
+                class={`${styles.breakdownRow}${isActive() ? ' ' + styles.breakdownRowActive : ''}`}
                 style="cursor:pointer"
                 onClick={() => store.setDetailK(ki)}
               >
-                <span class="breakdown-k">≥ {ki}</span>
-                <div class="breakdown-bar-wrap">
+                <span class={styles.breakdownK}>≥ {ki}</span>
+                <div class={styles.breakdownBarWrap}>
                   <div
-                    class="breakdown-bar"
+                    class={styles.breakdownBar}
                     style={{ width: pct() + '%', background: isActive() ? undefined : barColor() }}
                   />
                 </div>
-                <span class="breakdown-pct">{pct()}%</span>
+                <span class={styles.breakdownPct}>{pct()}%</span>
               </div>
             );
           }}

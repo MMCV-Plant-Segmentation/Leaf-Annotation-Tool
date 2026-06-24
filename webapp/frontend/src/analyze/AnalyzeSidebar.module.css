@@ -32,3 +32,23 @@
 .kThumb:focus-visible {
   box-shadow: 0 0 0 2px var(--user);
 }
+
+/* k-overlap two-column layout */
+.kOverlapGrid {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 0 4px;
+  margin-top: 4px;
+}
+.kOverlapLeft  { display: flex; flex-direction: column; gap: 3px; }
+.kOverlapRight { display: flex; flex-direction: column; gap: 3px; }
+.kSliderWrapper { height: 18px; display: flex; align-items: center; }
+.kBdSpacer     { height: 18px; flex-shrink: 0; }
+.kBdLeftLabel {
+  height: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 0.62rem;
+  color: var(--muted);
+}

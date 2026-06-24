@@ -4,6 +4,7 @@ import { Root as DialogRoot, Portal as DialogPortal, Overlay as DialogOverlay,
          Description as DialogDescription } from '@kobalte/core/dialog';
 import { getUser, setUser } from '../analyze/lib/bridge';
 import styles from './BylineModal.module.css';
+import ui from '../shared/ui.module.css';
 
 // Module-level: controlled from outside the reactive tree
 const [open, setOpen] = createSignal(false);
@@ -59,7 +60,7 @@ const BylineModal: Component = () => {
           </DialogDescription>
           <input
             type="text"
-            class="text-input"
+            class={ui.textInput}
             placeholder="Your name"
             autocomplete="off"
             maxLength={64}
@@ -70,7 +71,7 @@ const BylineModal: Component = () => {
           <Show when={error()}>
             <p class={styles.errorText}>Please enter a name.</p>
           </Show>
-          <button class="btn-primary" onClick={confirm}>Continue</button>
+          <button class={ui.btnPrimary} onClick={confirm}>Continue</button>
         </DialogContent>
       </DialogPortal>
     </DialogRoot>

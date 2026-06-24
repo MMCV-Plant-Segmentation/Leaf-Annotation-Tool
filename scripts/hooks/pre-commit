@@ -8,8 +8,10 @@
 set -euo pipefail
 
 # Only rebuild if the staged changes actually affect the build output.
-if ! git diff --cached --name-only \
-     | grep -qE '^webapp/frontend/(src/|vite\.config|tsconfig|package\.json)'; then
+staged=$(git diff --cached --name-only)
+needs_bundle=$(echo "$staged" | grep -qE '^webapp/frontend/(src/|vite\.config|tsconfig|package\.json)' && echo 1 || echo 0)
+needs_legacy=$(echo "$staged" | grep -qE '^webapp/static/style\.css' && echo 1 || echo 0)
+if [ "$needs_bundle" = "0" ] && [ "$needs_legacy" = "0" ]; then
   exit 0
 fi
 
@@ -24,7 +26,19 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[pre-commit] frontend source staged — rebuilding bundle…"
-( cd webapp/frontend && npm run build >/dev/null )
-git add webapp/static/dist/app.bundle.js webapp/static/dist/app.bundle.css
-echo "[pre-commit] webapp/static/dist rebuilt and staged."
+if [ "$needs_legacy" = "1" ]; then
+  echo "[pre-commit] style.css staged — rebuilding legacy.css…"
+  ( cd webapp/frontend && node scripts/build-legacy-css.mjs >/dev/null )
+  git add webapp/static/dist/legacy.css
+  echo "[pre-commit] webapp/static/dist/legacy.css rebuilt and staged."
+fi
+
+if [ "$needs_bundle" = "1" ]; then
+  echo "[pre-commit] frontend source staged — rebuilding bundle…"
+  # build runs vite first (emptyOutDir), then re-adds legacy.css
+  ( cd webapp/frontend && npm run build >/dev/null )
+  git add webapp/static/dist/app.bundle.js webapp/static/dist/app.bundle.css webapp/static/dist/legacy.css
+  echo "[pre-commit] webapp/static/dist rebuilt and staged."
+elif [ "$needs_legacy" = "1" ]; then
+  : # already staged above
+fi

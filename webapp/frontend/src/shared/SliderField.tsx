@@ -4,6 +4,7 @@ import { Root as SliderRoot, Track as SliderTrack, Fill as SliderFill,
 import { Root as PopoverRoot, Trigger as PopoverTrigger,
          Portal as PopoverPortal, Content as PopoverContent } from '@kobalte/core/popover';
 import styles from './SliderField.module.css';
+import ui from './ui.module.css';
 
 interface Props {
   label: string;
@@ -37,21 +38,21 @@ const SliderField: Component<Props> = (props) => {
   });
 
   return (
-    <div class="field">
+    <div class={ui.field}>
       <div style="display:flex;align-items:center;gap:4px">
         <label>{props.label}</label>
         <Show when={props.tooltip}>
           {(tip) => (
             <PopoverRoot>
-              <PopoverTrigger class="btn-info">?</PopoverTrigger>
+              <PopoverTrigger class={ui.btnInfo}>?</PopoverTrigger>
               <PopoverPortal>
-                <PopoverContent class="iou-tooltip">{tip()}</PopoverContent>
+                <PopoverContent class={ui.iouTooltip}>{tip()}</PopoverContent>
               </PopoverPortal>
             </PopoverRoot>
           )}
         </Show>
       </div>
-      <div class="count-header" style="margin-top:4px">
+      <div class={ui.countHeader} style="margin-top:4px">
         <span style={{
           'font-size': '0.82rem',
           color: props.displayColor ?? 'var(--user)',

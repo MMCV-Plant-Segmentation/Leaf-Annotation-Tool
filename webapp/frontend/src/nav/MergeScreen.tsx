@@ -6,6 +6,7 @@ import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox'
 import type { PairSummary } from '../analyze/lib/types';
 import styles from './MergeScreen.module.css';
 import pairStyles from '../shared/PairList.module.css';
+import ui from '../shared/ui.module.css';
 
 interface CompareSession {
   imageHash: string;
@@ -87,19 +88,19 @@ const MergeScreen: Component = () => {
       {/* ── Fork view ── */}
       <Show when={view() === 'fork'}>
         <div class={pairStyles.resumeInfo} innerHTML={forkInfo()} />
-        <button class="btn-primary" style="margin-top:10px"
+        <button class={ui.btnPrimary} style="margin-top:10px"
                 onClick={() => w._resumeCompare?.(savedSession())}>
           Continue comparison
         </button>
-        <button class="btn-secondary" style="width:100%;margin-top:8px"
+        <button class={ui.btnSecondary} style="width:100%;margin-top:8px"
                 onClick={() => { setSavedSession(null); setView('setup'); }}>
           New comparison →
         </button>
-        <button class="btn-text" style="margin-top:4px;color:var(--fail)"
+        <button class={ui.btnText} style="margin-top:4px;color:var(--fail)"
                 onClick={deleteSession}>
           ✕ Delete saved comparison
         </button>
-        <button class="btn-text" style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
       </Show>
 
       {/* ── Setup view ── */}
@@ -156,13 +157,13 @@ const MergeScreen: Component = () => {
           </Show>
 
           <button
-            class="btn-primary" style="margin-top:12px"
+            class={ui.btnPrimary} style="margin-top:12px"
             disabled={!selectedHash() || selectedIds().length === 0 || seeding()}
             onClick={launchNew}
           >
             {seeding() ? 'Loading…' : 'Continue →'}
           </button>
-          <button class="btn-text" style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
+          <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
         </Show>
       </Show>
     </>

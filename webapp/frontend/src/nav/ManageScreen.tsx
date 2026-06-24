@@ -7,6 +7,8 @@ import ReplaceForm from './ReplaceForm';
 import AddSetForm from './AddSetForm';
 import styles from './ManageScreen.module.css';
 import pairStyles from '../shared/PairList.module.css';
+import ui from '../shared/ui.module.css';
+import { setKindClass } from '../shared/uiHelpers';
 
 function countLabel(p: PairSummary) {
   if (p.kind === 'merged') return p.pile_count != null ? `${p.pile_count} piles` : '— piles';
@@ -70,7 +72,7 @@ const ManageScreen: Component = () => {
                   <Show when={renamingId() !== p.id}
                     fallback={
                       <input
-                        type="text" class="pair-rename-input"
+                        type="text" class={styles.pairRenameInput}
                         value={renameVal()}
                         onInput={e => setRenameVal((e.target as HTMLInputElement).value)}
                         onBlur={() => saveRename(p)}
@@ -85,9 +87,9 @@ const ManageScreen: Component = () => {
                     <strong>{p.display_name}</strong>
                   </Show>
                   <div class={pairStyles.pairTagsRow}>
-                    <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
+                    <span class={`${ui.setKindTag} ${setKindClass(ui, p.kind)}`}>{p.kind}</span>
                     <Show when={p.terminal}>
-                      <span class="set-kind-tag set-kind-terminal">locked</span>
+                      <span class={`${ui.setKindTag} ${ui.setKindTerminal}`}>locked</span>
                     </Show>
                   </div>
                   <span style="font-size:0.75rem;color:var(--muted)">{countLabel(p)}</span>
@@ -95,13 +97,13 @@ const ManageScreen: Component = () => {
 
                 <Show when={renamingId() !== p.id}>
                   <div class={pairStyles.pairActionBtns}>
-                    <button class="pair-edit-btn" title="Rename"
+                    <button class={styles.pairEditBtn} title="Rename"
                       onClick={() => { setRenamingId(p.id); setRenameVal(p.display_name); }}>✎</button>
                     <Show when={p.kind !== 'merged'}>
-                      <button class="pair-replace-btn" title="Replace files"
+                      <button class={styles.pairReplaceBtn} title="Replace files"
                         onClick={() => setReplacingId(id => id === p.id ? null : p.id)}>↻</button>
                     </Show>
-                    <button class="pair-delete-btn" title="Delete"
+                    <button class={styles.pairDeleteBtn} title="Delete"
                       onClick={() => setDeletingId(p.id)}>✕</button>
                   </div>
                 </Show>
@@ -135,11 +137,11 @@ const ManageScreen: Component = () => {
       </Show>
 
       <Show when={!showAdd()}>
-        <button class="btn-text" style="margin-top:10px" onClick={() => setShowAdd(true)}>
+        <button class={ui.btnText} style="margin-top:10px" onClick={() => setShowAdd(true)}>
           + Add new annotation set
         </button>
       </Show>
-      <button class="btn-text" style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+      <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
 
       <DialogRoot open={!!deletingId()} onOpenChange={v => { if (!v) setDeletingId(null); }}>
         <DialogPortal>
@@ -150,11 +152,11 @@ const ManageScreen: Component = () => {
               {pairs().find(p => p.id === deletingId())?.display_name}
             </p>
             <div style="display:flex;gap:8px;margin-top:4px">
-              <button class="btn-secondary" style="flex:none"
+              <button class={ui.btnSecondary} style="flex:none;padding:5px 14px"
                 onClick={() => { const id = deletingId(); if (id) confirmDelete(id); }}>
                 Delete
               </button>
-              <button class="btn-text" onClick={() => setDeletingId(null)}>Cancel</button>
+              <button class={ui.btnText} onClick={() => setDeletingId(null)}>Cancel</button>
             </div>
           </DialogContent>
         </DialogPortal>

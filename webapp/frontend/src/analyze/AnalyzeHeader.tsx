@@ -2,6 +2,7 @@ import { Component, Show, createSignal, onMount, onCleanup, type JSX } from 'sol
 import * as store from './store';
 import { openBylineModal, showHomeScreen } from './lib/bridge';
 import styles from './AnalyzeHeader.module.css';
+import ui from '../shared/ui.module.css';
 
 // Separate component so onMount/onCleanup track the Show lifecycle, not the header's
 const OpacitySlider: Component = () => {
@@ -47,7 +48,8 @@ const AnalyzeHeader: Component = () => {
   return (
     <>
       <button
-        class="btn-byline-change"
+        class={ui.btnBylineChange}
+        data-byline-btn
         title="Change display name"
         onClick={() => openBylineModal(null)}
       />
@@ -78,12 +80,12 @@ const AnalyzeHeader: Component = () => {
       </div>
       <button
         id="analyze-blind-btn"
-        class={store.blind() ? 'active' : ''}
+        class={store.blind() ? ui.active : ''}
         onClick={() => store.setBlind(!store.blind())}
       >🙈 Blind</button>
       <button
         id="analyze-bbox-btn"
-        class={store.showBbox() ? 'active' : ''}
+        class={store.showBbox() ? ui.active : ''}
         onClick={() => store.setShowBbox(!store.showBbox())}
       >⬚ Bbox</button>
       <button onClick={showHomeScreen}>Home</button>
