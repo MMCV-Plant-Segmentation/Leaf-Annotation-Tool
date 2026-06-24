@@ -1,4 +1,4 @@
-import { Component, Show, createSignal, onMount, onCleanup, type JSX } from 'solid-js';
+import { Component, Show, createSignal, onMount, onCleanup } from 'solid-js';
 import * as store from './store';
 import { openBylineModal, showHomeScreen } from './lib/bridge';
 import styles from './AnalyzeHeader.module.css';

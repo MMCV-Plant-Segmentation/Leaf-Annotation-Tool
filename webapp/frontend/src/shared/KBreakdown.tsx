@@ -39,9 +39,9 @@ const KBreakdown: Component<Props> = (props) => {
     <div class={styles.kBreakdown}>
       <For each={rows()}>
         {(segs) => (
-          <div class={styles.kBdBar}>
+          <div class={styles.kBdBar} data-testid="k-bd-bar">
             <For each={segs}>
-              {(bg) => <div class={styles.kBdSeg} style={{ background: bg }} />}
+              {(bg) => <div class={styles.kBdSeg} data-testid="k-bd-seg" style={{ background: bg }} />}
             </For>
           </div>
         )}

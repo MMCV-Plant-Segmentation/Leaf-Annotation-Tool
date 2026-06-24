@@ -1,7 +1,7 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { PairSummary } from '../analyze/lib/types';
 import ui from '../shared/ui.module.css';
-import upload from '../shared/Upload.module.css';
+import upStyles from '../shared/Upload.module.css';
 
 const AddSetForm: Component<{
   onDone: (pair: PairSummary) => void;
@@ -38,13 +38,13 @@ const AddSetForm: Component<{
       <input type="text" class={ui.textInput} placeholder="Display name"
              value={name()}
              onInput={e => setName((e.target as HTMLInputElement).value)} />
-      <div class={upload.uploadFileRow}>
-        <label class={upload.uploadFileBtn}>
+      <div class={upStyles.uploadFileRow}>
+        <label class={upStyles.uploadFileBtn}>
           <span>{img()?.name ?? 'Image…'}</span>
           <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg"
                  onChange={e => setImg((e.target as HTMLInputElement).files?.[0] ?? null)} />
         </label>
-        <label class={upload.uploadFileBtn}>
+        <label class={upStyles.uploadFileBtn}>
           <span>{json()?.name ?? 'JSON…'}</span>
           <input type="file" accept=".json"
                  onChange={e => setJson((e.target as HTMLInputElement).files?.[0] ?? null)} />
@@ -54,7 +54,7 @@ const AddSetForm: Component<{
         {uploading() ? 'Uploading…' : 'Upload'}
       </button>
       <Show when={status()}>
-        <p class={upload.uploadStatus}
+        <p class={upStyles.uploadStatus}
            style={status().includes('fail') || status().includes('required') ? 'color:var(--fail)' : ''}>
           {status()}
         </p>

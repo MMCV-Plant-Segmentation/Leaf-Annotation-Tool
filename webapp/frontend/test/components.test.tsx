@@ -148,7 +148,7 @@ describe('KBreakdown', () => {
       <KBreakdown mTotal={3} kAgree={() => 0} mode={() => 'absolute'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    expect(container.querySelectorAll('.k-bd-bar')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="k-bd-bar"]')).toHaveLength(3);
   });
 
   it('bar i has i+1 segments (triangle pattern)', () => {
@@ -156,9 +156,9 @@ describe('KBreakdown', () => {
       <KBreakdown mTotal={4} kAgree={() => 0} mode={() => 'absolute'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    const bars = container.querySelectorAll('.k-bd-bar');
+    const bars = container.querySelectorAll('[data-testid="k-bd-bar"]');
     [1, 2, 3, 4].forEach((n, i) => {
-      expect(bars[i].querySelectorAll('.k-bd-seg')).toHaveLength(n);
+      expect(bars[i].querySelectorAll('[data-testid="k-bd-seg"]')).toHaveLength(n);
     });
   });
 
@@ -170,9 +170,9 @@ describe('KBreakdown', () => {
       <KBreakdown mTotal={2} kAgree={() => 2} mode={() => 'absolute'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    const bars = container.querySelectorAll('.k-bd-bar');
-    const row1Seg = bars[0].querySelectorAll('.k-bd-seg')[0] as HTMLElement;
-    const row2Segs = bars[1].querySelectorAll('.k-bd-seg');
+    const bars = container.querySelectorAll('[data-testid="k-bd-bar"]');
+    const row1Seg = bars[0].querySelectorAll('[data-testid="k-bd-seg"]')[0] as HTMLElement;
+    const row2Segs = bars[1].querySelectorAll('[data-testid="k-bd-seg"]');
     const row2k1 = row2Segs[0] as HTMLElement;
     const row2k2 = row2Segs[1] as HTMLElement;
 
@@ -188,13 +188,13 @@ describe('KBreakdown', () => {
       <KBreakdown mTotal={2} kAgree={() => 99} mode={() => 'absolute'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    const inactiveBg = (cAll.querySelectorAll('.k-bd-seg')[0] as HTMLElement).style.background;
+    const inactiveBg = (cAll.querySelectorAll('[data-testid="k-bd-seg"]')[0] as HTMLElement).style.background;
 
     const { container } = render(() => (
       <KBreakdown mTotal={2} kAgree={() => 0} mode={() => 'absolute'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    for (const seg of container.querySelectorAll('.k-bd-seg')) {
+    for (const seg of container.querySelectorAll('[data-testid="k-bd-seg"]')) {
       expect((seg as HTMLElement).style.background).not.toBe(inactiveBg);
     }
   });
@@ -208,16 +208,16 @@ describe('KBreakdown', () => {
       <KBreakdown mTotal={3} kAgree={() => 100} mode={() => 'relative'}
         annotColor={() => '#4a9eff'} annotOpacity={() => 0.5} />
     ));
-    const bars = container.querySelectorAll('.k-bd-bar');
-    const row2Segs = bars[1].querySelectorAll('.k-bd-seg');
+    const bars = container.querySelectorAll('[data-testid="k-bd-bar"]');
+    const row2Segs = bars[1].querySelectorAll('[data-testid="k-bd-seg"]');
     const inactiveBg = (row2Segs[0] as HTMLElement).style.background; // k=1 in row2 is always dim here
 
     // Row 1: only segment (k=1, ek=1) is active
-    expect((bars[0].querySelectorAll('.k-bd-seg')[0] as HTMLElement).style.background).not.toBe(inactiveBg);
+    expect((bars[0].querySelectorAll('[data-testid="k-bd-seg"]')[0] as HTMLElement).style.background).not.toBe(inactiveBg);
     // Row 2: k=1 dim, k=2 active
     expect((row2Segs[1] as HTMLElement).style.background).not.toBe(inactiveBg);
     // Row 3: k=1,2 dim, k=3 active
-    const row3Segs = bars[2].querySelectorAll('.k-bd-seg');
+    const row3Segs = bars[2].querySelectorAll('[data-testid="k-bd-seg"]');
     expect((row3Segs[0] as HTMLElement).style.background).toBe(inactiveBg);
     expect((row3Segs[1] as HTMLElement).style.background).toBe(inactiveBg);
     expect((row3Segs[2] as HTMLElement).style.background).not.toBe(inactiveBg);
@@ -240,7 +240,7 @@ describe('PileDetailPanel', () => {
   it('renders one breakdown row per k value in the pile', () => {
     const { container } = render(() => <PileDetailPanel pile={MOCK_PILE} />);
     // pile.m = 3 → rows for k=1, k=2, k=3
-    expect(container.querySelectorAll('.breakdown-row')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="breakdown-row"]')).toHaveLength(3);
     expect(screen.getByText('≥ 1')).toBeInTheDocument();
     expect(screen.getByText('≥ 2')).toBeInTheDocument();
     expect(screen.getByText('≥ 3')).toBeInTheDocument();
@@ -248,7 +248,7 @@ describe('PileDetailPanel', () => {
 
   it('clicking a k-row sets detailK to that k', () => {
     const { container } = render(() => <PileDetailPanel pile={MOCK_PILE} />);
-    const rows = container.querySelectorAll('.breakdown-row');
+    const rows = container.querySelectorAll('[data-testid="breakdown-row"]');
     // Click the k=2 row (index 1)
     fireEvent.click(rows[1]);
     expect(detailK()).toBe(2);
@@ -256,11 +256,11 @@ describe('PileDetailPanel', () => {
 
   it('the clicked row receives breakdown-row-active class', () => {
     const { container } = render(() => <PileDetailPanel pile={MOCK_PILE} />);
-    const rows = container.querySelectorAll('.breakdown-row');
+    const rows = container.querySelectorAll('[data-testid="breakdown-row"]');
     fireEvent.click(rows[1]); // click k=2
-    expect(rows[1]).toHaveClass('breakdown-row-active');
-    expect(rows[0]).not.toHaveClass('breakdown-row-active');
-    expect(rows[2]).not.toHaveClass('breakdown-row-active');
+    expect(rows[1]).toHaveAttribute('data-active', 'true');
+    expect(rows[0]).not.toHaveAttribute('data-active');
+    expect(rows[2]).not.toHaveAttribute('data-active');
   });
 
   it('shows the IoU detail panel when agreementByK entries exist', () => {
