@@ -62,13 +62,14 @@ const SliderField: Component<Props> = (props) => {
       </div>
       <SliderRoot
         class={styles.slider}
+        ref={(el: HTMLElement) => { trackRef = el; }}
         value={[props.value()]}
         minValue={minVal()}
         maxValue={maxVal()}
         step={props.step ?? 1}
         onChange={([v]) => props.onChange(v)}
       >
-        <SliderTrack ref={(el: HTMLElement) => { trackRef = el; }} class={styles.track}>
+        <SliderTrack class={styles.track}>
           <SliderFill class={styles.fill} />
           <SliderThumb class={styles.thumb}>
             <SliderInput id={props.id} />

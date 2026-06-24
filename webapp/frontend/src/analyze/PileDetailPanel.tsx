@@ -35,8 +35,8 @@ const PileDetailPanel: Component<Props> = (props) => {
         </div>
         <For each={Array.from({ length: props.pile.m }, (_, i) => i + 1)}>
           {(ki) => {
-            const entry = props.pile.agreementByK[String(ki)];
-            const pct = entry ? Math.round(entry.fraction * 100) : 0;
+            const entry = () => props.pile.agreementByK[String(ki)];
+            const pct = () => { const e = entry(); return e ? Math.round(e.fraction * 100) : 0; };
             const isActive = () => effectiveK() === ki;
             const barColor = () => hexToRgba(
               store.annotColor(),
@@ -53,10 +53,10 @@ const PileDetailPanel: Component<Props> = (props) => {
                 <div class="breakdown-bar-wrap">
                   <div
                     class="breakdown-bar"
-                    style={{ width: pct + '%', background: isActive() ? undefined : barColor() }}
+                    style={{ width: pct() + '%', background: isActive() ? undefined : barColor() }}
                   />
                 </div>
-                <span class="breakdown-pct">{pct}%</span>
+                <span class="breakdown-pct">{pct()}%</span>
               </div>
             );
           }}

@@ -23,6 +23,7 @@
   background: var(--user);
   border-radius: 2px;
   left: 0;
+  pointer-events: none;
 }
 
 .thumb {

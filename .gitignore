@@ -3,3 +3,4 @@ data/
 __pycache__/
 *.pyc
 webapp/frontend/node_modules/
+webapp/static/dist/app.bundle.js.map

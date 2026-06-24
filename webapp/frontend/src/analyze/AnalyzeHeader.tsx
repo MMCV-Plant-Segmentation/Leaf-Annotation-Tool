@@ -22,7 +22,7 @@ const OpacitySlider: Component = () => {
     <input
       type="range"
       id="analyze-opacity-slider"
-      class="range-input"
+      class={styles.rangeInput}
       min={0}
       max={100}
       value={Math.round(store.annotOpacity() * 100)}

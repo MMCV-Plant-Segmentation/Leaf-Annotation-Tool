@@ -548,3 +548,21 @@ polish are done; see their plan docs and HANDOFF.md.
 - **Layer rename** — names default to "Layer N"; renaming deferred.
 - **Labels** — annotation label fields exist in the data but are ignored by the
   comparison tool.
+
+## 8. Bug fixes — Analyze viewer (2026-06-23)
+
+Three silent regressions introduced by the `b003515` Analyze viewer commit; all fixed
+and documented in `Bug Diagnosis — Analyze Viewer Regression.md`.
+
+**Bug 1 — CDF bars stale after pile switch.** `PileDetailPanel.tsx`: derived values
+inside a `<For>` render callback were plain consts (computed once). Fixed: wrap as
+getter functions (`const entry = () => …`) so JSX tracks them reactively.
+
+**Bug 2 — Sidebar sliders frozen / crashing.** `SliderField.tsx`: passing a `ref` to
+Kobalte's `<SliderTrack>` bypasses its internal track-ref registration (a Kobalte
+bug). Fixed: move `ref` to `<SliderRoot>` (which handles `ref` correctly); add
+`pointer-events: none` to the fill so it doesn't steal pointer capture.
+
+**Bug 3 — Opacity slider unstyled.** `AnalyzeHeader.tsx`: `class="range-input"` was a
+bare string pointing at a global rule that was deleted in the CSS-modules refactor.
+Fixed: add `.rangeInput` to `AnalyzeHeader.module.css`; use `class={styles.rangeInput}`.

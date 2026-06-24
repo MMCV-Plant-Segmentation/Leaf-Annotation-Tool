@@ -29,6 +29,8 @@
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 
+.rangeInput { width: 100%; accent-color: var(--user); cursor: pointer; height: 4px; }
+
 .colorPick {
   width: 32px;
   height: 28px;

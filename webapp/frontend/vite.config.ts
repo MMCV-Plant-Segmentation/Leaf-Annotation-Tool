@@ -6,6 +6,7 @@ export default defineConfig({
   build: {
     outDir: '../static/dist',
     emptyOutDir: true,
+    sourcemap: true,
     rollupOptions: {
       input: 'src/mount.tsx',
       output: {

@@ -147,6 +147,7 @@ const AnalyzeSidebar: Component = () => {
             <div class="k-slider-wrapper">
               <SliderRoot
                 class={styles.kSlider}
+                ref={(el: HTMLElement) => { kSliderRef = el; }}
                 value={[store.kAgree()]}
                 minValue={0}
                 maxValue={kMax()}
@@ -154,7 +155,6 @@ const AnalyzeSidebar: Component = () => {
                 onChange={([v]) => { store.setKAgree(v); store.setDetailK(null); }}
               >
                 <SliderTrack
-                  ref={(el: HTMLElement) => { kSliderRef = el; }}
                   class={styles.kTrack}
                   style={{ background: kSliderBg() }}
                 >
