@@ -9,12 +9,29 @@ Thin SQLite helper for app.db.
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 BASE    = Path(__file__).parent.parent
-DB_PATH = BASE / 'data' / 'app.db'
+
+
+def _default_data_dir() -> Path:
+    """Default data location: a LOCAL XDG dir.
+
+    The SQLite DB must NOT live on a network filesystem (NFS/SMB/FUSE): POSIX
+    advisory file locking there is unreliable, so concurrent requests stall ~30s
+    contending for locks (see docs/). Keep the live store on local disk and back
+    it up to network/cloud storage out-of-band (litestream/lsyncd).
+    """
+    xdg = os.environ.get('XDG_DATA_HOME')
+    root = Path(xdg) if xdg else Path.home() / '.local' / 'share'
+    return root / 'leaf-annotation'
+
+
+DATA_DIR = Path(os.environ['HT_DATA_DIR']) if os.environ.get('HT_DATA_DIR') else _default_data_dir()
+DB_PATH  = DATA_DIR / 'app.db'
 
 # ── Row factory ───────────────────────────────────────────────────────────────
 
@@ -25,10 +42,14 @@ def _dict_factory(cursor, row):
 # ── Connection management ─────────────────────────────────────────────────────
 
 def get_db() -> sqlite3.Connection:
-    """Open a new connection for the current request."""
+    """Open a new connection for the current request.
+
+    journal_mode=WAL is a *persistent* database property — it is set once in
+    auto_create_schema(), NOT per connection. Re-asserting it on every connection
+    takes a database lock and needlessly serializes concurrent requests.
+    """
     con = sqlite3.connect(str(DB_PATH))
     con.row_factory = _dict_factory
-    con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA foreign_keys=ON')
     return con
 
@@ -126,6 +147,7 @@ def auto_create_schema() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = get_db()
     try:
+        con.execute('PRAGMA journal_mode=WAL')  # persistent; set once here, not per-connection
         con.executescript(_DDL)
         con.commit()
     finally:

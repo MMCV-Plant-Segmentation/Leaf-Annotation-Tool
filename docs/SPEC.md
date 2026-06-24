@@ -26,21 +26,33 @@ labelme-replacement annotator).
 
 - **Flask backend** (`webapp/app.py`) serving a single-page web app. The backend
   holds the **annotation-set registry** and **merge documents** in SQLite
-  (`data/app.db`, `webapp/db.py`); **practice (training) session state** still
+  (`app.db`, `webapp/db.py`); **practice (training) session state** still
   lives in the browser's `localStorage`, while **comparison/merge state** is now
   server-persisted in the `merge` table (only the merge ID is kept client-side).
 - **Identity (byline):** on first load the user enters a display name (no
   password — attribution, not access control), stored in
   `localStorage['lesion-user']` and sent as an `X-User` header on every `/api/`
   request; the backend records it as `created_by` on creates.
-- **Content-addressed storage**: images at `data/images/{sha256[:24]}.{ext}`;
-  annotation JSONs at `data/jsons/{pair_id}.json`. Images are de-duplicated by
+- **Data directory & the local-disk requirement.** All on-disk state — `app.db`,
+  `images/`, `jsons/`, `manifest.json` — lives together in one **data directory**,
+  which defaults to a **local** path (`$XDG_DATA_HOME/leaf-annotation`, i.e.
+  `~/.local/share/leaf-annotation`) and is overridable via `HT_DATA_DIR`. **The
+  data directory must be on a local filesystem — never NFS/SMB/FUSE:** SQLite
+  relies on POSIX advisory file locking, which is unreliable on network
+  filesystems, so with `app.db` on NFS concurrent requests stalled ~30s
+  contending for a lock (this was the analyze-reload hang). On first run the
+  backend performs a one-time **copy** of any legacy on-NFS `code/data` dir into
+  the local data dir (`_migrate_data_to_local`), leaving the old copy in place as
+  an interim fallback. Backing the local store up to network/cloud storage is
+  handled **out-of-band** (litestream/lsyncd), not by the app.
+- **Content-addressed storage**: images at `{data}/images/{sha256[:24]}.{ext}`;
+  annotation JSONs at `{data}/jsons/{pair_id}.json`. Images are de-duplicated by
   `image_hash`, so several annotation sets can share one underlying image. The
   registry lives in the `annotation_set` table (`id`, `display_name`,
   `image_hash`, `image_ext`, `kind`, `provenance`, `created_by`, `created_at`,
-  `terminal`); `data/manifest.json` is retained as a read-only backup but is no
+  `terminal`); `manifest.json` is retained as a read-only backup but is no
   longer authoritative. The `merge` table holds comparison/merge documents (§4).
-  `data/app.db` also contains empty scaffolding tables (`reannot_*`) for the
+  `app.db` also contains empty scaffolding tables (`reannot_*`) for the
   unbuilt consensus tool.
 - **Frontend is two layers** (see [`Nav Layer to SolidJS Plan.md`](./Nav%20Layer%20to%20SolidJS%20Plan.md)):
   - **Nav/setup layer** — **SolidJS + TypeScript**, source in `webapp/frontend/src/`,
@@ -566,3 +578,24 @@ bug). Fixed: move `ref` to `<SliderRoot>` (which handles `ref` correctly); add
 **Bug 3 — Opacity slider unstyled.** `AnalyzeHeader.tsx`: `class="range-input"` was a
 bare string pointing at a global rule that was deleted in the CSS-modules refactor.
 Fixed: add `.rangeInput` to `AnalyzeHeader.module.css`; use `class={styles.rangeInput}`.
+
+## 9. Playwright smoke baseline (2026-06-24)
+
+**Runner:** Playwright Test (`@playwright/test`, Chromium-only). Replaces the ad-hoc
+`e2e/probe.mjs` Puppeteer script. `webServer` block auto-starts `uv run app.py` and
+tears it down; `storageState` seeds `lesion-user` so the byline modal doesn't block.
+`workers: 1` (Flask debug server; increase when switching to a production WSGI server).
+
+**Data:** uses the local `data/` directory by default. `HT_DATA_DIR` env var (added to
+`app.py` and `db.py`, 2026-06-24) overrides the data directory, enabling committed
+fixture data for CI in P4. Run: `cd webapp/frontend && npm run smoke`.
+
+**Coverage (`e2e/smoke/`):**
+- `nav.spec.ts` — home tiles, Manage, Train, Merge screens: no JS errors, key controls
+  visible, API-dependent content loads.
+- `analyze.spec.ts` — analyze picker, analyze viewer: `#analyze-screen` un-hides after
+  `fetchAnalyze()` resolves; computed-style assertion (`cursor: pointer`) on the
+  SolidJS-rendered opacity slider proves the CSS module loaded (catches the Bug 3 class
+  of regression — a deleted global class is silent without this check).
+
+All 6 tests green as of commit `<this commit>`.

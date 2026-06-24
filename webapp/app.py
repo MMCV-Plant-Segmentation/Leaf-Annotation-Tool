@@ -22,6 +22,8 @@ Endpoints:
 import hashlib
 import io
 import json
+import os
+import shutil
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -36,11 +38,12 @@ from shapely.ops import unary_union
 import db as _db
 
 BASE     = Path(__file__).parent.parent
-DATA_DIR = BASE / 'data'
+DATA_DIR = _db.DATA_DIR            # single source of truth (db.py); LOCAL XDG dir by default
 IMG_DIR  = DATA_DIR / 'images'
 JSON_DIR = DATA_DIR / 'jsons'
 MANIFEST = DATA_DIR / 'manifest.json'
 STATIC   = Path(__file__).parent / 'static'
+LEGACY_DATA_DIR = BASE / 'data'    # old on-NFS location; used only for the one-time migration
 
 # Reserved ID for the auto-migrated legacy hardcoded pair
 LEGACY_ID    = 'legacy'
@@ -224,10 +227,38 @@ def _warn_if_bundle_stale() -> None:
 
 def _startup() -> None:
     """Create schema, run manifest migration, and handle legacy file migration."""
+    _migrate_data_to_local()
     _db.auto_create_schema()
     _db.migrate_manifest(MANIFEST)
     _auto_migrate_legacy()
     _warn_if_bundle_stale()
+
+
+def _migrate_data_to_local() -> None:
+    """One-time: copy the data dir from the legacy on-NFS location to the local
+    DATA_DIR so the live SQLite store lives on local disk (NFS file locking stalls
+    concurrent requests — see db.py). COPIES, never moves: the NFS copy is left in
+    place as an interim static fallback until the out-of-band backup
+    (litestream/lsyncd) is wired up. No-op once the local store exists, or when
+    HT_DATA_DIR explicitly points back at the legacy dir.
+    """
+    if DATA_DIR == LEGACY_DATA_DIR:
+        return
+    if (DATA_DIR / 'app.db').exists():
+        return
+    if not (LEGACY_DATA_DIR / 'app.db').exists():
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    print(f'[migrate] copying data {LEGACY_DATA_DIR} -> {DATA_DIR} (one-time, NFS -> local)')
+    for name in ('app.db', 'manifest.json'):
+        src = LEGACY_DATA_DIR / name
+        if src.exists():
+            shutil.copy2(src, DATA_DIR / name)
+    for sub in ('images', 'jsons'):
+        src = LEGACY_DATA_DIR / sub
+        if src.is_dir():
+            shutil.copytree(src, DATA_DIR / sub, dirs_exist_ok=True)
+    print('[migrate] done')
 
 
 def _auto_migrate_legacy() -> None:
