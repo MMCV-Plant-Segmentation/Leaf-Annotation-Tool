@@ -1,0 +1,154 @@
+/* Solid-owned copies of vanilla button/form/badge primitives.
+   These make Solid self-contained — it no longer depends on the legacy sheet. */
+
+/* ── Buttons ── */
+.btn {
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn:hover { color: var(--text); border-color: #555; }
+
+.btnPrimary {
+  width: 100%;
+  padding: 10px;
+  background: var(--user);
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.btnPrimary:hover:not(:disabled) { opacity: 0.85; }
+.btnPrimary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btnSecondary {
+  flex: 1;
+  padding: 7px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btnSecondary:hover { color: var(--text); border-color: #555; }
+.btnSecondary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btnText {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.btnText:hover { color: var(--text); }
+
+.btnInfo {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  background: none;
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 6px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.btnInfo:hover { color: var(--text); border-color: var(--text); }
+
+.btnBylineChange {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-color: transparent;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.btnBylineChange:hover { color: var(--text); border-color: var(--border); }
+
+/* ── Active toggle state for toggle-style buttons ── */
+.active {
+  background: var(--user) !important;
+  color: #fff !important;
+  border-color: var(--user) !important;
+}
+
+/* ── Form inputs ── */
+.textInput {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.textInput:focus { outline: none; border-color: var(--user); }
+.textInput::placeholder { color: var(--muted); }
+
+/* ── Layout helpers ── */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.countHeader { display: flex; justify-content: space-between; align-items: center; }
+.countHeader label { font-size: 0.85rem; color: var(--text); }
+
+/* ── Popover / tooltip content ── */
+.iouTooltip {
+  font-size: 0.76rem;
+  color: var(--muted);
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  line-height: 1.8;
+  margin-top: 6px;
+}
+.iouTooltip p { margin-bottom: 4px; line-height: 1.5; }
+.iouTooltip strong { color: var(--text); }
+
+/* ── Set kind tags ── */
+.setKindTag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+.setKindRaw         { background: rgba(122,127,146,0.18); color: var(--muted); }
+.setKindMerged      { background: rgba(250,204,21,0.15);  color: var(--warn);  }
+.setKindReannotated { background: rgba(74,222,128,0.15);  color: var(--pass);  }
+.setKindTerminal    { background: rgba(248,113,113,0.15); color: var(--fail);  }

@@ -1,6 +1,8 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { PairSummary } from '../analyze/lib/types';
 import styles from './ManageScreen.module.css';
+import ui from '../shared/ui.module.css';
+import upload from '../shared/Upload.module.css';
 
 const ReplaceForm: Component<{
   pair: PairSummary;
@@ -31,16 +33,16 @@ const ReplaceForm: Component<{
 
   return (
     <div class={styles.pairReplaceForm}>
-      <div class="upload-file-row">
-        <label class="upload-file-btn">
-          <span class={imgFile() ? '' : 'replace-file-hint'}>
+      <div class={upload.uploadFileRow}>
+        <label class={upload.uploadFileBtn}>
+          <span class={imgFile() ? '' : upload.replaceFileHint}>
             {imgFile()?.name ?? `current (.${props.pair.image_ext})`}
           </span>
           <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg"
                  onChange={e => setImgFile((e.target as HTMLInputElement).files?.[0] ?? null)} />
         </label>
-        <label class="upload-file-btn">
-          <span class={jsonFile() ? '' : 'replace-file-hint'}>
+        <label class={upload.uploadFileBtn}>
+          <span class={jsonFile() ? '' : upload.replaceFileHint}>
             {jsonFile()?.name ?? 'current (.json)'}
           </span>
           <input type="file" accept=".json"
@@ -48,11 +50,11 @@ const ReplaceForm: Component<{
         </label>
       </div>
       <div class={styles.pairReplaceFooter}>
-        <button class="btn-secondary" style="flex:none;padding:5px 14px"
+        <button class={ui.btnSecondary}
                 disabled={saving()} onClick={save}>Save</button>
-        <button class="btn-text" onClick={props.onCancel}>Cancel</button>
+        <button class={ui.btnText} onClick={props.onCancel}>Cancel</button>
         <Show when={status()}>
-          <p class="upload-status" style="margin-left:4px">{status()}</p>
+          <p class={upload.uploadStatus} style="margin-left:4px">{status()}</p>
         </Show>
       </div>
     </div>

@@ -11,6 +11,7 @@ import SliderField from '../shared/SliderField';
 import KBreakdown from '../shared/KBreakdown';
 import PileDetailPanel from './PileDetailPanel';
 import styles from './AnalyzeSidebar.module.css';
+import ui from '../shared/ui.module.css';
 
 const AnalyzeSidebar: Component = () => {
   const d = store.data!;
@@ -92,13 +93,13 @@ const AnalyzeSidebar: Component = () => {
   return (
     <>
       {/* Mode toggle */}
-      <div class="field">
+      <div class={ui.field}>
         <div style="display:flex;align-items:center;gap:6px">
           <ModeToggle value={store.mode} onChange={store.setMode} />
           <PopoverRoot>
-            <PopoverTrigger class="btn-info">?</PopoverTrigger>
+            <PopoverTrigger class={ui.btnInfo}>?</PopoverTrigger>
             <PopoverPortal>
-              <PopoverContent class="iou-tooltip">
+              <PopoverContent class={ui.iouTooltip}>
                 <strong>Absolute:</strong> Missing annotations count as disagreement — a lesion only 2 of 4 annotators drew is half as salient as one all 4 drew.<br /><br />
                 <strong>Relative:</strong> Missing annotations are treated as oversight — salience reflects only the annotators who drew this lesion, so a 2-of-2 pile looks the same as a 4-of-4 pile.
               </PopoverContent>
@@ -121,13 +122,13 @@ const AnalyzeSidebar: Component = () => {
       />
 
       {/* Overlap level */}
-      <div class="field">
+      <div class={ui.field}>
         <div style="display:flex;align-items:center;gap:4px">
           <label>Overlap level</label>
           <PopoverRoot>
-            <PopoverTrigger class="btn-info">?</PopoverTrigger>
+            <PopoverTrigger class={ui.btnInfo}>?</PopoverTrigger>
             <PopoverPortal>
-              <PopoverContent class="iou-tooltip">
+              <PopoverContent class={ui.iouTooltip}>
                 Controls how deeply annotators must overlap for the IoU calculation — higher values require stricter agreement. Click a bar in the pile breakdown to inspect a level's I∩U detail without changing this slider.
               </PopoverContent>
             </PopoverPortal>
@@ -136,15 +137,15 @@ const AnalyzeSidebar: Component = () => {
             {kAgreeLabel()}
           </span>
         </div>
-        <div class="k-overlap-grid">
-          <div class="k-overlap-left">
-            <div class="k-bd-spacer" />
+        <div class={styles.kOverlapGrid}>
+          <div class={styles.kOverlapLeft}>
+            <div class={styles.kBdSpacer} />
             <For each={Array.from({ length: d.mTotal }, (_, i) => i + 1)}>
-              {(mi) => <div class="k-bd-left-label">m={mi}</div>}
+              {(mi) => <div class={styles.kBdLeftLabel}>m={mi}</div>}
             </For>
           </div>
-          <div class="k-overlap-right">
-            <div class="k-slider-wrapper">
+          <div class={styles.kOverlapRight}>
+            <div class={styles.kSliderWrapper}>
               <SliderRoot
                 class={styles.kSlider}
                 ref={(el: HTMLElement) => { kSliderRef = el; }}

@@ -3,6 +3,8 @@ import { useNavigate } from '@solidjs/router';
 import type { PairSummary } from './lib/types';
 import PairList from '../shared/PairList';
 import pairStyles from '../shared/PairList.module.css';
+import ui from '../shared/ui.module.css';
+import { setKindClass } from '../shared/uiHelpers';
 
 function countLabel(p: PairSummary): string {
   if (p.kind === 'merged') return p.pile_count != null ? `${p.pile_count} piles` : '— piles';
@@ -37,9 +39,9 @@ const AnalyzeSetup: Component = () => {
           renderDetail={(p) => (
             <>
               <div class={pairStyles.pairTagsRow}>
-                <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
+                <span class={`${ui.setKindTag} ${setKindClass(ui, p.kind)}`}>{p.kind}</span>
                 <Show when={p.terminal}>
-                  <span class="set-kind-tag set-kind-terminal">locked</span>
+                  <span class={`${ui.setKindTag} ${ui.setKindTerminal}`}>locked</span>
                 </Show>
               </div>
               <span>{countLabel(p)}</span>
@@ -49,7 +51,7 @@ const AnalyzeSetup: Component = () => {
       </Show>
 
       <button
-        class="btn-primary"
+        class={ui.btnPrimary}
         style="margin-top:12px"
         disabled={!selectedId() || loading()}
         onClick={() => { const id = selectedId(); if (id) navigate(`/analyze/${id}`); }}
@@ -57,7 +59,7 @@ const AnalyzeSetup: Component = () => {
         Analyze →
       </button>
 
-      <button class="btn-text" style="margin-top:6px" onClick={() => navigate('/')}>
+      <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>
         ← Home
       </button>
     </>

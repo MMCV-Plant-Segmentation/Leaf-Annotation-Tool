@@ -1,5 +1,7 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { PairSummary } from '../analyze/lib/types';
+import ui from '../shared/ui.module.css';
+import upload from '../shared/Upload.module.css';
 
 const AddSetForm: Component<{
   onDone: (pair: PairSummary) => void;
@@ -33,31 +35,31 @@ const AddSetForm: Component<{
 
   return (
     <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;padding:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--radius)">
-      <input type="text" class="text-input" placeholder="Display name"
+      <input type="text" class={ui.textInput} placeholder="Display name"
              value={name()}
              onInput={e => setName((e.target as HTMLInputElement).value)} />
-      <div class="upload-file-row">
-        <label class="upload-file-btn">
+      <div class={upload.uploadFileRow}>
+        <label class={upload.uploadFileBtn}>
           <span>{img()?.name ?? 'Image…'}</span>
           <input type="file" accept=".tif,.tiff,.png,.jpg,.jpeg"
                  onChange={e => setImg((e.target as HTMLInputElement).files?.[0] ?? null)} />
         </label>
-        <label class="upload-file-btn">
+        <label class={upload.uploadFileBtn}>
           <span>{json()?.name ?? 'JSON…'}</span>
           <input type="file" accept=".json"
                  onChange={e => setJson((e.target as HTMLInputElement).files?.[0] ?? null)} />
         </label>
       </div>
-      <button class="btn-secondary" style="width:100%" disabled={uploading()} onClick={upload}>
+      <button class={ui.btnSecondary} style="width:100%" disabled={uploading()} onClick={upload}>
         {uploading() ? 'Uploading…' : 'Upload'}
       </button>
       <Show when={status()}>
-        <p class="upload-status"
+        <p class={upload.uploadStatus}
            style={status().includes('fail') || status().includes('required') ? 'color:var(--fail)' : ''}>
           {status()}
         </p>
       </Show>
-      <button class="btn-text" style="margin-top:2px" onClick={props.onCancel}>← Cancel</button>
+      <button class={ui.btnText} style="margin-top:2px" onClick={props.onCancel}>← Cancel</button>
     </div>
   );
 };

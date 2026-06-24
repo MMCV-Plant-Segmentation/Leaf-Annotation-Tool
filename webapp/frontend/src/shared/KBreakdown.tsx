@@ -1,6 +1,7 @@
 import { Component, For, createMemo } from 'solid-js';
 import { hexToRgba } from '../analyze/lib/geometry';
 import type { Mode } from '../analyze/lib/types';
+import styles from './KBreakdown.module.css';
 
 interface Props {
   mTotal: number;
@@ -35,12 +36,12 @@ const KBreakdown: Component<Props> = (props) => {
   });
 
   return (
-    <div class="k-breakdown">
+    <div class={styles.kBreakdown}>
       <For each={rows()}>
         {(segs) => (
-          <div class="k-bd-bar">
+          <div class={styles.kBdBar}>
             <For each={segs}>
-              {(bg) => <div class="k-bd-seg" style={{ background: bg }} />}
+              {(bg) => <div class={styles.kBdSeg} style={{ background: bg }} />}
             </For>
           </div>
         )}

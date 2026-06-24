@@ -9,6 +9,8 @@ import { type TrainSession, calcForkInfo } from './trainHelpers';
 import PairList from '../shared/PairList';
 import styles from './TrainScreen.module.css';
 import pairStyles from '../shared/PairList.module.css';
+import ui from '../shared/ui.module.css';
+import { setKindClass } from '../shared/uiHelpers';
 
 const w = window as any;
 
@@ -77,15 +79,15 @@ const TrainScreen: Component = () => {
       {/* ── Fork view: resume or start fresh ── */}
       <Show when={view() === 'fork'}>
         <div class={pairStyles.resumeInfo} innerHTML={calcForkInfo(savedSession(), pairs())} />
-        <button class="btn-primary" style="margin-top:10px"
+        <button class={ui.btnPrimary} style="margin-top:10px"
                 disabled={launching()} onClick={resume}>
           {launching() ? 'Starting…' : 'Continue session'}
         </button>
-        <button class="btn-secondary" style="width:100%;margin-top:8px"
+        <button class={ui.btnSecondary} style="width:100%;margin-top:8px"
                 onClick={() => { setSavedSession(null); setView('config'); }}>
           New session →
         </button>
-        <button class="btn-text" style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
       </Show>
 
       {/* ── Config view: pair + mode + card count ── */}
@@ -110,7 +112,7 @@ const TrainScreen: Component = () => {
             renderDetail={(p) => (
               <>
                 <div class={pairStyles.pairTagsRow}>
-                  <span class={`set-kind-tag set-kind-${p.kind}`}>{p.kind}</span>
+                  <span class={`${ui.setKindTag} ${setKindClass(ui, p.kind)}`}>{p.kind}</span>
                 </div>
                 <span style="font-size:0.75rem;color:var(--muted)">{p.shape_count} shapes</span>
               </>
@@ -146,7 +148,7 @@ const TrainScreen: Component = () => {
         </div>
 
         <div class={styles.countField}>
-          <div class="count-header">
+          <div class={ui.countHeader}>
             <label>Cards per session</label>
             <span>{n() === nMax() ? `All (${n()})` : String(n())}</span>
           </div>
@@ -171,7 +173,7 @@ const TrainScreen: Component = () => {
         </Show>
 
         <button
-          class="btn-primary"
+          class={ui.btnPrimary}
           disabled={!selectedId() || launching()}
           onClick={startNew}
         >
@@ -179,10 +181,10 @@ const TrainScreen: Component = () => {
         </button>
 
         <Show when={savedSession()}>
-          <button class="btn-text" style="margin-top:6px"
+          <button class={ui.btnText} style="margin-top:6px"
                   onClick={() => setView('fork')}>← Back</button>
         </Show>
-        <button class="btn-text" style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
       </Show>
     </>
   );

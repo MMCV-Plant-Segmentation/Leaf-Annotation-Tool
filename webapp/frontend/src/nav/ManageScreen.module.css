@@ -43,4 +43,31 @@
   align-items: center;
   gap: 8px;
 }
-.pairReplaceFooter :global(.btn-secondary) { flex: 0 1 auto; padding: 5px 14px; }
+.pairReplaceFooter > :first-child { flex: 0 1 auto; }
+
+/* Pair management controls */
+.pairRenameInput {
+  font-size: 0.88rem;
+  background: var(--bg);
+  border: 1px solid var(--user);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 2px 6px;
+  width: 100%;
+  outline: none;
+}
+
+.pairEditBtn,
+.pairReplaceBtn,
+.pairDeleteBtn {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  border-radius: 4px;
+  /* inherits btn base from :where(.legacy) button or explicit reset */
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+}
+.pairDeleteBtn:hover { color: var(--fail); border-color: var(--fail); }

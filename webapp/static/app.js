@@ -85,7 +85,7 @@ window.setUser = setUser;
 function _syncBylineButtons() {
   const name = getUser() || 'anonymous';
   const label = name.length > 18 ? name.slice(0, 16) + '…' : name;
-  document.querySelectorAll('.btn-byline-change').forEach(btn => {
+  document.querySelectorAll('.btn-byline-change, [data-byline-btn]').forEach(btn => {
     btn.textContent = label;
     btn.title = 'Signed in as ' + name + ' — click to change';
   });

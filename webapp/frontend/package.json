@@ -3,7 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "build": "vite build",
+    "build:legacy": "node scripts/build-legacy-css.mjs",
+    "build": "vite build && npm run build:legacy",
     "build:watch": "vite build --watch",
     "test": "vitest run",
     "e2e": "node e2e/probe.mjs",
