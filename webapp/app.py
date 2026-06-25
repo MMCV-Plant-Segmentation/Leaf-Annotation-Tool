@@ -222,7 +222,13 @@ def _warn_if_bundle_stale() -> None:
 
 
 def _startup() -> None:
-    """Create schema, run manifest migration, and handle legacy file migration."""
+    """Create schema, run manifest migration, and handle legacy file migration.
+
+    Restore-from-backup is intentionally NOT here: the web server is fully decoupled
+    from the backup layer. Restoring a wiped/fresh deployment is an explicit
+    orchestration step (`docker compose run --rm restore`), run before the app boots —
+    it populates the data volume, after which _migrate_data_to_local() simply no-ops.
+    """
     _migrate_data_to_local()
     _db.auto_create_schema()
     _db.migrate_manifest(MANIFEST)

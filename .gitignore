@@ -4,6 +4,7 @@ data/
 __pycache__/
 *.pyc
 webapp/frontend/node_modules/
-webapp/static/dist/app.bundle.js.map
+webapp/static/dist/
 webapp/frontend/test-results/
 webapp/frontend/e2e/last-run.log
+.env
