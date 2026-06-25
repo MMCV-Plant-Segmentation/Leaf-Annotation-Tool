@@ -31,7 +31,7 @@ from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
 
-import db as _db
+from . import db as _db
 
 BASE     = Path(__file__).parent.parent
 DATA_DIR = _db.DATA_DIR            # single source of truth (db.py); LOCAL XDG dir by default
@@ -944,6 +944,11 @@ def api_analyze_set(set_id: str):
     })
 
 
-if __name__ == '__main__':
+def main() -> None:
+    """Dev entry point (`uv run leaf-annotation`): init then Werkzeug dev server."""
     _startup()
     app.run(debug=True, port=5000)
+
+
+if __name__ == '__main__':
+    main()

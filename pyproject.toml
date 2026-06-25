@@ -11,7 +11,13 @@ dependencies = [
     "granian>=2.7.7",
 ]
 
-# Script-based app, not an installable package: uv manages the dependency
-# environment but does not build/install this project itself.
-[tool.uv]
-package = false
+[project.scripts]
+leaf-annotation = "webapp.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Package only the backend Python modules (webapp/*.py) — not the frontend/static/data dirs.
+[tool.hatch.build.targets.wheel]
+include = ["webapp/*.py"]

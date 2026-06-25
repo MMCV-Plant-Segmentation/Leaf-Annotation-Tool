@@ -61,7 +61,7 @@ labelme-replacement annotator).
     (`/`, `/manage`, `/train`, `/merge`, `/analyze`); **Kobalte** provides the
     accessible widgets and styling is **CSS Modules** over global `:root` tokens. A
     Flask **catch-all** route serves the app shell for any nav path (`/api` and
-    `/static` keep priority). The bundle is the runtime artifact — `uv run app.py`
+    `/static` keep priority). The bundle is the runtime artifact — `uv run leaf-annotation`
     serves it as-is, so frontend source edits require `npm run build` (a pre-commit
     hook and a startup staleness check enforce this; see HANDOFF.md).
   - **Image viewers** — still multi-file plain `<script>` JavaScript (no ES modules):
@@ -79,16 +79,20 @@ labelme-replacement annotator).
 
 ### Run
 
-**Dev:** `cd webapp && uv run app.py` — Werkzeug dev server with auto-reloader. Single-request
-serialisation is fine for local iteration; the NFS reload stall is already fixed.
+The backend is an installable package (`webapp`, pyproject at `code/`) exposing a console-script
+entry point — there is no `uv run app.py` anymore.
 
-**Lab/production:** `cd webapp && uv run granian --interface wsgi --host 127.0.0.1 --port 5000 --workers 1 wsgi:app`
-— `wsgi.py` imports `app` and calls `_startup()` so schema init and the one-time data migration
-run on boot. `--workers 1` is intentional: `_migrate_data_to_local()` would race across multiple
-cold workers; revisit only if throughput becomes a bottleneck.
+**Dev:** `uv run leaf-annotation` — Werkzeug dev server with auto-reloader (runs from anywhere in
+the project; `uv run python -m webapp.app` is equivalent). Single-request serialisation is fine for
+local iteration; the NFS reload stall is already fixed.
 
-Always use `uv run` (never plain `python3`). Playwright `webServer` stays on `uv run app.py`; it
-smoke-tests behaviour, not concurrency.
+**Lab/production:** `cd code && uv run granian --interface wsgi --host 127.0.0.1 --port 5000 --workers 1 webapp.wsgi:app`
+— `webapp/wsgi.py` imports `app` and calls `_startup()` so schema init and the one-time data
+migration run on boot. `--workers 1` is intentional: `_migrate_data_to_local()` would race across
+multiple cold workers; revisit only if throughput becomes a bottleneck.
+
+Always use `uv run` (never plain `python3`). Playwright `webServer` uses `uv run leaf-annotation`;
+it smoke-tests behaviour, not concurrency.
 
 ---
 
@@ -587,23 +591,25 @@ bug). Fixed: move `ref` to `<SliderRoot>` (which handles `ref` correctly); add
 bare string pointing at a global rule that was deleted in the CSS-modules refactor.
 Fixed: add `.rangeInput` to `AnalyzeHeader.module.css`; use `class={styles.rangeInput}`.
 
-## 9. Playwright smoke baseline (2026-06-24)
+## 9. Test suite — Playwright (single framework, 2026-06-25)
 
-**Runner:** Playwright Test (`@playwright/test`, Chromium-only). Replaces the ad-hoc
-`e2e/probe.mjs` Puppeteer script. `webServer` block auto-starts `uv run app.py` and
-tears it down; `storageState` seeds `lesion-user` so the byline modal doesn't block.
-`workers: 1` (Flask debug server; increase when switching to a production WSGI server).
+**Runner:** Playwright Test (`@playwright/test`, Chromium-only) — the *only* test framework
+(Vitest and the ad-hoc Puppeteer harness were removed 2026-06-25). Three projects over `e2e/`:
+- **`unit`** (`e2e/unit/`) — browserless pure-logic specs (agreement, api, draw, geometry,
+  store); no `page` fixture, runs in Node.
+- **`fast`** (`e2e/browser/`) — real-browser behaviour/reactivity; `@full`-tagged checks excluded.
+- **`full`** — `fast` plus the `@full` computed-style assertions (opacity-slider styling, the
+  CSS-quarantine guard, abs/rel toggle state). `expectStyled()` no-ops in `fast`, asserts in `full`.
 
-**Data:** uses the local `data/` directory by default. `HT_DATA_DIR` env var (added to
-`app.py` and `db.py`, 2026-06-24) overrides the data directory, enabling committed
-fixture data for CI in P4. Run: `cd webapp/frontend && npm run smoke`.
+**Commands:** `npm test` = `unit` + `fast` (commit gate); `npm run test:full` adds `full`.
+`webServer` auto-starts `uv run leaf-annotation` and tears down the whole process tree (no orphaned
+reloader child); `storageState` seeds `lesion-user` so the byline modal doesn't block. `workers: 1`.
 
-**Coverage (`e2e/smoke/`):**
-- `nav.spec.ts` — home tiles, Manage, Train, Merge screens: no JS errors, key controls
-  visible, API-dependent content loads.
-- `analyze.spec.ts` — analyze picker, analyze viewer: `#analyze-screen` un-hides after
-  `fetchAnalyze()` resolves; computed-style assertion (`cursor: pointer`) on the
-  SolidJS-rendered opacity slider proves the CSS module loaded (catches the Bug 3 class
-  of regression — a deleted global class is silent without this check).
+**Fixture (lab-free, local disk):** `e2e/fixtures/seed.py` generates a deterministic synthetic
+dataset (stdlib-only PNGs, fixed UUIDs, no real lab data) — including a `merged` set with
+non-trivial k-of-N agreement — into `/tmp/leaf-e2e-fixture`; `global-setup` seeds it,
+`global-teardown` removes it, and `webServer.env` points `HT_DATA_DIR` there. The fixture MUST be
+on local disk (SQLite on NFS stalls — see §1).
 
-All 6 tests green as of commit `<this commit>`.
+**Coverage:** nav, byline, manage, train, merge-setup, analyze (picker + viewer + k-breakdown).
+The vanilla trainer/compare viewers are intentionally not covered (slated for rewrite). 119 tests.
