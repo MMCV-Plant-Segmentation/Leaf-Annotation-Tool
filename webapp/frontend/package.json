@@ -10,9 +10,8 @@
     "typecheck:css": "tcm --pattern 'src/**/*.module.css'",
     "typecheck": "npm run typecheck:css && tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run",
-    "e2e": "node e2e/probe.mjs",
-    "smoke": "playwright test --project=smoke"
+    "test": "playwright test --project=unit --project=fast",
+    "test:full": "playwright test --project=unit --project=fast --project=full"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
@@ -21,20 +20,15 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
-    "@solidjs/testing-library": "^0.8.10",
-    "@testing-library/jest-dom": "^6.6.3",
     "@types/node": "^22.15.21",
     "eslint": "^9.39.4",
     "eslint-plugin-solid": "^0.14.5",
-    "jsdom": "^26.1.0",
     "postcss": "^8.5.15",
     "postcss-prefixwrap": "^1.58.0",
-    "puppeteer-core": "^23.11.1",
     "typed-css-modules": "^0.9.1",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.62.0",
     "vite": "^6.3.5",
-    "vite-plugin-solid": "^2.11.6",
-    "vitest": "^3.2.4"
+    "vite-plugin-solid": "^2.11.6"
   }
 }
