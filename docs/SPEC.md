@@ -79,8 +79,16 @@ labelme-replacement annotator).
 
 ### Run
 
-Launch with `uv run app.py` from `webapp/`. Always use `uv run python3` in this
-project (never plain `python3`).
+**Dev:** `cd webapp && uv run app.py` — Werkzeug dev server with auto-reloader. Single-request
+serialisation is fine for local iteration; the NFS reload stall is already fixed.
+
+**Lab/production:** `cd webapp && uv run granian --interface wsgi --host 127.0.0.1 --port 5000 --workers 1 wsgi:app`
+— `wsgi.py` imports `app` and calls `_startup()` so schema init and the one-time data migration
+run on boot. `--workers 1` is intentional: `_migrate_data_to_local()` would race across multiple
+cold workers; revisit only if throughput becomes a bottleneck.
+
+Always use `uv run` (never plain `python3`). Playwright `webServer` stays on `uv run app.py`; it
+smoke-tests behaviour, not concurrency.
 
 ---
 
