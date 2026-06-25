@@ -46,7 +46,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'uv run app.py',
+    command: 'uv run leaf-annotation',
     cwd: path.join(__dirname, '..'),
     url: 'http://localhost:5000',
     // Point the server at the fixture dir regardless of when it starts.
