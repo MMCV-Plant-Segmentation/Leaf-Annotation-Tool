@@ -1,0 +1,16 @@
+# Build artifacts and local state — not needed in Docker context
+webapp/frontend/node_modules/
+webapp/frontend/.cache/
+webapp/frontend/test-results/
+webapp/frontend/playwright-report/
+webapp/frontend/e2e/last-run.log
+webapp/static/dist/
+.venv/
+__pycache__/
+*.pyc
+data/
+.claude/
+.env
+ops/systemd/
+docs/
+scripts/

@@ -1,0 +1,14 @@
+FROM node:24-alpine
+
+WORKDIR /app
+
+# Install deps (cache-stable layer: only manifest files)
+COPY webapp/frontend/package.json webapp/frontend/package-lock.json ./webapp/frontend/
+RUN cd webapp/frontend && npm ci
+
+# Copy frontend source + the legacy CSS source it reads
+COPY webapp/frontend/ ./webapp/frontend/
+COPY webapp/static/style.css ./webapp/static/style.css
+
+# Build: vite bundle → /app/webapp/static/dist/  +  legacy.css
+RUN cd webapp/frontend && npm run build

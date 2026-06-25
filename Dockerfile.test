@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+
+ARG UV_VERSION=0.11.15
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+# Python 3 + system deps for Playwright/Chromium (--with-deps installs more, but we need
+# at least curl for apt fallbacks). npx playwright install --with-deps handles the rest.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+
+# JS deps layer (cache-stable: only manifest)
+COPY webapp/frontend/package.json webapp/frontend/package-lock.json ./webapp/frontend/
+RUN cd webapp/frontend && npm ci
+
+# Install Playwright's Chromium + system dependencies (cached unless @playwright/test version changes)
+RUN cd webapp/frontend && npx playwright install --with-deps chromium
+
+# Python deps layer
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Python source + static assets
+COPY webapp/*.py webapp/
+COPY webapp/static/ webapp/static/
+
+# Bundle from frontend build context
+COPY --from=frontend-build /app/webapp/static/dist ./webapp/static/dist
+
+# Install Python project
+RUN uv sync --frozen --no-dev
+
+# Frontend source (test specs, playwright config)
+COPY webapp/frontend/ ./webapp/frontend/
+
+ENV CI=true
+
+CMD ["sh", "-c", "cd webapp/frontend && npm run test:full"]
