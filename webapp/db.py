@@ -61,6 +61,25 @@ def close_db(con: sqlite3.Connection) -> None:
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 _DDL = """
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT,
+  created_at REAL NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT UNIQUE NOT NULL,
+  expires REAL NOT NULL,
+  created_at REAL NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT, updated_at REAL NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE TABLE IF NOT EXISTS annotation_set (
   id           TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
@@ -154,7 +173,24 @@ def auto_create_schema() -> None:
         close_db(con)
 
 
-# ── Migration ─────────────────────────────────────────────────────────────────
+# ── Migrations ────────────────────────────────────────────────────────────────
+
+def migrate_add_user_fk() -> None:
+    """Add created_by_user_id FK column to annotation_set if it doesn't exist yet."""
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(annotation_set)').fetchall()}
+        if 'created_by_user_id' not in cols:
+            con.execute(
+                'ALTER TABLE annotation_set ADD COLUMN'
+                ' created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL'
+            )
+            con.commit()
+    finally:
+        close_db(con)
+
+
+
 
 def migrate_manifest(manifest_path: Path) -> int:
     """

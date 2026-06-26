@@ -3,7 +3,7 @@
 Canonical reference for the application as built.
 
 The app opens on a **home screen** of tiles that route to several tools sharing
-one backend, one `index.html`, and a byline identity:
+one backend, one `index.html`, and session-based authentication:
 
 1. **Manage Sets** — the set-management UI (upload, rename, replace, delete).
 2. **Merge Sets** — the Comparison tool: pool independent annotations from
@@ -29,10 +29,16 @@ labelme-replacement annotator).
   (`app.db`, `webapp/db.py`); **practice (training) session state** still
   lives in the browser's `localStorage`, while **comparison/merge state** is now
   server-persisted in the `merge` table (only the merge ID is kept client-side).
-- **Identity (byline):** on first load the user enters a display name (no
-  password — attribution, not access control), stored in
-  `localStorage['lesion-user']` and sent as an `X-User` header on every `/api/`
-  request; the backend records it as `created_by` on creates.
+- **Identity and access control:** the app requires login — every data endpoint is
+  gated by a Flask session cookie (`session['user_id']`). The admin account is
+  managed via the `ADMIN_PASSWORD` env var (upserted on every boot; never stored
+  in the DB). New users are created invite-only by the admin; each receives a
+  one-time invite link (7-day TTL) via which they set their password.
+  `SECRET_KEY` and `ADMIN_PASSWORD` are always env-only; `BACKUP_DIR` is
+  admin-editable via a `settings` table (env value is the bootstrap default).
+  **Attribution:** `annotation_set.created_by_user_id` is a FK to `users(id)` set
+  from `session['user_id']` on new creates; the legacy `created_by TEXT` column is
+  kept for pre-auth rows (fall-back when `creator_username` join is NULL).
 - **Data directory & the local-disk requirement.** All on-disk state — `app.db`,
   `images/`, `jsons/`, `manifest.json` — lives together in one **data directory**,
   which defaults to a **local** path (`$XDG_DATA_HOME/leaf-annotation`, i.e.
@@ -52,8 +58,8 @@ labelme-replacement annotator).
   `image_hash`, `image_ext`, `kind`, `provenance`, `created_by`, `created_at`,
   `terminal`); `manifest.json` is retained as a read-only backup but is no
   longer authoritative. The `merge` table holds comparison/merge documents (§4).
-  `app.db` also contains empty scaffolding tables (`reannot_*`) for the
-  unbuilt consensus tool.
+  `app.db` also contains `users`, `invite_codes`, and `settings` tables (auth arc,
+  2026-06-25) and empty scaffolding tables (`reannot_*`) for the unbuilt consensus tool.
 - **Frontend is two layers** (see [`Nav Layer to SolidJS Plan.md`](./Nav%20Layer%20to%20SolidJS%20Plan.md)):
   - **Nav/setup layer** — **SolidJS + TypeScript**, source in `webapp/frontend/src/`,
     built by **Vite** to a committed bundle `webapp/static/dist/app.bundle.{js,css}`.
@@ -68,8 +74,9 @@ labelme-replacement annotator).
     training (`trainer.js`), compare/merge (`compare*.js`). Shared globals; each
     exposes a deferred `initX()` wired from `app.js`. A nav route hands off to the
     vanilla viewer through a small `window._*` bridge. (The **Analyze** viewer is
-    itself SolidJS — §5.) The byline modal and the `X-User` fetch wrapper remain
-    single-sourced in `app.js`.
+    itself SolidJS — §5.) A global 401 interceptor in `app.js` wraps `window.fetch`
+    and redirects to `/login` on any unauthenticated API response (excluding
+    `POST /api/login` itself, which returns 401 for bad credentials).
 - **labelme JSON** (v6.3.1) is the annotation interchange format. Only
   `shape_type == 'polygon'` shapes are used; the `fused_exterior` label is
   excluded.
@@ -103,7 +110,7 @@ it smoke-tests behaviour, not concurrency.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/api/images` | List available annotation sets (from the `annotation_set` registry). |
-| `POST` | `/api/upload` | Upload image + labelme JSON + display name (web upload so SSH-forwarded users need no direct server access). Stamps `created_by` from `X-User`. |
+| `POST` | `/api/upload` | Upload image + labelme JSON + display name (web upload so SSH-forwarded users need no direct server access). Stamps `created_by_user_id` from `session['user_id']`. |
 | `GET`  | `/api/shapes?pair=<id>` | Polygon-only shapes for a pair. |
 | `GET`  | `/api/crop/<pair_id>/<int:idx>` | Crop image for one training card. |
 | `PATCH`/`PUT`/`DELETE` | `/api/images/<pair_id>` | Manage a set (DB-backed). |
@@ -483,8 +490,8 @@ relies on the rings being nested (each ring fully covers all lower-k rings).
 The old undocumented globals (`analyze.js` reaching into `setup.js` / `app.js` /
 `components.js`) are now an **explicit typed bridge** (`src/analyze/lib/bridge.ts`):
 Solid reads the pair registry via `getAvailablePairs()` (← `window.availablePairs`),
-the byline via `getUser()`/`setUser()`, and shares `buildIoUDetail` with the still-vanilla
-trainer. The full nav-layer `window._*` contract is tabulated in HANDOFF.md.
+and shares `buildIoUDetail` with the still-vanilla trainer.
+The full nav-layer `window._*` contract is tabulated in HANDOFF.md.
 
 Known issue (open, see HANDOFF "Analyze viewer — de-imperative"): the picker reads
 `window.availablePairs` **non-reactively at setup**, so a direct navigation / refresh to
@@ -603,7 +610,9 @@ Fixed: add `.rangeInput` to `AnalyzeHeader.module.css`; use `class={styles.range
 
 **Commands:** `npm test` = `unit` + `fast` (commit gate); `npm run test:full` adds `full`.
 `webServer` auto-starts `uv run leaf-annotation` and tears down the whole process tree (no orphaned
-reloader child); `storageState` seeds `lesion-user` so the byline modal doesn't block. `workers: 1`.
+reloader child); `global-setup.ts` seeds the fixture DB with an admin user and logs in via the
+Playwright API, saving the session cookie to `e2e/.auth.json` (gitignored); `storageState` loads it
+so all tests start authenticated. `workers: 1`.
 
 **Fixture (lab-free, local disk):** `e2e/fixtures/seed.py` generates a deterministic synthetic
 dataset (stdlib-only PNGs, fixed UUIDs, no real lab data) — including a `merged` set with
@@ -611,5 +620,6 @@ non-trivial k-of-N agreement — into `/tmp/leaf-e2e-fixture`; `global-setup` se
 `global-teardown` removes it, and `webServer.env` points `HT_DATA_DIR` there. The fixture MUST be
 on local disk (SQLite on NFS stalls — see §1).
 
-**Coverage:** nav, byline, manage, train, merge-setup, analyze (picker + viewer + k-breakdown).
-The vanilla trainer/compare viewers are intentionally not covered (slated for rewrite). 119 tests.
+**Coverage:** nav, auth (login/logout/admin/invite), manage, train, merge-setup, analyze
+(picker + viewer + k-breakdown). The vanilla trainer/compare viewers are intentionally not covered
+(slated for rewrite).

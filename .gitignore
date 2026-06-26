@@ -7,4 +7,5 @@ webapp/frontend/node_modules/
 webapp/static/dist/
 webapp/frontend/test-results/
 webapp/frontend/e2e/last-run.log
+webapp/frontend/e2e/.auth.json
 .env

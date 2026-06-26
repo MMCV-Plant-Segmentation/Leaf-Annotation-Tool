@@ -79,15 +79,30 @@ MERGE_DOC = {
     },
 }
 
+ADMIN_PW = 'e2e-admin-pw'  # must match playwright.config.ts webServer env
+
 # ── Schema (mirrors db.py; update if DDL changes) ────────────────────────────
 DDL = """
 PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+  password_hash TEXT, created_at REAL NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS invite_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT UNIQUE NOT NULL, expires REAL NOT NULL,
+  created_at REAL NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY, value TEXT, updated_at REAL NOT NULL DEFAULT (unixepoch())
+);
 CREATE TABLE IF NOT EXISTS annotation_set (
   id TEXT PRIMARY KEY, display_name TEXT NOT NULL, image_hash TEXT NOT NULL,
   image_ext TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('raw','merged','reannotated')),
   provenance TEXT, created_by TEXT, created_at TEXT NOT NULL,
-  terminal INTEGER NOT NULL DEFAULT 0
+  terminal INTEGER NOT NULL DEFAULT 0, created_by_user_id INTEGER REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS merge (
   id TEXT PRIMARY KEY, set_id TEXT REFERENCES annotation_set(id),
@@ -125,12 +140,24 @@ def seed(out_dir: Path) -> None:
     (out_dir / 'jsons' / f'{SET_ALPHA}.json').write_text(json.dumps(_labelme(alpha_shapes)))
     (out_dir / 'jsons' / f'{SET_BETA}.json').write_text(json.dumps(_labelme(beta_shapes)))
 
+    import hashlib, hmac, os, base64
+    # Minimal scrypt hash compatible with werkzeug's generate_password_hash('scrypt').
+    # We call werkzeug directly here because seed.py runs in the uv venv.
+    from werkzeug.security import generate_password_hash
+    admin_hash = generate_password_hash(ADMIN_PW)
+
     con = sqlite3.connect(str(out_dir / 'app.db'))
     con.executescript(DDL)
     # INSERT OR IGNORE: tolerate re-runs (webServer may have started before globalSetup
     # and created the schema via app._startup(); rows inserted here are visible per-request).
+    # Upsert admin password so it always matches ADMIN_PW even on re-runs.
+    con.execute(
+        'INSERT INTO users (username, password_hash) VALUES (?, ?)'
+        ' ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash',
+        ('admin', admin_hash),
+    )
     con.executemany(
-        'INSERT OR IGNORE INTO annotation_set VALUES (?,?,?,?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO annotation_set (id,display_name,image_hash,image_ext,kind,provenance,created_by,created_at,terminal) VALUES (?,?,?,?,?,?,?,?,?)',
         [
             (SET_ALPHA,  'Alpha Set',  IMG_HASH, IMG_EXT, 'raw',    None, 'SeedBot', NOW, 0),
             (SET_BETA,   'Beta Set',   IMG_HASH, IMG_EXT, 'raw',    None, 'SeedBot', NOW, 0),
