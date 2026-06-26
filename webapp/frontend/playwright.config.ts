@@ -17,15 +17,8 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   use: {
     baseURL: 'http://localhost:5000',
-    // Pre-seed the byline so screens open without the mandatory first-load modal.
-    // Tests that exercise the byline flow clear this via browser.newContext().
-    storageState: {
-      cookies: [],
-      origins: [{
-        origin: 'http://localhost:5000',
-        localStorage: [{ name: 'lesion-user', value: 'E2EBot' }],
-      }],
-    },
+    // Global login state: globalSetup logs in and saves the session cookie here.
+    storageState: path.join(__dirname, 'e2e', '.auth.json'),
   },
   projects: [
     {
@@ -51,7 +44,11 @@ export default defineConfig({
     url: 'http://localhost:5000',
     // Point the server at the fixture dir regardless of when it starts.
     // globalSetup seeds into the same path before tests begin.
-    env: { HT_DATA_DIR: FIXTURE_DIR },
+    env: {
+      HT_DATA_DIR:    FIXTURE_DIR,
+      SECRET_KEY:     'e2e-test-secret-key-not-for-production',
+      ADMIN_PASSWORD: 'e2e-admin-pw',
+    },
     // Locally reuse a running server; in CI always start fresh.
     reuseExistingServer: !process.env.CI,
     timeout: 20_000,

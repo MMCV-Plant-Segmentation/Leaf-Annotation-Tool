@@ -1,6 +1,7 @@
 import { Component, Show, createSignal, onMount, onCleanup } from 'solid-js';
 import * as store from './store';
-import { openBylineModal, showHomeScreen } from './lib/bridge';
+import { showHomeScreen } from './lib/bridge';
+import { currentUser, logout } from '../auth';
 import styles from './AnalyzeHeader.module.css';
 import ui from '../shared/ui.module.css';
 
@@ -47,12 +48,10 @@ const AnalyzeHeader: Component = () => {
 
   return (
     <>
-      <button
-        class={ui.btnBylineChange}
-        data-byline-btn
-        title="Change display name"
-        onClick={() => openBylineModal(null)}
-      />
+      <Show when={currentUser()}>
+        <span style="font-size:0.8rem;color:var(--color-text-muted,#666)">{currentUser()!.username}</span>
+        <button style="font-size:0.8rem" onClick={() => void logout()}>Log out</button>
+      </Show>
       <input
         type="color"
         class={styles.colorPick}

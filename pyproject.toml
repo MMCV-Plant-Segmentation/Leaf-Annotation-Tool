@@ -9,6 +9,7 @@ dependencies = [
     "numpy",
     "shapely",
     "granian>=2.7.7",
+    "python-dotenv",
 ]
 
 [project.scripts]

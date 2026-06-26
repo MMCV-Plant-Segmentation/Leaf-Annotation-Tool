@@ -26,12 +26,15 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, request, send_file
+from dotenv import load_dotenv
+from flask import Flask, abort, jsonify, request, send_file, session
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.ops import unary_union
+from werkzeug.security import generate_password_hash
 
 from . import db as _db
+from .auth import auth_bp, login_required
 
 BASE     = Path(__file__).parent.parent
 DATA_DIR = _db.DATA_DIR            # single source of truth (db.py); LOCAL XDG dir by default
@@ -47,6 +50,7 @@ LEGACY_IMAGE = BASE / 'DSC_0018_segment_1_segmented_smoothed.tif'
 LEGACY_JSON  = BASE / 'DSC_0018_segment_1_segmented_smoothed.json'
 
 app = Flask(__name__, static_folder=str(STATIC))
+app.register_blueprint(auth_bp)
 
 _img_cache:      dict[str, Image.Image] = {}
 _overview_cache: dict[str, bytes]       = {}
@@ -55,11 +59,12 @@ _overview_cache: dict[str, bytes]       = {}
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _all_sets() -> list[dict]:
-    """Return all annotation_set rows as a list of dicts."""
     con = _db.get_db()
     try:
         return con.execute(
-            'SELECT * FROM annotation_set ORDER BY created_at'
+            'SELECT a.*, u.username AS creator_username'
+            ' FROM annotation_set a LEFT JOIN users u ON u.id = a.created_by_user_id'
+            ' ORDER BY a.created_at'
         ).fetchall()
     finally:
         _db.close_db(con)
@@ -69,21 +74,30 @@ def _get_set(set_id: str) -> dict | None:
     con = _db.get_db()
     try:
         return con.execute(
-            'SELECT * FROM annotation_set WHERE id = ?', (set_id,)
+            'SELECT a.*, u.username AS creator_username'
+            ' FROM annotation_set a LEFT JOIN users u ON u.id = a.created_by_user_id'
+            ' WHERE a.id = ?',
+            (set_id,),
         ).fetchone()
     finally:
         _db.close_db(con)
 
 
+def _creator(row: dict) -> str | None:
+    """Resolve creator name: FK-joined username wins over legacy text."""
+    return row.get('creator_username') or row.get('created_by') or None
+
+
 def _insert_set(row: dict) -> None:
+    row.setdefault('created_by_user_id', None)
     con = _db.get_db()
     try:
         con.execute(
             '''INSERT INTO annotation_set
                  (id, display_name, image_hash, image_ext,
-                  kind, provenance, created_by, created_at, terminal)
+                  kind, provenance, created_by, created_at, terminal, created_by_user_id)
                VALUES (:id, :display_name, :image_hash, :image_ext,
-                       :kind, :provenance, :created_by, :created_at, :terminal)''',
+                       :kind, :provenance, :created_by, :created_at, :terminal, :created_by_user_id)''',
             row,
         )
         con.commit()
@@ -187,12 +201,6 @@ def _iou(a: list, b: list) -> dict:
         return {'iou': 0.0, 'intersection': 0.0, 'union': 0.0}
 
 
-def _xuser() -> str | None:
-    """Return the byline sent in the X-User header, or None."""
-    v = (request.headers.get('X-User') or '').strip()
-    return v or None
-
-
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 def _warn_if_bundle_stale() -> None:
@@ -221,16 +229,49 @@ def _warn_if_bundle_stale() -> None:
         pass  # a dev-convenience check must never break startup
 
 
-def _startup() -> None:
-    """Create schema, run manifest migration, and handle legacy file migration.
+def _load_env() -> None:
+    """Load .env from the project root into os.environ (existing vars take priority)."""
+    load_dotenv(BASE / '.env')
 
-    Restore-from-backup is intentionally NOT here: the web server is fully decoupled
-    from the backup layer. Restoring a wiped/fresh deployment is an explicit
-    orchestration step (`docker compose run --rm restore`), run before the app boots —
-    it populates the data volume, after which _migrate_data_to_local() simply no-ops.
+
+def _configure_app() -> None:
+    secret = os.environ.get('SECRET_KEY')
+    if not secret:
+        raise RuntimeError('SECRET_KEY env var is required')
+    app.secret_key = secret
+
+
+def _sync_admin() -> None:
+    """Upsert the admin user from ADMIN_PASSWORD env var."""
+    password = os.environ.get('ADMIN_PASSWORD')
+    con = _db.get_db()
+    try:
+        row = con.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
+        if password:
+            phash = generate_password_hash(password)
+            if row:
+                con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
+            else:
+                con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
+            con.commit()
+        elif not row:
+            raise RuntimeError('ADMIN_PASSWORD must be set on first boot (no admin user exists)')
+    finally:
+        _db.close_db(con)
+
+
+def _startup() -> None:
+    """Init schema, auth config, and legacy data migrations.
+
+    Restore-from-backup is NOT here — it's an explicit orchestration step
+    (`docker compose run --rm restore`) before the app boots.
     """
+    _load_env()
+    _configure_app()
     _migrate_data_to_local()
     _db.auto_create_schema()
+    _db.migrate_add_user_fk()
+    _sync_admin()
     _db.migrate_manifest(MANIFEST)
     _auto_migrate_legacy()
     _warn_if_bundle_stale()
@@ -313,6 +354,7 @@ def catch_all(path: str):
 
 
 @app.get('/api/images')
+@login_required
 def api_images():
     out = []
     for p in _all_sets():
@@ -322,7 +364,6 @@ def api_images():
             if 'pile_count' in prov:
                 pile_count = prov['pile_count']
             else:
-                # Fallback for records saved before pile_count was stored
                 con2 = _db.get_db()
                 try:
                     mrow = con2.execute(
@@ -338,17 +379,16 @@ def api_images():
                 shape_count = len(_load_shapes(p['id']))
             except Exception:
                 shape_count = 0
-        # Backward-compatible response shape: keep uploaded_at alias
         out.append({
             'id':           p['id'],
             'display_name': p['display_name'],
             'image_hash':   p['image_hash'],
             'image_ext':    p['image_ext'],
-            'uploaded_at':  p['created_at'],   # alias for existing JS
+            'uploaded_at':  p['created_at'],
             'created_at':   p['created_at'],
             'kind':         p['kind'],
             'terminal':     bool(p['terminal']),
-            'created_by':   p['created_by'],
+            'created_by':   _creator(p),
             'shape_count':  shape_count,
             'pile_count':   pile_count,
         })
@@ -356,6 +396,7 @@ def api_images():
 
 
 @app.post('/api/upload')
+@login_required
 def api_upload():
     if 'image' not in request.files or 'json' not in request.files:
         return jsonify({'error': 'image and json files required'}), 400
@@ -382,15 +423,16 @@ def api_upload():
     (JSON_DIR / f'{pair_id}.json').write_bytes(json_file.read())
 
     _insert_set({
-        'id':           pair_id,
-        'image_hash':   img_hash,
-        'image_ext':    img_ext,
-        'display_name': display_name,
-        'kind':         'raw',
-        'provenance':   None,
-        'created_by':   _xuser(),
-        'created_at':   created_at,
-        'terminal':     0,
+        'id':                pair_id,
+        'image_hash':        img_hash,
+        'image_ext':         img_ext,
+        'display_name':      display_name,
+        'kind':              'raw',
+        'provenance':        None,
+        'created_by':        None,
+        'created_at':        created_at,
+        'terminal':          0,
+        'created_by_user_id': session.get('user_id'),
     })
 
     entry = {
@@ -402,7 +444,7 @@ def api_upload():
         'created_at':   created_at,
         'kind':         'raw',
         'terminal':     False,
-        'created_by':   _xuser(),
+        'created_by':   session.get('username'),
     }
     try:
         entry['shape_count'] = len(_load_shapes(pair_id))
@@ -412,6 +454,7 @@ def api_upload():
 
 
 @app.get('/api/shapes')
+@login_required
 def api_shapes():
     pair_id = request.args.get('pair')
     if not pair_id:
@@ -439,6 +482,7 @@ def api_shapes():
 
 
 @app.get('/api/crop/<pair_id>/<int:idx>')
+@login_required
 def api_crop(pair_id: str, idx: int):
     meta, shapes, img = _get_pair(pair_id)
     if meta is None:
@@ -454,6 +498,7 @@ def api_crop(pair_id: str, idx: int):
 
 
 @app.patch('/api/images/<pair_id>')
+@login_required
 def api_update_image(pair_id: str):
     data = request.json or {}
     display_name = (data.get('display_name') or '').strip()
@@ -473,11 +518,12 @@ def api_update_image(pair_id: str):
         'created_at':   meta['created_at'],
         'kind':         meta['kind'],
         'terminal':     bool(meta['terminal']),
-        'created_by':   meta['created_by'],
+        'created_by':   _creator(meta),
     })
 
 
 @app.put('/api/images/<pair_id>')
+@login_required
 def api_replace_pair(pair_id: str):
     meta = _get_set(pair_id)
     if not meta:
@@ -527,7 +573,7 @@ def api_replace_pair(pair_id: str):
         'created_at':   meta['created_at'],
         'kind':         meta['kind'],
         'terminal':     bool(meta['terminal']),
-        'created_by':   meta['created_by'],
+        'created_by':   _creator(meta),
     }
     try:
         result['shape_count'] = len(_load_shapes(pair_id))
@@ -537,6 +583,7 @@ def api_replace_pair(pair_id: str):
 
 
 @app.delete('/api/images/<pair_id>')
+@login_required
 def api_delete_pair(pair_id: str):
     meta = _get_set(pair_id)
     if not meta:
@@ -555,6 +602,7 @@ def api_delete_pair(pair_id: str):
 
 
 @app.get('/api/image/<image_hash>')
+@login_required
 def api_image_overview(image_hash: str):
     if image_hash in _overview_cache:
         return send_file(io.BytesIO(_overview_cache[image_hash]), mimetype='image/png')
@@ -582,6 +630,7 @@ def api_image_overview(image_hash: str):
 
 
 @app.get('/api/image/<image_hash>/crop')
+@login_required
 def api_image_crop(image_hash: str):
     con = _db.get_db()
     try:
@@ -631,6 +680,7 @@ def _get_image_ext(image_hash: str) -> str:
 
 
 @app.post('/api/merges')
+@login_required
 def api_create_merge():
     body       = request.json or {}
     doc        = body.get('doc')
@@ -644,7 +694,7 @@ def api_create_merge():
         con.execute(
             'INSERT INTO merge (id, set_id, image_hash, doc, created_by, updated_at)'
             ' VALUES (?, NULL, ?, ?, ?, ?)',
-            (merge_id, image_hash, json.dumps(doc), _xuser(), updated_at),
+            (merge_id, image_hash, json.dumps(doc), session.get('username'), updated_at),
         )
         con.commit()
     finally:
@@ -653,6 +703,7 @@ def api_create_merge():
 
 
 @app.get('/api/merges/<merge_id>')
+@login_required
 def api_get_merge(merge_id: str):
     row = _get_merge(merge_id)
     if not row:
@@ -668,6 +719,7 @@ def api_get_merge(merge_id: str):
 
 
 @app.patch('/api/merges/<merge_id>')
+@login_required
 def api_update_merge(merge_id: str):
     if not _get_merge(merge_id):
         return jsonify({'error': 'merge not found'}), 404
@@ -688,6 +740,7 @@ def api_update_merge(merge_id: str):
 
 
 @app.post('/api/merges/<merge_id>/save')
+@login_required
 def api_save_merge(merge_id: str):
     row = _get_merge(merge_id)
     if not row:
@@ -714,9 +767,10 @@ def api_save_merge(merge_id: str):
         'provenance':   json.dumps({'source_set_ids': included_ids,
                                     'merge_id': merge_id,
                                     'pile_count': pile_count}),
-        'created_by':   _xuser(),
-        'created_at':   created_at,
-        'terminal':     0,
+        'created_by':        None,
+        'created_at':        created_at,
+        'terminal':          0,
+        'created_by_user_id': session.get('user_id'),
     })
     con = _db.get_db()
     try:
@@ -728,6 +782,7 @@ def api_save_merge(merge_id: str):
 
 
 @app.delete('/api/merges/<merge_id>')
+@login_required
 def api_delete_merge(merge_id: str):
     con = _db.get_db()
     try:
@@ -739,6 +794,7 @@ def api_delete_merge(merge_id: str):
 
 
 @app.post('/api/compare')
+@login_required
 def api_compare():
     body       = request.json or {}
     image_hash = body.get('imageHash')
@@ -820,6 +876,7 @@ def api_compare():
 
 
 @app.post('/api/iou')
+@login_required
 def api_iou():
     body = request.json
     return jsonify(_iou(body['a'], body['b']))
@@ -835,6 +892,7 @@ def _geom_to_rings(geom) -> list[list[list[float]]]:
 
 
 @app.get('/api/analyze/<set_id>')
+@login_required
 def api_analyze_set(set_id: str):
     meta = _get_set(set_id)
     if not meta:

@@ -66,43 +66,17 @@ const doneScreen     = document.getElementById('done-screen');
 const setupScreen    = document.getElementById('setup-screen');
 const appDiv         = document.getElementById('app');
 
-/* ── B.1 Byline identity ─────────────────────────────────────────────────── */
-const BYLINE_KEY = 'lesion-user';
-
-function getUser() {
-  return (localStorage.getItem(BYLINE_KEY) || '').trim() || null;
-}
-
-function setUser(name) {
-  localStorage.setItem(BYLINE_KEY, name.trim());
-  _syncBylineButtons();
-}
-
-// Expose for bridge.ts (Solid reads/writes byline through these)
-window.getUser = getUser;
-window.setUser = setUser;
-
-function _syncBylineButtons() {
-  const name = getUser() || 'anonymous';
-  const label = name.length > 18 ? name.slice(0, 16) + '…' : name;
-  document.querySelectorAll('.btn-byline-change, [data-byline-btn]').forEach(btn => {
-    btn.textContent = label;
-    btn.title = 'Signed in as ' + name + ' — click to change';
-  });
-}
-
-/* ── X-User header plumbing: wrap fetch ──────────────────────────────────── */
+/* ── 401 interceptor: redirect to /login on any unauthenticated API call ───── */
 const _origFetch = window.fetch.bind(window);
 window.fetch = function(url, opts) {
-  // Only augment same-origin /api/ calls
-  if (typeof url === 'string' && url.startsWith('/api/')) {
-    opts = opts || {};
-    const headers = new Headers(opts.headers || {});
-    const user = getUser();
-    if (user) headers.set('X-User', user);
-    opts = { ...opts, headers };
-  }
-  return _origFetch(url, opts);
+  return _origFetch(url, opts).then(res => {
+    if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/')
+        && url !== '/api/login'
+        && !window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login';
+    }
+    return res;
+  });
 };
 
 /* ── Home screen / routing ───────────────────────────────────────────────── */
@@ -126,20 +100,14 @@ function enterComparisonMode() {
   initCompareSetup();
   initCompare();
 
-  // Wire vanilla change-name buttons (Solid AnalyzeHeader handles its own)
-  document.querySelectorAll('.btn-byline-change').forEach(btn => {
-    btn.addEventListener('click', () => window.openBylineModal(null));
+  // Wire auth logout buttons in vanilla screens
+  document.querySelectorAll('.auth-logout-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
   });
 
-  // First load: show byline modal if no name stored, then load pairs
-  async function afterByline() {
-    availablePairs = await fetch('/api/images').then(r => r.json());
-  }
-
-  if (!getUser()) {
-    window.openBylineModal(afterByline);
-  } else {
-    _syncBylineButtons();
-    await afterByline();
-  }
+  // Load pairs for vanilla screens (auth is enforced server-side; 401 → redirect above)
+  availablePairs = await fetch('/api/images').then(r => r.json());
 })();
