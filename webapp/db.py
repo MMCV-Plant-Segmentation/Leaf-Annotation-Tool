@@ -158,6 +158,112 @@ CREATE TABLE IF NOT EXISTS reannot_polygon (
 
 CREATE INDEX IF NOT EXISTS idx_reannot_polygon_generation_id
   ON reannot_polygon (generation_id);
+
+-- ── Annotator pipeline (projects → tiles → batches) ──────────────────────────
+-- See docs/Annotator Plan.md. `annotation.kind` is intentionally FREE TEXT (no CHECK)
+-- so new primitives (stroke, point, …) are added without a migration.
+
+CREATE TABLE IF NOT EXISTS project (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  tile_size_px    INTEGER NOT NULL DEFAULT 128,    -- immutable after creation (v1)
+  black_threshold INTEGER NOT NULL DEFAULT 40,
+  classes_json    TEXT NOT NULL DEFAULT '[]',      -- v1: flat per-project class list
+  created_by      TEXT,
+  created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_annotator (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  byline     TEXT NOT NULL,
+  UNIQUE (project_id, byline)
+);
+
+CREATE TABLE IF NOT EXISTS project_image (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  image_hash  TEXT NOT NULL,
+  image_ext   TEXT NOT NULL,
+  source_name TEXT,
+  width       INTEGER,
+  height      INTEGER,
+  origin_y    INTEGER NOT NULL DEFAULT 0,
+  leaf_x INTEGER, leaf_y INTEGER, leaf_w INTEGER, leaf_h INTEGER,
+  created_at  TEXT NOT NULL,
+  UNIQUE (project_id, image_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_image_project ON project_image (project_id);
+
+-- Full tile bbox is stored at batch-creation time (NOT derived) so historical tiles keep
+-- their coordinates even if project params change later.
+CREATE TABLE IF NOT EXISTS tile (
+  id               TEXT PRIMARY KEY,
+  project_image_id TEXT NOT NULL REFERENCES project_image(id) ON DELETE CASCADE,
+  x INTEGER NOT NULL, y INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
+  UNIQUE (project_image_id, x, y)
+);
+
+CREATE TABLE IF NOT EXISTS batch (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  seq        INTEGER NOT NULL,                       -- 1-based ordinal within the project
+  size       INTEGER NOT NULL DEFAULT 5,
+  status     TEXT NOT NULL DEFAULT 'annotation_in_progress',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_project ON batch (project_id);
+
+-- Tile GEOMETRY is shared across annotators in a batch (so their results are comparable).
+CREATE TABLE IF NOT EXISTS batch_tile (
+  id       TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES batch(id) ON DELETE CASCADE,
+  tile_id  TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
+  UNIQUE (batch_id, tile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_tile_batch ON batch_tile (batch_id);
+
+-- Per-annotator PRIVATE progress row (holds no shapes). Annotators are blind until merge.
+CREATE TABLE IF NOT EXISTS annotator_tile (
+  id            TEXT PRIMARY KEY,
+  batch_tile_id TEXT NOT NULL REFERENCES batch_tile(id) ON DELETE CASCADE,
+  annotator     TEXT NOT NULL,
+  state         TEXT NOT NULL DEFAULT 'assigned',    -- assigned | completed | dirty
+  updated_at    TEXT,
+  UNIQUE (batch_tile_id, annotator)
+);
+
+CREATE INDEX IF NOT EXISTS idx_annotator_tile_bt ON annotator_tile (batch_tile_id);
+
+-- One drawn shape per row (so soft-delete is per-shape). labelme JSON is a derived export.
+CREATE TABLE IF NOT EXISTS annotation (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  project_image_id TEXT REFERENCES project_image(id) ON DELETE CASCADE,  -- coord space of points
+  annotator     TEXT NOT NULL,
+  kind          TEXT NOT NULL,                        -- polygon | line | point | stroke | …
+  pass_no       INTEGER,                              -- 1 rough-area pass, 2 precise-polygon pass
+  points_json   TEXT NOT NULL,
+  label         TEXT,
+  viewport_json TEXT,
+  hsv_hist_json TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  deleted_at    TEXT                                  -- soft delete only
+);
+
+CREATE INDEX IF NOT EXISTS idx_annotation_project ON annotation (project_id, annotator);
+
+-- Materialized "which tiles each annotation intersects" — drives shapes-in-tile + dirty-propagation.
+CREATE TABLE IF NOT EXISTS annotation_tile (
+  annotation_id TEXT NOT NULL REFERENCES annotation(id) ON DELETE CASCADE,
+  tile_id       TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
+  PRIMARY KEY (annotation_id, tile_id)
+);
 """
 
 

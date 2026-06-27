@@ -35,6 +35,7 @@ from werkzeug.security import generate_password_hash
 
 from . import db as _db
 from .auth import auth_bp, login_required
+from .projects import projects_bp
 
 BASE     = Path(__file__).parent.parent
 DATA_DIR = _db.DATA_DIR            # single source of truth (db.py); LOCAL XDG dir by default
@@ -51,6 +52,7 @@ LEGACY_JSON  = BASE / 'DSC_0018_segment_1_segmented_smoothed.json'
 
 app = Flask(__name__, static_folder=str(STATIC))
 app.register_blueprint(auth_bp)
+app.register_blueprint(projects_bp)
 
 _img_cache:      dict[str, Image.Image] = {}
 _overview_cache: dict[str, bytes]       = {}
@@ -274,6 +276,7 @@ def _startup() -> None:
     _sync_admin()
     _db.migrate_manifest(MANIFEST)
     _auto_migrate_legacy()
+    _seed_i18n()
     _warn_if_bundle_stale()
 
 
@@ -351,6 +354,77 @@ def catch_all(path: str):
     if path.startswith(('api/', 'static/')):
         abort(404)
     return send_file(STATIC / 'index.html')
+
+
+# ── i18n catalog ──────────────────────────────────────────────────────────────
+# The message catalog lives in the data volume ($DATA_DIR/i18n/<locale>.json) so
+# strings can be edited + reloaded with no rebuild. The bundled copy under
+# static/i18n/ is the default, seeded into the volume on first boot. Missing
+# locale → fall back to the bundled default, then to English. The pseudo-locale
+# is synthesized client-side from `en` (see src/i18n), so it is not served here.
+
+I18N_DIR        = DATA_DIR / 'i18n'
+BUNDLED_I18N    = STATIC / 'i18n'
+I18N_FALLBACK   = 'en'
+
+
+def _seed_i18n() -> None:
+    """First-boot seed + per-boot top-up of the editable data-volume catalogs.
+
+    On first boot a bundled catalog is copied into the volume verbatim. On every
+    later boot we *merge* in any keys the bundled default has gained since (e.g.
+    after a string-extraction pass) without touching keys already present in the
+    volume copy — so operator edits are preserved but new strings never go
+    missing. A bundled catalog that gains keys after a deploy has booted is the
+    common case and was previously silently lost (seed-once).
+    """
+    if not BUNDLED_I18N.is_dir():
+        return
+    I18N_DIR.mkdir(parents=True, exist_ok=True)
+    for src in BUNDLED_I18N.glob('*.json'):
+        dst = I18N_DIR / src.name
+        if not dst.exists():
+            shutil.copy2(src, dst)
+            continue
+        try:
+            with open(src, encoding='utf-8') as fh:
+                bundled = json.load(fh)
+            with open(dst, encoding='utf-8') as fh:
+                current = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        missing = {k: v for k, v in bundled.items() if k not in current}
+        if missing:
+            current.update(missing)
+            with open(dst, 'w', encoding='utf-8') as fh:
+                json.dump(current, fh, ensure_ascii=False, indent=2)
+
+
+def _read_catalog(locale: str) -> dict | None:
+    """Read a locale catalog: editable volume copy wins, else bundled default."""
+    name = f'{locale}.json'
+    for base in (I18N_DIR, BUNDLED_I18N):
+        path = base / name
+        if path.is_file():
+            try:
+                with open(path, encoding='utf-8') as fh:
+                    return json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+    return None
+
+
+@app.get('/api/i18n/<locale>')
+def api_i18n(locale: str):
+    # Guard against path traversal: locale is a bare identifier.
+    if not locale.isidentifier():
+        abort(400)
+    catalog = _read_catalog(locale)
+    if catalog is None and locale != I18N_FALLBACK:
+        catalog = _read_catalog(I18N_FALLBACK)
+    if catalog is None:
+        catalog = {}
+    return jsonify(catalog)
 
 
 @app.get('/api/images')
