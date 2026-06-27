@@ -7,8 +7,7 @@
     "build:legacy": "node scripts/build-legacy-css.mjs",
     "build": "vite build && npm run build:legacy",
     "build:watch": "vite build --watch",
-    "typecheck:css": "tcm --pattern 'src/**/*.module.css'",
-    "typecheck": "npm run typecheck:css && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "playwright test --project=unit --project=fast",
     "test:full": "playwright test --project=unit --project=fast --project=full"
@@ -16,6 +15,8 @@
   "dependencies": {
     "@kobalte/core": "^0.13.11",
     "@solidjs/router": "^0.16.1",
+    "@vanilla-extract/css": "^1.21.0",
+    "@vanilla-extract/vite-plugin": "^5.2.3",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
