@@ -1,7 +1,7 @@
 import { Component, For, createMemo } from 'solid-js';
 import { hexToRgba } from '../analyze/lib/geometry';
 import type { Mode } from '../analyze/lib/types';
-import styles from './KBreakdown.module.css';
+import * as styles from './KBreakdown.css';
 
 interface Props {
   mTotal: number;

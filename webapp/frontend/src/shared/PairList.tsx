@@ -1,7 +1,7 @@
 import { type Component, type JSX } from 'solid-js';
 import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox';
 import type { PairSummary } from '../analyze/lib/types';
-import pairStyles from './PairList.module.css';
+import * as pairStyles from './PairList.css';
 
 export interface PairListProps {
   pairs: PairSummary[];

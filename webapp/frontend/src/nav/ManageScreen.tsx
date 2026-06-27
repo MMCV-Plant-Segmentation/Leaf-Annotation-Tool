@@ -3,16 +3,17 @@ import { useNavigate } from '@solidjs/router';
 import { Root as DialogRoot, Portal as DialogPortal, Overlay as DialogOverlay,
          Content as DialogContent, Title as DialogTitle } from '@kobalte/core/dialog';
 import type { PairSummary } from '../analyze/lib/types';
+import { t } from '../i18n/catalog';
 import ReplaceForm from './ReplaceForm';
 import AddSetForm from './AddSetForm';
-import styles from './ManageScreen.module.css';
-import pairStyles from '../shared/PairList.module.css';
-import ui from '../shared/ui.module.css';
+import * as styles from './ManageScreen.css';
+import * as pairStyles from '../shared/PairList.css';
+import * as ui from '../shared/ui.css';
 import { setKindClass } from '../shared/uiHelpers';
 
 function countLabel(p: PairSummary) {
-  if (p.kind === 'merged') return p.pile_count != null ? `${p.pile_count} piles` : '— piles';
-  return `${p.shape_count} shapes`;
+  if (p.kind === 'merged') return p.pile_count != null ? t('common.piles', { n: p.pile_count }) : '— piles';
+  return t('common.shapes', { n: p.shape_count });
 }
 
 const ManageScreen: Component = () => {
@@ -57,11 +58,11 @@ const ManageScreen: Component = () => {
 
   return (
     <>
-      <p class={pairStyles.setupSub}>Annotation sets</p>
+      <p class={pairStyles.setupSub}>{t('manage.title')}</p>
 
-      <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>Loading…</p>}>
+      <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>{t('common.loading')}</p>}>
         <Show when={pairs().length === 0}>
-          <p class={pairStyles.pairEmpty}>No annotation sets yet. Click "+ Add" below.</p>
+          <p class={pairStyles.pairEmpty}>{t('manage.empty')}</p>
         </Show>
 
         <For each={pairs()}>
@@ -89,7 +90,7 @@ const ManageScreen: Component = () => {
                   <div class={pairStyles.pairTagsRow}>
                     <span class={`${ui.setKindTag} ${setKindClass(ui, p.kind)}`}>{p.kind}</span>
                     <Show when={p.terminal}>
-                      <span class={`${ui.setKindTag} ${ui.setKindTerminal}`}>locked</span>
+                      <span class={`${ui.setKindTag} ${ui.setKindTerminal}`}>{t('common.locked')}</span>
                     </Show>
                   </div>
                   <span style="font-size:0.75rem;color:var(--muted)">{countLabel(p)}</span>
@@ -97,13 +98,13 @@ const ManageScreen: Component = () => {
 
                 <Show when={renamingId() !== p.id}>
                   <div class={pairStyles.pairActionBtns}>
-                    <button class={styles.pairEditBtn} title="Rename"
+                    <button class={styles.pairEditBtn} title={t('manage.btn.rename')}
                       onClick={() => { setRenamingId(p.id); setRenameVal(p.display_name); }}>✎</button>
                     <Show when={p.kind !== 'merged'}>
-                      <button class={styles.pairReplaceBtn} title="Replace files"
+                      <button class={styles.pairReplaceBtn} title={t('manage.btn.replace')}
                         onClick={() => setReplacingId(id => id === p.id ? null : p.id)}>↻</button>
                     </Show>
-                    <button class={styles.pairDeleteBtn} title="Delete"
+                    <button class={styles.pairDeleteBtn} title={t('manage.btn.delete')}
                       onClick={() => setDeletingId(p.id)}>✕</button>
                   </div>
                 </Show>
@@ -138,25 +139,25 @@ const ManageScreen: Component = () => {
 
       <Show when={!showAdd()}>
         <button class={ui.btnText} style="margin-top:10px" onClick={() => setShowAdd(true)}>
-          + Add new annotation set
+          {t('manage.addBtn')}
         </button>
       </Show>
-      <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+      <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>{t('common.home')}</button>
 
       <DialogRoot open={!!deletingId()} onOpenChange={v => { if (!v) setDeletingId(null); }}>
         <DialogPortal>
           <DialogOverlay class={styles.backdrop} />
           <DialogContent class={styles.panel}>
-            <DialogTitle class={styles.title}>Delete annotation set?</DialogTitle>
+            <DialogTitle class={styles.title}>{t('manage.delete.title')}</DialogTitle>
             <p class={styles.sub}>
               {pairs().find(p => p.id === deletingId())?.display_name}
             </p>
             <div style="display:flex;gap:8px;margin-top:4px">
               <button class={ui.btnSecondary} style="flex:none;padding:5px 14px"
                 onClick={() => { const id = deletingId(); if (id) confirmDelete(id); }}>
-                Delete
+                {t('manage.delete.confirm')}
               </button>
-              <button class={ui.btnText} onClick={() => setDeletingId(null)}>Cancel</button>
+              <button class={ui.btnText} onClick={() => setDeletingId(null)}>{t('common.cancel')}</button>
             </div>
           </DialogContent>
         </DialogPortal>

@@ -1,8 +1,9 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { PairSummary } from '../analyze/lib/types';
-import styles from './ManageScreen.module.css';
-import ui from '../shared/ui.module.css';
-import upload from '../shared/Upload.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './ManageScreen.css';
+import * as ui from '../shared/ui.css';
+import * as upload from '../shared/Upload.css';
 
 const ReplaceForm: Component<{
   pair: PairSummary;
@@ -16,7 +17,7 @@ const ReplaceForm: Component<{
 
   async function save() {
     if (!imgFile() && !jsonFile()) { setStatus('Select at least one file.'); return; }
-    setSaving(true); setStatus('Saving…');
+    setSaving(true); setStatus(t('common.saving'));
     const fd = new FormData();
     if (imgFile())  fd.append('image', imgFile()!);
     if (jsonFile()) fd.append('json',  jsonFile()!);
@@ -51,8 +52,8 @@ const ReplaceForm: Component<{
       </div>
       <div class={styles.pairReplaceFooter}>
         <button class={ui.btnSecondary}
-                disabled={saving()} onClick={save}>Save</button>
-        <button class={ui.btnText} onClick={props.onCancel}>Cancel</button>
+                disabled={saving()} onClick={save}>{t('common.save')}</button>
+        <button class={ui.btnText} onClick={props.onCancel}>{t('common.cancel')}</button>
         <Show when={status()}>
           <p class={upload.uploadStatus} style="margin-left:4px">{status()}</p>
         </Show>

@@ -18,8 +18,9 @@
   inset: 0;
   background: var(--bg);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* margin:auto on the card handles centering; overflow:auto keeps a tall card
+     (e.g. a long admin user list) scrollable instead of clipping its top off-screen. */
+  overflow: auto;
   z-index: 200;
 }
 #setup-screen[hidden] { display: none; }
@@ -29,10 +30,13 @@
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 48px 52px;
-  width: 420px;
+  width: min(420px, 100vw);
+  max-width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  margin: auto;
 }
 .setup-card h1 { font-size: 1.3rem; font-weight: 700; }
 

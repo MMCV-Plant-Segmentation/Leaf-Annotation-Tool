@@ -6,10 +6,11 @@ import { Root as SliderRoot, Track as SliderTrack, Fill as SliderFill,
          Thumb as SliderThumb, Input as SliderInput } from '@kobalte/core/slider';
 import type { PairSummary } from '../analyze/lib/types';
 import { type TrainSession, calcForkInfo } from './trainHelpers';
+import { t } from '../i18n/catalog';
 import PairList from '../shared/PairList';
-import styles from './TrainScreen.module.css';
-import pairStyles from '../shared/PairList.module.css';
-import ui from '../shared/ui.module.css';
+import * as styles from './TrainScreen.css';
+import * as pairStyles from '../shared/PairList.css';
+import * as ui from '../shared/ui.css';
 import { setKindClass } from '../shared/uiHelpers';
 
 const w = window as any;
@@ -81,29 +82,29 @@ const TrainScreen: Component = () => {
         <div class={pairStyles.resumeInfo} innerHTML={calcForkInfo(savedSession(), pairs())} />
         <button class={ui.btnPrimary} style="margin-top:10px"
                 disabled={launching()} onClick={resume}>
-          {launching() ? 'Starting…' : 'Continue session'}
+          {launching() ? t('train.starting') : t('train.continue')}
         </button>
         <button class={ui.btnSecondary} style="width:100%;margin-top:8px"
                 onClick={() => { setSavedSession(null); setView('config'); }}>
-          New session →
+          {t('train.newSession')}
         </button>
-        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>{t('common.home')}</button>
       </Show>
 
       {/* ── Config view: pair + mode + card count ── */}
       <Show when={view() === 'config'}>
         <Show when={deletedNotice()}>
           <div class={styles.noticeBanner}>
-            <span>Your previous session's annotation set was deleted.</span>
+            <span>{t('train.deletedNotice')}</span>
             <button class={styles.noticeDismiss} onClick={() => setDeletedNotice(false)}>✕</button>
           </div>
         </Show>
 
-        <p class={pairStyles.setupSub}>Annotation set</p>
+        <p class={pairStyles.setupSub}>{t('train.annotationSet')}</p>
 
-        <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>Loading…</p>}>
+        <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>{t('common.loading')}</p>}>
           <Show when={pairs().length === 0}>
-            <p class={pairStyles.pairEmpty}>No annotation sets yet.</p>
+            <p class={pairStyles.pairEmpty}>{t('train.empty')}</p>
           </Show>
           <PairList
             pairs={pairs()}
@@ -114,13 +115,13 @@ const TrainScreen: Component = () => {
                 <div class={pairStyles.pairTagsRow}>
                   <span class={`${ui.setKindTag} ${setKindClass(ui, p.kind)}`}>{p.kind}</span>
                 </div>
-                <span style="font-size:0.75rem;color:var(--muted)">{p.shape_count} shapes</span>
+                <span style="font-size:0.75rem;color:var(--muted)">{t('common.shapes', { n: p.shape_count })}</span>
               </>
             )}
           />
         </Show>
 
-        <p class={pairStyles.setupSub} style="margin-top:14px">What would you like to practice?</p>
+        <p class={pairStyles.setupSub} style="margin-top:14px">{t('train.practice')}</p>
 
         <div class={styles.modeChecks}>
           <CheckboxRoot
@@ -130,8 +131,8 @@ const TrainScreen: Component = () => {
           >
             <CheckboxControl style="display:none"><CheckboxIndicator /></CheckboxControl>
             <div class={styles.modeCheckText}>
-              <strong>Polygon drawing</strong>
-              <span>Trace the lesion boundary</span>
+              <strong>{t('train.polygon.title')}</strong>
+              <span>{t('train.polygon.sub')}</span>
             </div>
           </CheckboxRoot>
           <CheckboxRoot
@@ -141,16 +142,16 @@ const TrainScreen: Component = () => {
           >
             <CheckboxControl style="display:none"><CheckboxIndicator /></CheckboxControl>
             <div class={styles.modeCheckText}>
-              <strong>Label identification</strong>
-              <span>Name the lesion type</span>
+              <strong>{t('train.label.title')}</strong>
+              <span>{t('train.label.sub')}</span>
             </div>
           </CheckboxRoot>
         </div>
 
         <div class={styles.countField}>
           <div class={ui.countHeader}>
-            <label>Cards per session</label>
-            <span>{n() === nMax() ? `All (${n()})` : String(n())}</span>
+            <label>{t('train.cardsPerSession')}</label>
+            <span>{n() === nMax() ? t('train.allCards', { n: n() }) : String(n())}</span>
           </div>
           <SliderRoot
             class={styles.slider}
@@ -169,7 +170,7 @@ const TrainScreen: Component = () => {
         </div>
 
         <Show when={modeError()}>
-          <p class={styles.errorText}>Please select at least one mode.</p>
+          <p class={styles.errorText}>{t('train.modeError')}</p>
         </Show>
 
         <button
@@ -177,14 +178,14 @@ const TrainScreen: Component = () => {
           disabled={!selectedId() || launching()}
           onClick={startNew}
         >
-          {launching() ? 'Starting…' : 'Start Training'}
+          {launching() ? t('train.starting') : t('train.start')}
         </button>
 
         <Show when={savedSession()}>
           <button class={ui.btnText} style="margin-top:6px"
-                  onClick={() => setView('fork')}>← Back</button>
+                  onClick={() => setView('fork')}>{t('common.back')}</button>
         </Show>
-        <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>{t('common.home')}</button>
       </Show>
     </>
   );

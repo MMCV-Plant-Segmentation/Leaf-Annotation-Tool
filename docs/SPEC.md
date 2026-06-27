@@ -65,7 +65,13 @@ labelme-replacement annotator).
     built by **Vite** to a committed bundle `webapp/static/dist/app.bundle.{js,css}`.
     A Solid **router** (`@solidjs/router`) owns every screen before a viewer launches
     (`/`, `/manage`, `/train`, `/merge`, `/analyze`); **Kobalte** provides the
-    accessible widgets and styling is **CSS Modules** over global `:root` tokens. A
+    accessible widgets and styling is **Vanilla Extract** (zero-runtime, typed `.css.ts`
+    files) with a **theme contract** (`src/theme/`): `darkThemeClass` / `lightThemeClass`
+    applied to `<body>`. The theme bridge writes legacy CSS var names (`--bg`, `--text`,
+    etc.) so the legacy stylesheet continues to work unchanged. A theme toggle in the
+    auth bar persists to `localStorage` (key `leaf-theme`); `initTheme()` in `mount.tsx`
+    respects `prefers-color-scheme` as the default. The old CSS Modules + `tokens.css`
+    are fully retired. A
     Flask **catch-all** route serves the app shell for any nav path (`/api` and
     `/static` keep priority). The bundle is the runtime artifact — `uv run leaf-annotation`
     serves it as-is, so frontend source edits require `npm run build` (a pre-commit

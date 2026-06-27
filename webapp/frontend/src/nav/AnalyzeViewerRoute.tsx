@@ -6,8 +6,9 @@ import AnalyzeSidebar from '../analyze/AnalyzeSidebar';
 import { mountAnalyzeViewer } from '../analyze/analyzeViewer';
 import { initStore } from '../analyze/store';
 import { fetchAnalyze } from '../analyze/lib/api';
-import pairStyles from '../shared/PairList.module.css';
-import ui from '../shared/ui.module.css';
+import { t } from '../i18n/catalog';
+import * as pairStyles from '../shared/PairList.css';
+import * as ui from '../shared/ui.css';
 
 const AnalyzeViewerRoute: Component = () => {
   const params   = useParams<{ setId: string }>();
@@ -65,10 +66,10 @@ const AnalyzeViewerRoute: Component = () => {
   return (
     <Show
       when={error()}
-      fallback={<Show when={!loaded()}><p class={pairStyles.setupSub}>Loading…</p></Show>}
+      fallback={<Show when={!loaded()}><p class={pairStyles.setupSub}>{t('analyze.loading')}</p></Show>}
     >
       <p style="color:var(--fail);font-size:0.82rem">{error()}</p>
-      <button class={ui.btnText} onClick={() => navigate('/analyze')}>← Back to picker</button>
+      <button class={ui.btnText} onClick={() => navigate('/analyze')}>{t('analyze.backToPicker')}</button>
     </Show>
   );
 };
