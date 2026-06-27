@@ -1,4 +1,4 @@
-import type uiStyles from './ui.module.css';
+import * as uiStyles from './ui.css';
 
 type UiModule = typeof uiStyles;
 

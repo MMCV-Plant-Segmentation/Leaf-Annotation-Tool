@@ -1,5 +1,0 @@
-.kBreakdown { display: flex; flex-direction: column; gap: 3px; }
-
-.kBdBar { display: flex; gap: 2px; height: 4px; }
-
-.kBdSeg { flex: 1; border-radius: 1px; }

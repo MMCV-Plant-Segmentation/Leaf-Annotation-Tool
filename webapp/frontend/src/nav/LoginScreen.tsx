@@ -1,6 +1,7 @@
 import { type Component, createSignal } from 'solid-js';
 import { setCurrentUser } from '../auth';
-import styles from './LoginScreen.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './LoginScreen.css';
 
 const LoginScreen: Component = () => {
   const [username, setUsername] = createSignal('');
@@ -20,7 +21,7 @@ const LoginScreen: Component = () => {
       });
       const data = await res.json() as { ok?: boolean; error?: string };
       if (!res.ok) {
-        setError(data.error ?? 'Login failed');
+        setError(data.error ?? t('login.error.default'));
         return;
       }
       const meRes = await fetch('/api/me');
@@ -28,7 +29,7 @@ const LoginScreen: Component = () => {
       setCurrentUser(user);
       window.location.href = '/';
     } catch {
-      setError('Network error — please try again');
+      setError(t('common.error.network'));
     } finally {
       setLoading(false);
     }
@@ -36,10 +37,10 @@ const LoginScreen: Component = () => {
 
   return (
     <form class={styles.loginWrap} onSubmit={submit}>
-      <h2 class={styles.title}>Sign in</h2>
+      <h2 class={styles.title}>{t('login.title')}</h2>
 
       <div class={styles.field}>
-        <label for="login-username">Username</label>
+        <label for="login-username">{t('login.username')}</label>
         <input
           id="login-username"
           type="text"
@@ -51,7 +52,7 @@ const LoginScreen: Component = () => {
       </div>
 
       <div class={styles.field}>
-        <label for="login-password">Password</label>
+        <label for="login-password">{t('login.password')}</label>
         <input
           id="login-password"
           type="password"
@@ -65,7 +66,7 @@ const LoginScreen: Component = () => {
       <div class={styles.error}>{error()}</div>
 
       <button class={styles.submitBtn} type="submit" disabled={loading()}>
-        {loading() ? 'Signing in…' : 'Sign in'}
+        {loading() ? t('login.submitting') : t('login.submit')}
       </button>
     </form>
   );

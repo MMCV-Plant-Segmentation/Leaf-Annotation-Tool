@@ -3,8 +3,9 @@ import { effectiveKAgree } from './lib/agreement';
 import { polygonArea, hexToRgba } from './lib/geometry';
 import * as store from './store';
 import type { Pile } from './lib/types';
+import { t } from '../i18n/catalog';
 import IoUDetail from '../shared/IoUDetail';
-import styles from './PileDetailPanel.module.css';
+import * as styles from './PileDetailPanel.css';
 
 interface Props {
   pile: Pile;
@@ -32,7 +33,9 @@ const PileDetailPanel: Component<Props> = (props) => {
     <>
       <div class={styles.agreementBreakdown}>
         <div class={styles.breakdownTitle}>
-          {props.pile.m} annotator{props.pile.m !== 1 ? 's' : ''} drew this lesion
+          {props.pile.m !== 1
+            ? t('pile.annotatorsPlural', { m: props.pile.m })
+            : t('pile.annotatorsSingular', { m: props.pile.m })}
         </div>
         <For each={Array.from({ length: props.pile.m }, (_, i) => i + 1)}>
           {(ki) => {

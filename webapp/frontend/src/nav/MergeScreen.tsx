@@ -4,9 +4,10 @@ import { Root as CheckboxRoot, Control as CheckboxControl, Indicator as Checkbox
   from '@kobalte/core/checkbox';
 import { Root as ListboxRoot, Item as ListboxItem } from '@kobalte/core/listbox';
 import type { PairSummary } from '../analyze/lib/types';
-import styles from './MergeScreen.module.css';
-import pairStyles from '../shared/PairList.module.css';
-import ui from '../shared/ui.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './MergeScreen.css';
+import * as pairStyles from '../shared/PairList.css';
+import * as ui from '../shared/ui.css';
 
 interface CompareSession {
   imageHash: string;
@@ -15,8 +16,8 @@ interface CompareSession {
 }
 
 function countLabel(p: PairSummary) {
-  if (p.kind === 'merged') return p.pile_count != null ? `${p.pile_count} piles` : '— piles';
-  return `${p.shape_count} shapes`;
+  if (p.kind === 'merged') return p.pile_count != null ? t('common.piles', { n: p.pile_count }) : '— piles';
+  return t('common.shapes', { n: p.shape_count });
 }
 
 const w = window as any;
@@ -90,26 +91,26 @@ const MergeScreen: Component = () => {
         <div class={pairStyles.resumeInfo} innerHTML={forkInfo()} />
         <button class={ui.btnPrimary} style="margin-top:10px"
                 onClick={() => w._resumeCompare?.(savedSession())}>
-          Continue comparison
+          {t('merge.continueComparison')}
         </button>
         <button class={ui.btnSecondary} style="width:100%;margin-top:8px"
                 onClick={() => { setSavedSession(null); setView('setup'); }}>
-          New comparison →
+          {t('merge.newComparison')}
         </button>
         <button class={ui.btnText} style="margin-top:4px;color:var(--fail)"
                 onClick={deleteSession}>
-          ✕ Delete saved comparison
+          {t('merge.deleteComparison')}
         </button>
-        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>← Home</button>
+        <button class={ui.btnText} style="margin-top:8px" onClick={() => navigate('/')}>{t('common.home')}</button>
       </Show>
 
       {/* ── Setup view ── */}
       <Show when={view() === 'setup'}>
-        <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>Loading…</p>}>
-          <p class={pairStyles.setupSub}>Image</p>
+        <Show when={!loading()} fallback={<p class={pairStyles.setupSub}>{t('common.loading')}</p>}>
+          <p class={pairStyles.setupSub}>{t('merge.image')}</p>
 
           <Show when={Object.keys(byHash()).length === 0}>
-            <p class={pairStyles.pairEmpty}>No annotation sets yet.</p>
+            <p class={pairStyles.pairEmpty}>{t('merge.empty')}</p>
           </Show>
 
           <ListboxRoot
@@ -126,7 +127,11 @@ const MergeScreen: Component = () => {
               <ListboxItem item={node} as="div" class={pairStyles.pairItem} data-hash={node.rawValue.hash}>
                 <div class={pairStyles.pairItemLeft}>
                   <strong>{node.rawValue.ps[0].display_name}</strong>
-                  <span>{node.rawValue.ps.length} annotation set{node.rawValue.ps.length !== 1 ? 's' : ''}</span>
+                  <span>
+                    {node.rawValue.ps.length !== 1
+                      ? t('merge.annotationSetPlural', { n: node.rawValue.ps.length })
+                      : t('merge.annotationSetSingular', { n: node.rawValue.ps.length })}
+                  </span>
                 </div>
               </ListboxItem>
             )}
@@ -134,7 +139,7 @@ const MergeScreen: Component = () => {
 
           <Show when={selectedHash()}>
             <>
-              <p class={pairStyles.setupSub} style="margin-top:14px">Annotation sets</p>
+              <p class={pairStyles.setupSub} style="margin-top:14px">{t('merge.annotationSets')}</p>
               <For each={pairs().filter(p => p.image_hash === selectedHash())}>
                 {(p) => (
                   <CheckboxRoot
@@ -161,9 +166,9 @@ const MergeScreen: Component = () => {
             disabled={!selectedHash() || selectedIds().length === 0 || seeding()}
             onClick={launchNew}
           >
-            {seeding() ? 'Loading…' : 'Continue →'}
+            {seeding() ? t('common.loading') : t('merge.continue')}
           </button>
-          <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>← Home</button>
+          <button class={ui.btnText} style="margin-top:6px" onClick={() => navigate('/')}>{t('common.home')}</button>
         </Show>
       </Show>
     </>

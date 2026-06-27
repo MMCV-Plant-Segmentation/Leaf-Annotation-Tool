@@ -1,5 +1,6 @@
 import { Component } from 'solid-js';
-import styles from './IoUDetail.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './IoUDetail.css';
 
 interface Props {
   intersectionPx: number;
@@ -13,10 +14,14 @@ const IoUDetail: Component<Props> = (props) => {
 
   return (
     <div class={styles.iouDetail}>
-      <div>∩ Intersection: <strong>{fmt(props.intersectionPx)} px²</strong></div>
-      <div>∪ Union: <strong>{fmt(props.unionPx)} px²</strong></div>
+      <div>
+        {t('iou.intersection')} <strong>{fmt(props.intersectionPx)} {t('iou.pxUnit')}</strong>
+      </div>
+      <div>
+        {t('iou.union')} <strong>{fmt(props.unionPx)} {t('iou.pxUnit')}</strong>
+      </div>
       <div class={styles.iouDetailResult}>
-        IoU = {fmt(props.intersectionPx)} / {fmt(props.unionPx)} = <strong>{pct()}%</strong>
+        {t('iou.formula')} {fmt(props.intersectionPx)} / {fmt(props.unionPx)} = <strong>{t('iou.result', { pct: pct() })}</strong>
       </div>
     </div>
   );

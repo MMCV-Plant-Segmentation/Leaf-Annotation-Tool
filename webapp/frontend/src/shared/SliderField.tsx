@@ -3,8 +3,8 @@ import { Root as SliderRoot, Track as SliderTrack, Fill as SliderFill,
          Thumb as SliderThumb, Input as SliderInput } from '@kobalte/core/slider';
 import { Root as PopoverRoot, Trigger as PopoverTrigger,
          Portal as PopoverPortal, Content as PopoverContent } from '@kobalte/core/popover';
-import styles from './SliderField.module.css';
-import ui from './ui.module.css';
+import * as styles from './SliderField.css';
+import * as ui from './ui.css';
 
 interface Props {
   label: string;

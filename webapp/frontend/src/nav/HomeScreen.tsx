@@ -1,30 +1,31 @@
 import { Component } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
-import styles from './HomeScreen.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './HomeScreen.css';
 
 const HomeScreen: Component = () => {
   const nav = useNavigate();
   return (
   <div class={styles.tiles}>
     <button class={styles.tile} onClick={() => nav('/manage')}>
-      <strong>Manage Sets</strong>
-      <span>Upload, rename, delete</span>
+      <strong>{t('home.manageTitle')}</strong>
+      <span>{t('home.manageSub')}</span>
     </button>
     <button class={styles.tile} onClick={() => nav('/merge')}>
-      <strong>Merge Sets</strong>
-      <span>Group overlapping annotations</span>
+      <strong>{t('home.mergeTitle')}</strong>
+      <span>{t('home.mergeSub')}</span>
     </button>
     <button class={styles.tile} onClick={() => nav('/analyze')}>
-      <strong>Analyze</strong>
-      <span>Agreement map</span>
+      <strong>{t('home.analyzeTitle')}</strong>
+      <span>{t('home.analyzeSub')}</span>
     </button>
-    <button class={`${styles.tile} ${styles.tileSoon}`} disabled>
-      <strong>Re-annotate</strong>
-      <span>Coming soon</span>
+    <button class={styles.tile} onClick={() => nav('/projects')}>
+      <strong>{t('home.annotateTitle')}</strong>
+      <span>{t('home.annotateSub')}</span>
     </button>
     <button class={`${styles.tile} ${styles.tileWide}`} onClick={() => nav('/train')}>
-      <strong>Train</strong>
-      <span>Practice annotation</span>
+      <strong>{t('home.trainTitle')}</strong>
+      <span>{t('home.trainSub')}</span>
     </button>
   </div>
   );

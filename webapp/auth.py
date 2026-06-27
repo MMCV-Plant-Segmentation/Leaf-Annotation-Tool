@@ -191,6 +191,9 @@ def api_get_invite(token: str):
         _db.close_db(con)
     if not row or row['expires'] < time.time():
         return jsonify({'error': 'invalid or expired invite'}), 403
+    # Opening an invite link logs out whoever was active (e.g. the admin who minted it in
+    # this browser), so the invitee always proceeds as a clean, logged-out session.
+    session.clear()
     return jsonify({'username': row['username']})
 
 
@@ -218,6 +221,9 @@ def api_accept_invite(token: str):
         con.commit()
     finally:
         _db.close_db(con)
+    # Drop whatever session was active (e.g. the admin who minted the invite in this browser)
+    # so the new user lands on a clean /login instead of being bounced back as admin.
+    session.clear()
     return jsonify({'ok': True})
 
 

@@ -1,7 +1,8 @@
 import { type Component, createSignal, Show } from 'solid-js';
 import type { PairSummary } from '../analyze/lib/types';
-import ui from '../shared/ui.module.css';
-import upStyles from '../shared/Upload.module.css';
+import { t } from '../i18n/catalog';
+import * as ui from '../shared/ui.css';
+import * as upStyles from '../shared/Upload.css';
 
 const AddSetForm: Component<{
   onDone: (pair: PairSummary) => void;
@@ -17,7 +18,7 @@ const AddSetForm: Component<{
     if (!name().trim() || !img() || !json()) {
       setStatus('Display name, image, and JSON are all required.'); return;
     }
-    setUploading(true); setStatus('Uploading…');
+    setUploading(true); setStatus(t('common.uploading'));
     const fd = new FormData();
     fd.append('image', img()!);
     fd.append('json',  json()!);
@@ -51,7 +52,7 @@ const AddSetForm: Component<{
         </label>
       </div>
       <button class={ui.btnSecondary} style="width:100%" disabled={uploading()} onClick={upload}>
-        {uploading() ? 'Uploading…' : 'Upload'}
+        {uploading() ? t('common.uploading') : t('common.upload')}
       </button>
       <Show when={status()}>
         <p class={upStyles.uploadStatus}
@@ -59,7 +60,7 @@ const AddSetForm: Component<{
           {status()}
         </p>
       </Show>
-      <button class={ui.btnText} style="margin-top:2px" onClick={props.onCancel}>← Cancel</button>
+      <button class={ui.btnText} style="margin-top:2px" onClick={props.onCancel}>{t('common.cancelBack')}</button>
     </div>
   );
 };

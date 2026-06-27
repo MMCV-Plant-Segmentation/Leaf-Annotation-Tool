@@ -2,8 +2,9 @@ import { Component, Show, createSignal, onMount, onCleanup } from 'solid-js';
 import * as store from './store';
 import { showHomeScreen } from './lib/bridge';
 import { currentUser, logout } from '../auth';
-import styles from './AnalyzeHeader.module.css';
-import ui from '../shared/ui.module.css';
+import { t } from '../i18n/catalog';
+import * as styles from './AnalyzeHeader.css';
+import * as ui from '../shared/ui.css';
 
 // Separate component so onMount/onCleanup track the Show lifecycle, not the header's
 const OpacitySlider: Component = () => {
@@ -49,26 +50,26 @@ const AnalyzeHeader: Component = () => {
   return (
     <>
       <Show when={currentUser()}>
-        <span style="font-size:0.8rem;color:var(--color-text-muted,#666)">{currentUser()!.username}</span>
-        <button style="font-size:0.8rem" onClick={() => void logout()}>Log out</button>
+        <span style="font-size:0.8rem;color:var(--muted)">{currentUser()!.username}</span>
+        <button style="font-size:0.8rem" onClick={() => void logout()}>{t('nav.logout')}</button>
       </Show>
       <input
         type="color"
         class={styles.colorPick}
         value={store.annotColor()}
-        title="Annotation color"
+        title={t('analyze.annotColor')}
         onInput={e => store.setAnnotColor((e.target as HTMLInputElement).value)}
       />
       <div class={styles.opacityPickWrap} ref={wrapRef}>
         <button
           class={styles.opacityPickBtn}
-          title="Annotation opacity"
+          title={t('analyze.annotOpacity')}
           onClick={() => setPopupOpen(o => !o)}
         />
         <Show when={popupOpen()}>
           <div class={styles.opacityPopup}>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-              <span style="font-size:0.8rem;font-weight:600">Opacity</span>
+              <span style="font-size:0.8rem;font-weight:600">{t('analyze.opacity')}</span>
               <span style="font-size:0.8rem;color:var(--user)">
                 {Math.round(store.annotOpacity() * 100)}%
               </span>
@@ -81,13 +82,13 @@ const AnalyzeHeader: Component = () => {
         id="analyze-blind-btn"
         class={store.blind() ? ui.active : ''}
         onClick={() => store.setBlind(!store.blind())}
-      >🙈 Blind</button>
+      >{t('analyze.blind')}</button>
       <button
         id="analyze-bbox-btn"
         class={store.showBbox() ? ui.active : ''}
         onClick={() => store.setShowBbox(!store.showBbox())}
-      >⬚ Bbox</button>
-      <button onClick={showHomeScreen}>Home</button>
+      >{t('analyze.bbox')}</button>
+      <button onClick={showHomeScreen}>{t('analyze.home')}</button>
     </>
   );
 };
