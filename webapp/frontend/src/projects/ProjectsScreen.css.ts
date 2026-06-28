@@ -22,35 +22,13 @@ export const createForm = style({
   gap: '0.75rem',
 });
 
-export const row = style({
-  display: 'flex',
-  gap: '0.75rem',
-  flexWrap: 'wrap',
-});
-
 export const field = style({
   display: 'flex',
   flexDirection: 'column',
   gap: '0.25rem',
-  flex: '1 1 220px',
   fontSize: '0.85rem',
 });
 globalStyle(`${field} input`, {
-  padding: '0.4rem 0.5rem',
-  border: `1px solid ${vars.color.border}`,
-  borderRadius: '6px',
-  background: vars.color.surface,
-  color: vars.color.text,
-});
-
-export const fieldSm = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '0.25rem',
-  flex: '0 0 130px',
-  fontSize: '0.85rem',
-});
-globalStyle(`${fieldSm} input`, {
   padding: '0.4rem 0.5rem',
   border: `1px solid ${vars.color.border}`,
   borderRadius: '6px',
@@ -74,12 +52,6 @@ export const btnPrimary = style({
   selectors: {
     '&:disabled': { opacity: 0.6, cursor: 'default' },
   },
-});
-
-export const hint = style({
-  margin: 0,
-  fontSize: '0.78rem',
-  color: vars.color.textMuted,
 });
 
 export const error = style({

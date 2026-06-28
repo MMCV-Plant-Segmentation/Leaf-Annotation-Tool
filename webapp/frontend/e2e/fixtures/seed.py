@@ -4,9 +4,11 @@ Seed script: create a deterministic, lab-free fixture data directory for e2e tes
 Usage: python3 seed.py <output_dir>
 
 Creates:
-  <output_dir>/app.db        — SQLite registry with synthetic annotation sets
-  <output_dir>/images/       — tiny synthetic PNG
-  <output_dir>/jsons/        — labelme JSON files for each raw set
+  <output_dir>/app.db           — SQLite registry with annotation sets + admin user
+  <output_dir>/images/          — tiny synthetic PNG for the legacy pipeline
+  <output_dir>/jsons/           — labelme JSON files for each raw set
+  <output_dir>/nested-images/   — synthetic leaf PNGs in subdirectories for the
+                                  recursive-import browser test
 
 IDs are stable (used by test specs in e2e/fixtures/ids.ts).
 No real lab data, no colleague names.
@@ -123,7 +125,96 @@ CREATE TABLE IF NOT EXISTS reannot_generation (
 CREATE TABLE IF NOT EXISTS reannot_polygon (
   id TEXT PRIMARY KEY, generation_id TEXT, participant TEXT, points TEXT, bbox TEXT
 );
+
+-- ── Annotator pipeline (mirrors webapp/db.py; update if DDL changes) ──────────
+CREATE TABLE IF NOT EXISTS project (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  tile_size_px INTEGER NOT NULL DEFAULT 128,
+  black_threshold INTEGER NOT NULL DEFAULT 0,
+  classes_json TEXT NOT NULL DEFAULT '[]',
+  tiling_confirmed INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT, created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_annotator (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  byline TEXT NOT NULL, UNIQUE (project_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS project_image (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  image_hash TEXT NOT NULL, image_ext TEXT NOT NULL,
+  source_name TEXT, source_path TEXT, width INTEGER, height INTEGER,
+  origin_y INTEGER NOT NULL DEFAULT 0,
+  leaf_x INTEGER, leaf_y INTEGER, leaf_w INTEGER, leaf_h INTEGER,
+  created_at TEXT NOT NULL, UNIQUE (project_id, image_hash)
+);
+CREATE TABLE IF NOT EXISTS tile (
+  id TEXT PRIMARY KEY,
+  project_image_id TEXT NOT NULL REFERENCES project_image(id) ON DELETE CASCADE,
+  x INTEGER NOT NULL, y INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
+  UNIQUE (project_image_id, x, y)
+);
+CREATE TABLE IF NOT EXISTS batch (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 5,
+  status TEXT NOT NULL DEFAULT 'annotation_in_progress', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batch_tile (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES batch(id) ON DELETE CASCADE,
+  tile_id TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
+  UNIQUE (batch_id, tile_id)
+);
+CREATE TABLE IF NOT EXISTS annotator_tile (
+  id TEXT PRIMARY KEY,
+  batch_tile_id TEXT NOT NULL REFERENCES batch_tile(id) ON DELETE CASCADE,
+  annotator TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'assigned',
+  updated_at TEXT, UNIQUE (batch_tile_id, annotator)
+);
+CREATE TABLE IF NOT EXISTS annotation (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  project_image_id TEXT REFERENCES project_image(id) ON DELETE CASCADE,
+  annotator TEXT NOT NULL, kind TEXT NOT NULL, pass_no INTEGER,
+  points_json TEXT NOT NULL, label TEXT, viewport_json TEXT, hsv_hist_json TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS annotation_tile (
+  annotation_id TEXT NOT NULL REFERENCES annotation(id) ON DELETE CASCADE,
+  tile_id TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
+  PRIMARY KEY (annotation_id, tile_id)
+);
 """
+
+
+def _make_leaf_png_pillow(path: Path, w: int = 200, h: int = 180) -> None:
+    """Write a synthetic leaf PNG using Pillow (available in the uv venv)."""
+    import numpy as np
+    from PIL import Image
+    arr = np.zeros((h, w), np.uint8)
+    arr[30:h - 30, 20:w - 20] = 210   # bright rectangle = leaf region
+    Image.fromarray(arr, 'L').save(str(path))
+
+
+def _seed_nested_images(out_dir: Path) -> None:
+    """Create nested-images/ with three leaf PNGs in subdirectories.
+
+    Used by the recursive-import browser test (path: <fixture>/nested-images).
+    Images have different dimensions so they get different content hashes.
+    """
+    root = out_dir / 'nested-images'
+    sub1 = root / 'sub1'
+    sub2 = sub1 / 'sub2'
+    sub2.mkdir(parents=True, exist_ok=True)
+    _make_leaf_png_pillow(root / 'leaf0.png', w=200, h=180)
+    _make_leaf_png_pillow(sub1 / 'leaf1.png', w=220, h=160)
+    _make_leaf_png_pillow(sub2 / 'leaf2.png', w=240, h=200)
+    # A non-image file that should be silently ignored
+    (root / 'notes.txt').write_text('ignore me')
 
 
 def seed(out_dir: Path) -> None:
@@ -140,9 +231,9 @@ def seed(out_dir: Path) -> None:
     (out_dir / 'jsons' / f'{SET_ALPHA}.json').write_text(json.dumps(_labelme(alpha_shapes)))
     (out_dir / 'jsons' / f'{SET_BETA}.json').write_text(json.dumps(_labelme(beta_shapes)))
 
-    import hashlib, hmac, os, base64
-    # Minimal scrypt hash compatible with werkzeug's generate_password_hash('scrypt').
-    # We call werkzeug directly here because seed.py runs in the uv venv.
+    # Synthetic leaf images for the recursive-import browser test
+    _seed_nested_images(out_dir)
+
     from werkzeug.security import generate_password_hash
     admin_hash = generate_password_hash(ADMIN_PW)
 

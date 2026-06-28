@@ -1,0 +1,113 @@
+/**
+ * Images sub-route (`/projects/:id/images`): streaming folder/path import with a live
+ * progress bar, plus a clamped, lazy-loading preview of the imported images.
+ */
+import { type Component, createResource, createSignal, Show } from 'solid-js';
+import { useNavigate, useParams } from '@solidjs/router';
+import { projectsApi, imageUrls, streamImport, type ImportEvent } from './api';
+import { t } from '../i18n/catalog';
+import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
+import Lightbox from '../shared/Lightbox';
+import * as styles from './ProjectImagesScreen.css';
+
+const ProjectImagesScreen: Component = () => {
+  const params = useParams();
+  const nav = useNavigate();
+  const id = () => params.id!;
+  const [project, { refetch }] = createResource(id, (pid) => projectsApi.get(pid));
+
+  const [path, setPath] = createSignal('');
+  const [busy, setBusy] = createSignal(false);
+  const [total, setTotal] = createSignal(0);
+  const [done, setDone] = createSignal(0);
+  const [errs, setErrs] = createSignal(0);
+  const [summary, setSummary] = createSignal('');
+  const [boxId, setBoxId] = createSignal<string | null>(null);
+  const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
+
+  const pct = () => (total() > 0 ? Math.round((done() / total()) * 100) : 0);
+
+  const onEvent = (ev: ImportEvent) => {
+    if (ev.type === 'start') { setTotal(ev.total); setDone(0); setErrs(0); }
+    else if (ev.type === 'file') { setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
+    else if (ev.type === 'done') {
+      setSummary(t('detail.images.importDone', {
+        imported: ev.imported, skipped: ev.skipped, errors: ev.errors.length,
+      }));
+    }
+  };
+
+  const doImport = async () => {
+    const p = path().trim();
+    if (!p) return;
+    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
+    try {
+      await streamImport(id(), p, onEvent);
+      void refetch();
+    } catch (e) {
+      setSummary(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const items = (): LazyImageItem[] => (project()?.images ?? []).map((im) => ({
+    key: im.id,
+    src: imageUrls.overview(im.id),
+    label: im.source_name ?? '',
+    title: im.source_path ?? im.source_name ?? '',
+  }));
+
+  return (
+    <Show when={project()} fallback={<div class={styles.wrap}>{t('common.loading')}</div>}>
+      {(p) => (
+        <div class={styles.wrap} data-screen="project">
+          <div class={styles.header}>
+            <button class={styles.back} onClick={() => nav(`/projects/${id()}`)}>
+              {t('detail.backHub')}
+            </button>
+            <h2 class={styles.title}>{t('detail.images', { count: p().images.length })}</h2>
+          </div>
+
+          <div class={styles.importRow}>
+            <input type="text" placeholder={t('detail.images.importPlaceholder')}
+              value={path()} data-testid="import-path"
+              onInput={(e) => setPath(e.currentTarget.value)} />
+            <button disabled={busy()} onClick={() => void doImport()}>
+              {busy() ? t('detail.images.importing') : t('detail.images.import')}
+            </button>
+          </div>
+
+          <Show when={busy() || total() > 0}>
+            <div class={styles.progressWrap} data-testid="import-progress">
+              <div class={styles.progressTrack}>
+                <div class={styles.progressBar} style={{ width: `${pct()}%` }}
+                  data-testid="import-progress-bar" />
+              </div>
+              <span class={styles.progressLabel} data-testid="import-progress-label">
+                {t('detail.images.progress', { done: done(), total: total(), errors: errs() })}
+              </span>
+            </div>
+          </Show>
+          <Show when={summary()}>
+            <div class={styles.summary} data-testid="import-summary">{summary()}</div>
+          </Show>
+
+          <Show when={p().images.length > 0}
+            fallback={<p class={styles.empty}>{t('detail.images.none')}</p>}>
+            <LazyImageGrid items={items()} onSelect={setBoxId} />
+          </Show>
+
+          <Lightbox
+            open={boxId() !== null}
+            src={boxImage() ? imageUrls.overview(boxImage()!.id) : ''}
+            caption={boxImage()?.source_path ?? boxImage()?.source_name ?? ''}
+            onClose={() => setBoxId(null)}
+          />
+        </div>
+      )}
+    </Show>
+  );
+};
+
+export default ProjectImagesScreen;

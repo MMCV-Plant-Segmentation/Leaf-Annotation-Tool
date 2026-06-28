@@ -13,7 +13,10 @@ import LoginScreen from './nav/LoginScreen';
 import AdminScreen from './nav/AdminScreen';
 import InviteScreen from './nav/InviteScreen';
 import ProjectsScreen from './projects/ProjectsScreen';
-import ProjectDetailScreen from './projects/ProjectDetailScreen';
+import ProjectHubScreen from './projects/ProjectHubScreen';
+import ProjectImagesScreen from './projects/ProjectImagesScreen';
+import ProjectTilingScreen from './projects/ProjectTilingScreen';
+import ProjectBatchesScreen from './projects/ProjectBatchesScreen';
 import CanvasScreen from './projects/CanvasScreen';
 
 // Apply theme class to body on boot (dark default, respects localStorage).
@@ -38,7 +41,10 @@ void initI18n().then(() => {
         <Route path="/admin" component={AdminScreen} />
         <Route path="/invite/:token" component={InviteScreen} />
         <Route path="/projects" component={ProjectsScreen} />
-        <Route path="/projects/:id" component={ProjectDetailScreen} />
+        <Route path="/projects/:id" component={ProjectHubScreen} />
+        <Route path="/projects/:id/images" component={ProjectImagesScreen} />
+        <Route path="/projects/:id/tiling" component={ProjectTilingScreen} />
+        <Route path="/projects/:id/batches" component={ProjectBatchesScreen} />
         <Route path="/projects/:id/batches/:batchId" component={CanvasScreen} />
         <Route path="/*" component={HomeScreen} />
       </Router>

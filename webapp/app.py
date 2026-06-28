@@ -1083,9 +1083,15 @@ def api_analyze_set(set_id: str):
 
 
 def main() -> None:
-    """Dev entry point (`uv run leaf-annotation`): init then Werkzeug dev server."""
+    """Dev entry point (`uv run leaf-annotation`): init then Werkzeug dev server.
+
+    threaded=True lets the streaming import endpoint serve its long-lived response without
+    blocking other requests (e.g. the thumbnails the page fetches while importing). Safe
+    because get_db is connection-per-request, WAL is on, and busy_timeout queues writers.
+    Production (Granian) is unaffected — this is the dev server only.
+    """
     _startup()
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True)
 
 
 if __name__ == '__main__':

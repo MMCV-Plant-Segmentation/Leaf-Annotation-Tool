@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request, send_file, session
+from flask import Blueprint, Response, jsonify, request, send_file, session, stream_with_context
 from shapely.geometry import LineString, Point
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
@@ -51,13 +51,14 @@ def _project(con, project_id: str) -> dict | None:
 
 
 def _project_out(row: dict) -> dict:
-    """Shape a project row for JSON (parse classes_json)."""
+    """Shape a project row for JSON (parse classes_json, normalise tiling_confirmed)."""
     out = dict(row)
     try:
         out['classes'] = json.loads(row.get('classes_json') or '[]')
     except (ValueError, TypeError):
         out['classes'] = []
     out.pop('classes_json', None)
+    out['tiling_confirmed'] = bool(out.get('tiling_confirmed', 0))
     return out
 
 
@@ -149,7 +150,10 @@ def create_project():
     if not name:
         return jsonify({'error': 'name required'}), 400
     tile_size = int(body.get('tile_size_px') or 128)
-    threshold = int(body.get('black_threshold') or 40)
+    # Default Minimum Luminance Threshold = 0 for new projects: the largest-connected-
+    # component rule defines the leaf regardless, so 0 is a safe, no-surprise default.
+    raw_threshold = body.get('black_threshold')
+    threshold = int(raw_threshold) if raw_threshold is not None else 0
     classes = body.get('classes') or []
     if tile_size < 8:
         return jsonify({'error': 'tile_size_px too small'}), 400
@@ -183,9 +187,23 @@ def update_project(project_id: str):
             sets.append('name = ?'); vals.append((body['name'] or '').strip())
         if 'black_threshold' in body:
             sets.append('black_threshold = ?'); vals.append(int(body['black_threshold']))
+            sets.append('tiling_confirmed = ?'); vals.append(1)
         if 'classes' in body:
             sets.append('classes_json = ?'); vals.append(json.dumps(body['classes'] or []))
-        # tile_size_px intentionally NOT updatable (immutable after creation, v1)
+        if 'tiling_confirmed' in body:
+            sets.append('tiling_confirmed = ?'); vals.append(1 if body['tiling_confirmed'] else 0)
+        if 'tile_size_px' in body:
+            # tile_size_px locked once any batch exists
+            batch_count = con.execute(
+                'SELECT COUNT(*) c FROM batch WHERE project_id = ?', (project_id,)
+            ).fetchone()['c']
+            if batch_count > 0:
+                return jsonify({'error': 'tile_size_px locked: batch already exists'}), 422
+            tile_size = int(body['tile_size_px'])
+            if tile_size < 8:
+                return jsonify({'error': 'tile_size_px too small'}), 400
+            sets.append('tile_size_px = ?'); vals.append(tile_size)
+            sets.append('tiling_confirmed = ?'); vals.append(1)
         if sets:
             con.execute(f'UPDATE project SET {", ".join(sets)} WHERE id = ?', (*vals, project_id))
             con.commit()
@@ -216,11 +234,11 @@ def get_project(project_id: str):
             return jsonify({'error': 'not found'}), 404
         out = _project_out(row)
         out['annotators'] = con.execute(
-            'SELECT id, byline FROM project_annotator WHERE project_id = ? ORDER BY byline',
+            'SELECT id, user_id, byline FROM project_annotator WHERE project_id = ? ORDER BY byline',
             (project_id,),
         ).fetchall()
         out['images'] = con.execute(
-            '''SELECT id, image_hash, image_ext, source_name, width, height,
+            '''SELECT id, image_hash, image_ext, source_name, source_path, width, height,
                       origin_y, leaf_x, leaf_y, leaf_w, leaf_h
                FROM project_image WHERE project_id = ? ORDER BY created_at''',
             (project_id,),
@@ -284,22 +302,29 @@ def _progress(con, project_id: str, batches: list) -> list:
 @projects_bp.post('/api/projects/<project_id>/annotators')
 @login_required
 def add_annotator(project_id: str):
-    byline = ((request.json or {}).get('byline') or '').strip()
-    if not byline:
-        return jsonify({'error': 'byline required'}), 400
+    body = request.json or {}
+    user_id = body.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'user_id required'}), 400
     con = _db.get_db()
     try:
         if not _project(con, project_id):
             return jsonify({'error': 'not found'}), 404
+        user = con.execute(
+            'SELECT id, username FROM users WHERE id = ?', (user_id,)
+        ).fetchone()
+        if not user:
+            return jsonify({'error': 'user not found'}), 404
+        byline = user['username']
         try:
             con.execute(
-                'INSERT INTO project_annotator (id, project_id, byline) VALUES (?, ?, ?)',
-                (_uid(), project_id, byline),
+                'INSERT INTO project_annotator (id, project_id, user_id, byline) VALUES (?, ?, ?, ?)',
+                (_uid(), project_id, user_id, byline),
             )
             con.commit()
         except _db.sqlite3.IntegrityError:
             return jsonify({'error': 'already on roster'}), 409
-        return jsonify({'ok': True, 'byline': byline}), 201
+        return jsonify({'ok': True, 'byline': byline, 'user_id': user_id}), 201
     finally:
         _db.close_db(con)
 
@@ -321,69 +346,142 @@ def remove_annotator(project_id: str, annotator_id: str):
 
 # ── image import (bulk, from a server-side path) ──────────────────────────────
 
+def _collect_image_files(src: Path) -> list[Path]:
+    """A single file, or a recursive scan of a directory for image files (sorted)."""
+    if src.is_file():
+        return [src]
+    return sorted(
+        p for p in src.rglob('*')
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+    )
+
+
+def _resolve_import_path(raw_path: str):
+    """Return (files, error_tuple). error_tuple is (json, status) or None."""
+    if not raw_path:
+        return None, ({'error': 'path required'}, 400)
+    src = Path(raw_path)
+    if not src.exists():
+        return None, ({'error': f'path not found: {raw_path}'}, 400)
+    files = _collect_image_files(src)
+    if not files:
+        return None, ({'error': 'no image files found at path'}, 400)
+    return files, None
+
+
+def _import_one_file(con, project_id: str, f: Path, threshold: int, tile_size: int) -> dict:
+    """Import a single image file. Returns a per-file result dict.
+
+    Shared by the buffered and streaming endpoints so dedup/convert/leaf-bbox/provenance
+    live in exactly one place. Does NOT commit — the caller controls the transaction.
+    """
+    data = f.read_bytes()
+    ext = f.suffix.lstrip('.').lower()
+    h = imaging.store_image(data, ext)
+    exists = con.execute(
+        'SELECT 1 FROM project_image WHERE project_id = ? AND image_hash = ?',
+        (project_id, h),
+    ).fetchone()
+    if exists:
+        return {'imported': False, 'skipped': True}
+    img = imaging.get_image(h, ext)
+    w, hgt = img.size
+    bb = tiling.compute_leaf_bbox(img, threshold)
+    if bb is None:
+        bb = tiling.Rect(0, 0, w, hgt)  # whole image if nothing above threshold
+    origin_y = tiling.random_origin_y(bb, tile_size)
+    con.execute(
+        '''INSERT INTO project_image
+             (id, project_id, image_hash, image_ext, source_name, source_path,
+              width, height, origin_y, leaf_x, leaf_y, leaf_w, leaf_h, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (_uid(), project_id, h, ext, f.name, str(f), w, hgt,
+         origin_y, bb.x, bb.y, bb.w, bb.h, _now()),
+    )
+    return {'imported': True, 'skipped': False}
+
+
 @projects_bp.post('/api/projects/<project_id>/images/import')
 @login_required
 def import_images(project_id: str):
-    """Import images from a server-side file or directory path.
+    """Import images from a server-side file or directory path (buffered summary).
 
     No browser upload — files already live on the server (e.g. /deltos/c/maize/...).
     For each image: store content-addressed, compute leaf_bbox + random origin_y, insert.
     """
-    body = request.json or {}
-    raw_path = (body.get('path') or '').strip()
-    if not raw_path:
-        return jsonify({'error': 'path required'}), 400
-    src = Path(raw_path)
-    if not src.exists():
-        return jsonify({'error': f'path not found: {raw_path}'}), 400
-
-    files = [src] if src.is_file() else sorted(
-        p for p in src.iterdir() if p.suffix.lower() in IMAGE_EXTS
-    )
-    if not files:
-        return jsonify({'error': 'no image files found at path'}), 400
+    raw_path = ((request.json or {}).get('path') or '').strip()
+    files, err = _resolve_import_path(raw_path)
+    if err:
+        return jsonify(err[0]), err[1]
 
     con = _db.get_db()
     try:
         proj = _project(con, project_id)
         if not proj:
             return jsonify({'error': 'not found'}), 404
-        threshold = proj['black_threshold']
-        tile_size = proj['tile_size_px']
+        threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
         imported, skipped, errors = 0, 0, []
         for f in files:
             try:
-                data = f.read_bytes()
-                ext = f.suffix.lstrip('.').lower()
-                h = imaging.store_image(data, ext)
-                exists = con.execute(
-                    'SELECT 1 FROM project_image WHERE project_id = ? AND image_hash = ?',
-                    (project_id, h),
-                ).fetchone()
-                if exists:
+                res = _import_one_file(con, project_id, f, threshold, tile_size)
+                if res['imported']:
+                    imported += 1
+                elif res['skipped']:
                     skipped += 1
-                    continue
-                img = imaging.get_image(h, ext)
-                w, hgt = img.size
-                bb = tiling.compute_leaf_bbox(img, threshold)
-                if bb is None:
-                    bb = tiling.Rect(0, 0, w, hgt)  # whole image if nothing above threshold
-                origin_y = tiling.random_origin_y(bb, tile_size)
-                con.execute(
-                    '''INSERT INTO project_image
-                         (id, project_id, image_hash, image_ext, source_name, width, height,
-                          origin_y, leaf_x, leaf_y, leaf_w, leaf_h, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (_uid(), project_id, h, ext, f.name, w, hgt,
-                     origin_y, bb.x, bb.y, bb.w, bb.h, _now()),
-                )
-                imported += 1
             except Exception as exc:  # noqa: BLE001 — report per-file, keep importing
                 errors.append({'file': f.name, 'error': str(exc)})
         con.commit()
         return jsonify({'imported': imported, 'skipped': skipped, 'errors': errors})
     finally:
         _db.close_db(con)
+
+
+@projects_bp.post('/api/projects/<project_id>/images/import/stream')
+@login_required
+def import_images_stream(project_id: str):
+    """Streaming import: NDJSON, one event per line, flushed as each file completes.
+
+    Events: {"type":"start","total":N} → {"type":"file","name","path","ok","imported"|"error"}
+    per file → {"type":"done","imported","skipped","errors":[...]}. Per-file errors are
+    reported inline and never abort the batch.
+    """
+    raw_path = ((request.json or {}).get('path') or '').strip()
+    files, err = _resolve_import_path(raw_path)
+    if err:
+        return jsonify(err[0]), err[1]
+
+    con = _db.get_db()
+    proj = _project(con, project_id)
+    if not proj:
+        _db.close_db(con)
+        return jsonify({'error': 'not found'}), 404
+    threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
+
+    def generate():
+        imported, skipped, errors = 0, 0, []
+        try:
+            yield json.dumps({'type': 'start', 'total': len(files)}) + '\n'
+            for f in files:
+                ev = {'type': 'file', 'name': f.name, 'path': str(f)}
+                try:
+                    res = _import_one_file(con, project_id, f, threshold, tile_size)
+                    con.commit()  # commit per-file so a later failure can't lose earlier work
+                    if res['imported']:
+                        imported += 1
+                        ev.update(ok=True, imported=True, skipped=False)
+                    else:
+                        skipped += 1
+                        ev.update(ok=True, imported=False, skipped=True)
+                except Exception as exc:  # noqa: BLE001 — report per-file, keep importing
+                    errors.append({'file': f.name, 'error': str(exc)})
+                    ev.update(ok=False, error=str(exc))
+                yield json.dumps(ev) + '\n'
+            yield json.dumps({'type': 'done', 'imported': imported,
+                              'skipped': skipped, 'errors': errors}) + '\n'
+        finally:
+            _db.close_db(con)
+
+    return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
 
 
 @projects_bp.delete('/api/projects/<project_id>/images/<image_id>')

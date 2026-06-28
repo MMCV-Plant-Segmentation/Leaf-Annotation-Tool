@@ -97,6 +97,29 @@ def _latest_invite(con, user_id: int) -> dict | None:
     return {'token': row['token'], 'expires': row['expires']} if row else None
 
 
+@auth_bp.get('/api/users/members')
+@login_required
+def api_users_members():
+    """Non-admin roster autocomplete: returns only {id, username}.
+
+    Does NOT return password_hash, invite state, or any sensitive field.
+    Use GET /api/users (admin-only) for the full user-management list.
+    """
+    q = (request.args.get('q') or '').strip()
+    con = _db.get_db()
+    try:
+        if q:
+            rows = con.execute(
+                'SELECT id, username FROM users WHERE username LIKE ? ORDER BY username LIMIT 20',
+                (f'%{q}%',),
+            ).fetchall()
+        else:
+            rows = con.execute('SELECT id, username FROM users ORDER BY username').fetchall()
+    finally:
+        _db.close_db(con)
+    return jsonify([{'id': r['id'], 'username': r['username']} for r in rows])
+
+
 @auth_bp.get('/api/users')
 @admin_required
 def api_users():

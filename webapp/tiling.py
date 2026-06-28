@@ -16,12 +16,14 @@ Concepts (see docs/Annotator Plan.md → "Tiling" and "Data model"):
   - Tiles never overlap. Edge tiles (partial at the image border) are kept unless all-black.
 
 ASSUMPTIONS worth flagging (all easy to revise — they live only in this file):
-  A1. `leaf_bbox` = bounding box of ALL above-threshold pixels. The plan says "largest
-      contiguous above-threshold region", but since a leaf is a single contiguous blob the
-      bbox of all foreground is equivalent up to stray specks. If specks become a problem,
-      swap `compute_leaf_bbox` for a connected-component version (would add a scipy dep).
-  A2. A tile is "black" iff the MEAN luminance of its pixels is <= black_threshold. (Could
-      instead be "fraction of bright pixels < f"; isolated here as `tile_is_black`.)
+  A1. The leaf = the LARGEST connected above-threshold component (`scipy.ndimage.label`);
+      `leaf_bbox` is that component's bounding box. A leaf image is a single contiguous
+      bright region, so the biggest connected blob IS the leaf; stray un-blacked specks the
+      photographer missed at the edges are separate, smaller components and are excluded.
+  A2. A tile is "black"/background iff it does NOT overlap the leaf component mask
+      (`tile_is_black(leaf_mask, tile)`). Real edge slivers of the leaf (connected to the
+      body) keep their tile; disconnected specks do not. Supersedes the earlier
+      any-above-threshold rule, which kept specks.
   A3. `origin_y` is drawn uniformly from [0, tile_size) clamped so at least one row of
       tiles covers the leaf. This matches "randomized within [0, leaf_h mod tile_size)" in
       spirit while staying well-defined for any leaf height.
@@ -34,6 +36,7 @@ from typing import Iterable, NamedTuple
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 
 class Rect(NamedTuple):
@@ -55,16 +58,37 @@ def _luminance_array(img: Image.Image) -> np.ndarray:
     return np.asarray(img, dtype=np.uint8)
 
 
-# ── Leaf bounding box (A1) ────────────────────────────────────────────────────
+# ── Leaf component + bounding box (A1) ────────────────────────────────────────
+
+def compute_leaf_mask(img: Image.Image, black_threshold: int) -> np.ndarray | None:
+    """Boolean mask of the leaf = the LARGEST connected above-threshold component.
+
+    Uses scipy.ndimage.label (4-connectivity) to find connected components of the
+    foreground (luminance > black_threshold) and returns a mask of the biggest one.
+    Returns None if there is no foreground at all. Stray edge specks — separate, smaller
+    components — are excluded.
+    """
+    lum = _luminance_array(img)
+    fg = lum > black_threshold
+    if not fg.any():
+        return None
+    labels, n = ndimage.label(fg)
+    if n == 0:
+        return None
+    # Largest component by pixel count, ignoring the background label (0).
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    largest = int(counts.argmax())
+    return labels == largest
+
 
 def compute_leaf_bbox(img: Image.Image, black_threshold: int) -> Rect | None:
-    """Bounding box of the leaf = bbox of all pixels with luminance > black_threshold.
+    """Bounding box of the leaf = bbox of the largest connected component.
 
     Returns None if the image is entirely at/below threshold (no leaf found).
     """
-    lum = _luminance_array(img)
-    mask = lum > black_threshold
-    if not mask.any():
+    mask = compute_leaf_mask(img, black_threshold)
+    if mask is None:
         return None
     ys, xs = np.where(mask)
     x0, x1 = int(xs.min()), int(xs.max())
@@ -97,8 +121,8 @@ def enumerate_tiles(
     """All tile rectangles (non-overlapping, full bbox stored) that intersect the leaf bbox.
 
     origin_x is always 0. Tiles step by tile_size from (0, origin_y). Edge tiles at the
-    right/bottom border are clipped to the image and kept (the all-black filter is applied
-    separately, with the image pixels, by the caller via `tile_is_black`).
+    right/bottom border are clipped to the image and kept (the leaf-overlap filter is
+    applied separately, against the leaf component mask, by `surviving_tiles`).
     """
     if tile_size <= 0:
         raise ValueError('tile_size must be positive')
@@ -123,12 +147,17 @@ def enumerate_tiles(
     return tiles
 
 
-def tile_is_black(lum: np.ndarray, tile: Rect, black_threshold: int) -> bool:
-    """A2: tile is black iff its mean luminance <= black_threshold."""
-    patch = lum[tile.y:tile.y + tile.h, tile.x:tile.x + tile.w]
+def tile_is_black(leaf_mask: np.ndarray, tile: Rect) -> bool:
+    """A tile is background ("black") iff it does NOT overlap the leaf component mask.
+
+    `leaf_mask` is the largest-connected-component mask from `compute_leaf_mask`. A tile
+    that touches even one leaf-component pixel survives (real edge slivers are kept);
+    tiles over disconnected specks have no overlap and are dropped.
+    """
+    patch = leaf_mask[tile.y:tile.y + tile.h, tile.x:tile.x + tile.w]
     if patch.size == 0:
         return True
-    return float(patch.mean()) <= black_threshold
+    return not bool(patch.any())
 
 
 def surviving_tiles(
@@ -138,12 +167,14 @@ def surviving_tiles(
     origin_y: int,
     black_threshold: int,
 ) -> list[Rect]:
-    """Convenience: enumerate tiles then drop the all-black ones. Drives the preview slider."""
+    """Enumerate tiles then keep only those overlapping the leaf component. Drives the preview."""
     w, h = img.size
-    lum = _luminance_array(img)
+    leaf_mask = compute_leaf_mask(img, black_threshold)
+    if leaf_mask is None:
+        return []
     return [
         t for t in enumerate_tiles(w, h, leaf_bbox, tile_size, origin_y)
-        if not tile_is_black(lum, t, black_threshold)
+        if not tile_is_black(leaf_mask, t)
     ]
 
 
