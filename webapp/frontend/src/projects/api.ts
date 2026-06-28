@@ -7,6 +7,7 @@ export type ProjectSummary = {
   tile_size_px: number;
   black_threshold: number;
   classes: string[];
+  tiling_confirmed: boolean;
   created_by: string | null;
   created_at: string;
   imageCount: number;
@@ -14,13 +15,17 @@ export type ProjectSummary = {
   annotatorCount: number;
 };
 
-export type Annotator = { id: string; byline: string };
+/** A registered user for roster autocomplete. */
+export type RosterUser = { id: number; username: string };
+
+export type Annotator = { id: string; user_id: number | null; byline: string };
 
 export type ProjectImage = {
   id: string;
   image_hash: string;
   image_ext: string;
   source_name: string | null;
+  source_path: string | null;
   width: number;
   height: number;
   origin_y: number;
@@ -107,17 +112,29 @@ function jbody(method: string, body: unknown): RequestInit {
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
 }
 
+// Streaming import lives in its own module to keep this file ≤200 lines; re-export so
+// callers (and the unit tests) keep a single import surface.
+export { streamImport, type ImportEvent } from './importStream';
+
 export const projectsApi = {
   list: () => jfetch<ProjectSummary[]>('/api/projects'),
   get: (id: string) => jfetch<ProjectDetail>(`/api/projects/${id}`),
-  create: (body: { name: string; tile_size_px?: number; black_threshold?: number; classes?: string[] }) =>
+  create: (body: { name: string }) =>
     jfetch<ProjectSummary>('/api/projects', jbody('POST', body)),
-  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: string[] }>) =>
+  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: string[]; tiling_confirmed: boolean }>) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', body)),
+  updateTileSize: (id: string, tileSizePx: number) =>
+    jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', { tile_size_px: tileSizePx })),
   remove: (id: string) => jfetch<{ ok: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
 
-  addAnnotator: (id: string, byline: string) =>
-    jfetch<{ ok: boolean }>(`/api/projects/${id}/annotators`, jbody('POST', { byline })),
+  /** Roster autocomplete: returns [{id, username}] — non-admin, login_required. */
+  listUsers: (q?: string) =>
+    jfetch<RosterUser[]>(`/api/users/members${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+
+  /** Add a registered user to the project roster by their user_id. */
+  addAnnotator: (id: string, userId: number) =>
+    jfetch<{ ok: boolean; byline: string; user_id: number }>(
+      `/api/projects/${id}/annotators`, jbody('POST', { user_id: userId })),
   removeAnnotator: (id: string, annotatorId: string) =>
     jfetch<{ ok: boolean }>(`/api/projects/${id}/annotators/${annotatorId}`, { method: 'DELETE' }),
 

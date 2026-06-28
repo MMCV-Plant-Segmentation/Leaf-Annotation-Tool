@@ -7,8 +7,15 @@ import numpy as np
 from PIL import Image
 from webapp import db, app as appmod
 db.auto_create_schema()
-# seed a real user so created_by_user_id FK is satisfied (prod always has one)
-_c = db.get_db(); _c.execute("INSERT INTO users (id, username) VALUES (1, 'admin')"); _c.commit(); db.close_db(_c)
+# seed real users so created_by_user_id FK is satisfied (prod always has one) and the
+# roster (now a registered-user FK) can reference alice/bob.
+_c = db.get_db()
+_c.execute("INSERT INTO users (id, username) VALUES (1, 'admin')")
+_c.execute("INSERT INTO users (username) VALUES ('alice')")
+_c.execute("INSERT INTO users (username) VALUES ('bob')")
+_c.commit()
+_USER_ID = {r['username']: r['id'] for r in _c.execute('SELECT id, username FROM users').fetchall()}
+db.close_db(_c)
 app = appmod.app
 app.secret_key = 'test-secret'
 client = app.test_client()
@@ -34,11 +41,11 @@ assert r.status_code == 201, r.get_json()
 pid = jdump(r)['id']
 print('project created', pid, 'classes=', jdump(r)['classes'])
 
-# 2) roster
+# 2) roster (registered-user FK: add by user_id)
 for b in ['alice','bob']:
-    r = client.post(f'/api/projects/{pid}/annotators', json={'byline':b}); assert r.status_code==201, jdump(r)
+    r = client.post(f'/api/projects/{pid}/annotators', json={'user_id': _USER_ID[b]}); assert r.status_code==201, jdump(r)
 # duplicate -> 409
-assert client.post(f'/api/projects/{pid}/annotators', json={'byline':'alice'}).status_code==409
+assert client.post(f'/api/projects/{pid}/annotators', json={'user_id': _USER_ID['alice']}).status_code==409
 print('roster ok (alice,bob; dup rejected)')
 
 # 3) import images from dir

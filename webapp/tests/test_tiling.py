@@ -43,14 +43,23 @@ leaf_mask = np.asarray(img) > 50
 assert covered[leaf_mask].all(), 'some leaf pixels not covered by any tile'
 print(f'enumerate: {len(tiles)} tiles, non-overlapping, cover the leaf OK')
 
-# 4) black tiles dropped
+# 4) black tiles dropped (any-above-threshold rule: a survivor has >=1 bright pixel)
 surv = surviving_tiles(img, bb, 64, oy, black_threshold=50)
 assert len(surv) <= len(tiles)
 # a tile fully outside the leaf would be black; ensure all survivors touch bright pixels
 lum = np.asarray(img)
 for t in surv:
-    assert lum[t.y:t.y+t.h, t.x:t.x+t.w].mean() > 50
+    assert (lum[t.y:t.y+t.h, t.x:t.x+t.w] > 50).any(), f'survivor has no leaf pixel: {t}'
 print(f'surviving (non-black): {len(surv)} of {len(tiles)} OK')
+
+# 4b) any-above-threshold: a 1-px sliver in an otherwise-black edge tile MUST survive
+sliver = np.zeros((128, 256), np.uint8)
+sliver[:, 5] = 255                       # thin vertical leaf at x=5
+simg = Image.fromarray(sliver, 'L')
+sbb = compute_leaf_bbox(simg, 50)
+ssurv = surviving_tiles(simg, sbb, 128, 0, 50)
+assert any(t.x == 0 for t in ssurv), 'sliver edge tile dropped by filter'
+print('sliver edge tile survives (any-above-threshold) OK')
 
 # 5) batch sampling: deterministic, respects exclude, caps at pool size
 cands = [('img1', t.x, t.y) for t in surv]

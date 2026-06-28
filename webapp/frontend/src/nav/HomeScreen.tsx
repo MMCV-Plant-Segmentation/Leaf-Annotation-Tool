@@ -20,8 +20,8 @@ const HomeScreen: Component = () => {
       <span>{t('home.analyzeSub')}</span>
     </button>
     <button class={styles.tile} onClick={() => nav('/projects')}>
-      <strong>{t('home.annotateTitle')}</strong>
-      <span>{t('home.annotateSub')}</span>
+      <strong>{t('home.projectsTitle')}</strong>
+      <span>{t('home.projectsSub')}</span>
     </button>
     <button class={`${styles.tile} ${styles.tileWide}`} onClick={() => nav('/train')}>
       <strong>{t('home.trainTitle')}</strong>

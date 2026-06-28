@@ -10,6 +10,7 @@ dependencies = [
     "shapely",
     "granian>=2.7.7",
     "python-dotenv",
+    "scipy>=1.15.3",
 ]
 
 [project.scripts]

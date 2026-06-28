@@ -51,6 +51,10 @@ def get_db() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH))
     con.row_factory = _dict_factory
     con.execute('PRAGMA foreign_keys=ON')
+    # Wait up to 5s for a write lock instead of failing immediately. WAL means reads never
+    # block, but two writers still serialize; without this an abandoned/slow import would
+    # flood concurrent writers with "database is locked" instead of letting them queue.
+    con.execute('PRAGMA busy_timeout=5000')
     return con
 
 
@@ -164,21 +168,23 @@ CREATE INDEX IF NOT EXISTS idx_reannot_polygon_generation_id
 -- so new primitives (stroke, point, …) are added without a migration.
 
 CREATE TABLE IF NOT EXISTS project (
-  id              TEXT PRIMARY KEY,
-  name            TEXT NOT NULL,
-  tile_size_px    INTEGER NOT NULL DEFAULT 128,    -- immutable after creation (v1)
-  black_threshold INTEGER NOT NULL DEFAULT 40,
-  classes_json    TEXT NOT NULL DEFAULT '[]',      -- v1: flat per-project class list
-  created_by      TEXT,
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  tile_size_px     INTEGER NOT NULL DEFAULT 128,
+  black_threshold  INTEGER NOT NULL DEFAULT 0,       -- Minimum Luminance Threshold (MLT)
+  classes_json     TEXT NOT NULL DEFAULT '[]',      -- v1: flat per-project class list
+  tiling_confirmed INTEGER NOT NULL DEFAULT 0,      -- 1 once user saves tiling settings
+  created_by       TEXT,
   created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  created_at      TEXT NOT NULL
+  created_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS project_annotator (
   id         TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  byline     TEXT NOT NULL,
-  UNIQUE (project_id, byline)
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  byline     TEXT NOT NULL,   -- cached username; used for annotation attribution
+  UNIQUE (project_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS project_image (
@@ -186,7 +192,8 @@ CREATE TABLE IF NOT EXISTS project_image (
   project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
   image_hash  TEXT NOT NULL,
   image_ext   TEXT NOT NULL,
-  source_name TEXT,
+  source_name TEXT,           -- legacy filename (kept for display)
+  source_path TEXT,           -- full server path at import time (provenance)
   width       INTEGER,
   height      INTEGER,
   origin_y    INTEGER NOT NULL DEFAULT 0,
@@ -277,6 +284,11 @@ def auto_create_schema() -> None:
         con.commit()
     finally:
         close_db(con)
+    # Additive / destructive migrations (idempotent; order matters).
+    migrate_add_user_fk()
+    migrate_project_annotator_user_fk()
+    migrate_project_image_source_path()
+    migrate_project_tiling_confirmed()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -290,6 +302,66 @@ def migrate_add_user_fk() -> None:
             con.execute(
                 'ALTER TABLE annotation_set ADD COLUMN'
                 ' created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL'
+            )
+            con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_project_annotator_user_fk() -> None:
+    """Destructive migration: rebuild project_annotator with user_id FK.
+
+    Foundation data is throwaway — if user_id column is missing the table is
+    dropped and recreated with the new schema.  Any existing roster rows are lost.
+    """
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(project_annotator)').fetchall()}
+        if 'user_id' not in cols:
+            con.executescript('''
+                DROP TABLE IF EXISTS project_annotator;
+                CREATE TABLE project_annotator (
+                  id         TEXT PRIMARY KEY,
+                  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+                  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  byline     TEXT NOT NULL,
+                  UNIQUE (project_id, user_id)
+                );
+            ''')
+            con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_project_image_source_path() -> None:
+    """Add source_path column to project_image for full-path provenance."""
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(project_image)').fetchall()}
+        if 'source_path' not in cols:
+            con.execute('ALTER TABLE project_image ADD COLUMN source_path TEXT')
+            con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_project_tiling_confirmed() -> None:
+    """Add tiling_confirmed flag to project.
+
+    Auto-confirms projects that already have images (so existing projects with
+    batches remain accessible without requiring the user to re-confirm).
+    """
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(project)').fetchall()}
+        if 'tiling_confirmed' not in cols:
+            con.execute(
+                'ALTER TABLE project ADD COLUMN tiling_confirmed INTEGER NOT NULL DEFAULT 0'
+            )
+            # Auto-confirm projects that already have ≥1 image.
+            con.execute(
+                'UPDATE project SET tiling_confirmed = 1 '
+                'WHERE id IN (SELECT DISTINCT project_id FROM project_image)'
             )
             con.commit()
     finally:

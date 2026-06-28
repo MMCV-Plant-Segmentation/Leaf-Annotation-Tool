@@ -1,7 +1,7 @@
 import { type Component, For, Show } from 'solid-js';
 import type { Progress } from './api';
 import { t } from '../i18n/catalog';
-import * as styles from './ProjectDetailScreen.css';
+import * as styles from './ProjectProgressTable.css';
 
 // Per-annotator progress for the current batch. Split out of ProjectDetailScreen
 // to keep that file under the 200-line guard.
