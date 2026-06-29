@@ -6,6 +6,7 @@
 import { type Component, createResource, createSignal, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, streamImport, streamUpload, type ImportEvent } from './api';
+import { currentUser } from '../auth';
 import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
@@ -30,6 +31,7 @@ const ProjectImagesScreen: Component = () => {
   // Upload-specific state
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
   const [dragging, setDragging] = createSignal(false);
+  const [uploadCurrent, setUploadCurrent] = createSignal(0);
 
   // Path-import state (dev convenience)
   const [path, setPath] = createSignal('');
@@ -41,7 +43,8 @@ const ProjectImagesScreen: Component = () => {
 
   const onEvent = (ev: ImportEvent) => {
     if (ev.type === 'start') { setTotal(ev.total); setDone(0); setErrs(0); }
-    else if (ev.type === 'file') { setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
+    else if (ev.type === 'uploading') { setUploadCurrent(ev.index); }
+    else if (ev.type === 'file') { setUploadCurrent(0); setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
     else if (ev.type === 'done') {
       setSummary(t('detail.images.importDone', {
         imported: ev.imported, skipped: ev.skipped, errors: ev.errors.length,
@@ -52,7 +55,7 @@ const ProjectImagesScreen: Component = () => {
   const doUpload = async () => {
     const files = selectedFiles();
     if (!files.length || busy()) return;
-    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
+    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0); setUploadCurrent(0);
     try {
       await streamUpload(id(), files, onEvent);
       setSelectedFiles([]);
@@ -62,6 +65,7 @@ const ProjectImagesScreen: Component = () => {
       setSummary(e instanceof Error ? e.message : 'Failed');
     } finally {
       setBusy(false);
+      setUploadCurrent(0);
     }
   };
 
@@ -136,17 +140,19 @@ const ProjectImagesScreen: Component = () => {
           </div>
 
           {/* ── Secondary (de-emphasized): server-path import for dev/admin ── */}
-          <div class={styles.serverPathSection}>
-            <span class={styles.serverPathLabel}>{t('detail.images.serverPathSection')}</span>
-            <div class={styles.importRow}>
-              <input type="text" placeholder={t('detail.images.importPlaceholder')}
-                value={path()} data-testid="import-path"
-                onInput={(e) => setPath(e.currentTarget.value)} />
-              <button disabled={busy()} onClick={() => void doImport()}>
-                {busy() ? t('detail.images.importing') : t('detail.images.import')}
-              </button>
+          <Show when={currentUser()?.is_admin}>
+            <div class={styles.serverPathSection} data-testid="serverPathSection">
+              <span class={styles.serverPathLabel}>{t('detail.images.serverPathSection')}</span>
+              <div class={styles.importRow}>
+                <input type="text" placeholder={t('detail.images.importPlaceholder')}
+                  value={path()} data-testid="import-path"
+                  onInput={(e) => setPath(e.currentTarget.value)} />
+                <button disabled={busy()} onClick={() => void doImport()}>
+                  {busy() ? t('detail.images.importing') : t('detail.images.import')}
+                </button>
+              </div>
             </div>
-          </div>
+          </Show>
 
           {/* ── Shared progress UI (reused by both flows) ── */}
           <Show when={busy() || total() > 0}>
@@ -156,7 +162,9 @@ const ProjectImagesScreen: Component = () => {
                   data-testid="import-progress-bar" />
               </div>
               <span class={styles.progressLabel} data-testid="import-progress-label">
-                {t('detail.images.progress', { done: done(), total: total(), errors: errs() })}
+                {uploadCurrent() > 0
+                  ? t('detail.images.uploadingN', { current: uploadCurrent(), total: total() })
+                  : t('detail.images.progress', { done: done(), total: total(), errors: errs() })}
               </span>
             </div>
           </Show>
