@@ -3,7 +3,7 @@ Backend acceptance tests for the browser-upload endpoint.
 
 Covers:
   U1. NDJSON event stream: start / file / done sequence
-  U2. Imported count + provenance (filename as source_path and source_name)
+  U2. Imported count + provenance (source_name == filename; source_path NULL for uploads)
   U3. Dedup: same bytes → skipped, not re-imported
   U4. Mixed batch: bad file reported per-file, not fatal; good file still imported
   U5. Existing path-import still works (refactor must not break it)
@@ -108,10 +108,9 @@ source_names = {im['source_name'] for im in det['images']}
 source_paths = {im['source_path'] for im in det['images']}
 assert 'leaf_a.png' in source_names, f'source_name missing: {source_names}'
 assert 'leaf_b.png' in source_names, f'source_name missing: {source_names}'
-# For uploads, source_path = filename (no server path)
-assert 'leaf_a.png' in source_paths, f'source_path should equal filename: {source_paths}'
-assert 'leaf_b.png' in source_paths, f'source_path should equal filename: {source_paths}'
-print('  ✓  source_name and source_path both equal the upload filename')
+# Uploads have no server-side original location → source_path is NULL (not the filename).
+assert source_paths == {None}, f'upload source_path should be NULL: {source_paths}'
+print('  ✓  source_name == filename; source_path is NULL for uploads')
 
 # File events carry the original filename as both name and path
 names_in_events = {e['name'] for e in file_evs if e.get('ok')}

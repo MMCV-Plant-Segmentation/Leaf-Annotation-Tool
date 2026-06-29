@@ -3,13 +3,13 @@ Tiling geometry for the annotator's project pipeline.
 
 These are PURE functions over plain numbers / numpy arrays — no DB, no Flask — so the
 risky geometry is unit-testable in isolation and any mistaken assumption (e.g. how
-`origin_y` is randomized, or how "black" tiles are detected) is cheap to correct here
+`origin_y` is chosen, or how "black" tiles are detected) is cheap to correct here
 without touching the endpoint or UI layers.
 
 Concepts (see docs/Annotator Plan.md → "Tiling" and "Data model"):
   - A project has ONE tile size (`tile_size_px`, default 128) and a `black_threshold`.
-  - `origin_x` is always 0; `origin_y` is randomized per image and stored, so the grid
-    does not always land on the same horizontal bands.
+  - `origin_x` is always 0; `origin_y` is the deterministic image-midpoint centre, so the
+    leftover margin is shared evenly between the top and bottom edge rows (no random phase).
   - A leaf image is a single contiguous bright region on a black background; its bounding
     box (`leaf_bbox`) is computed once at import and used to (a) bound the valid origin_y
     range and (b) skip all-black tiles quickly.
@@ -24,9 +24,10 @@ ASSUMPTIONS worth flagging (all easy to revise — they live only in this file):
       (`tile_is_black(leaf_mask, tile)`). Real edge slivers of the leaf (connected to the
       body) keep their tile; disconnected specks do not. Supersedes the earlier
       any-above-threshold rule, which kept specks.
-  A3. `origin_y` is drawn uniformly from [0, tile_size) clamped so at least one row of
-      tiles covers the leaf. This matches "randomized within [0, leaf_h mod tile_size)" in
-      spirit while staying well-defined for any leaf height.
+  A3. `origin_y = (image_height % tile_size) // 2` — the grid is centred on the image
+      midpoint so the leftover margin is split evenly top/bottom (deterministic, no RNG).
+      This REPLACES the earlier per-image random origin. Target (deferred, needs a mask):
+      centre on the leaf centroid instead of the image midpoint.
 """
 
 from __future__ import annotations
@@ -96,17 +97,27 @@ def compute_leaf_bbox(img: Image.Image, black_threshold: int) -> Rect | None:
     return Rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 
 
-# ── Origin randomization (A3) ─────────────────────────────────────────────────
+# ── Centered origin (A3) ──────────────────────────────────────────────────────
 
-def random_origin_y(leaf_bbox: Rect, tile_size: int, rng: random.Random | None = None) -> int:
-    """Pick a random vertical grid origin so the tile grid phase varies per image.
+def centered_origin_y(image_height: int, tile_size: int) -> int:
+    """Deterministic vertical grid origin that centres the grid on the image midpoint.
 
-    The grid starts at y = leaf_bbox.y - offset, offset ∈ [0, tile_size), clamped to >= 0.
-    Stored on the image so a re-grid with the same params reproduces the same tiles.
+    The leftover margin (`image_height % tile_size`) is split evenly between the top and
+    bottom edge rows, so a large tile size can't leave the top row almost entirely
+    background. Pure + deterministic (same height + tile_size → same origin), so re-tiling
+    is stable. When `image_height % tile_size == 0` the grid fits exactly → origin 0.
+
+    `origin_x` stays 0 for now (Christian's pain is vertical). Horizontal centring would
+    need a new `origin_x` column — a possible follow-up, not built here.
+
+    TARGET (deferred): centre on the leaf *centroid* via the optional per-image mask. The
+    leaf bbox is already computed at import (`compute_leaf_bbox`) and centring on its mid-y
+    would be a cheap better-than-midpoint upgrade; the interim per Christian is the plain
+    image midpoint (no mask needed).
     """
-    rng = rng or random
-    offset = rng.randrange(tile_size) if tile_size > 0 else 0
-    return max(0, leaf_bbox.y - offset)
+    if tile_size <= 0:
+        return 0
+    return (image_height % tile_size) // 2
 
 
 # ── Tile enumeration ──────────────────────────────────────────────────────────

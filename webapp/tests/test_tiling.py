@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from PIL import Image
-from webapp.tiling import (Rect, compute_leaf_bbox, random_origin_y,
+from webapp.tiling import (Rect, compute_leaf_bbox, centered_origin_y,
                            enumerate_tiles, tile_is_black, surviving_tiles, sample_positions)
 
 # Build a synthetic image: 300x200 black, with a bright leaf blob at x[40..240), y[30..170)
@@ -18,11 +18,29 @@ print('leaf bbox:', bb, 'OK')
 assert compute_leaf_bbox(Image.fromarray(np.zeros((10,10),np.uint8),'L'), 50) is None
 print('empty image -> None OK')
 
-# 2) origin_y deterministic with seeded rng, within [bbox.y - tile, bbox.y]
-rng = random.Random(42)
-oy = random_origin_y(bb, 64, rng)
-assert 0 <= oy <= bb.y, f'origin_y out of range: {oy}'
-print('origin_y:', oy, 'OK')
+# 2) origin_y = deterministic image-midpoint centre (no randomness).
+#    Margin above the top row == margin below the bottom row (within 1px for odd leftover).
+def _check_centered(height, tile, expected):
+    oy = centered_origin_y(height, tile)
+    assert oy == expected, f'centered_origin_y({height},{tile})={oy}, expected {expected}'
+    leftover = height % tile
+    top, bottom = oy, leftover - oy
+    assert 0 <= bottom - top <= 1, f'unbalanced margins top={top} bottom={bottom}'
+    return oy
+
+# exact fit -> origin 0 (no leftover)
+_check_centered(256, 64, 0)
+_check_centered(200, 50, 0)
+# even leftover -> split evenly (200 % 64 = 8 -> 4)
+_check_centered(200, 64, 4)
+# odd leftover -> floor (101 % 30 = 11 -> 5; bottom = 6)
+_check_centered(101, 30, 5)
+# determinism: same args -> same origin, no rng involved
+assert centered_origin_y(200, 64) == centered_origin_y(200, 64)
+# tile_size <= 0 guarded -> 0
+assert centered_origin_y(200, 0) == 0
+oy = centered_origin_y(200, 64)
+print('origin_y (centered):', oy, 'OK')
 
 # 3) enumerate tiles: non-overlapping, cover the leaf bbox, clipped to image
 tiles = enumerate_tiles(300, 200, bb, tile_size=64, origin_y=oy)

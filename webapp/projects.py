@@ -371,14 +371,15 @@ def _resolve_import_path(raw_path: str):
 
 def _import_one_file(
     con, project_id: str,
-    filename: str, data: bytes, provenance: str,
+    filename: str, data: bytes, provenance: str | None,
     threshold: int, tile_size: int,
 ) -> dict:
     """Import a single image. Returns a per-file result dict.
 
     Shared by path-scan and upload endpoints — dedup/store/leaf-bbox/insert live here.
     filename: basename used for source_name.
-    provenance: stored as source_path (server path for disk imports; filename for uploads).
+    provenance: stored as source_path — the real server path for disk imports, or NULL
+    (None) for uploads, which have no server-side original location.
     Does NOT commit — the caller controls the transaction.
     """
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
@@ -394,7 +395,9 @@ def _import_one_file(
     bb = tiling.compute_leaf_bbox(img, threshold)
     if bb is None:
         bb = tiling.Rect(0, 0, w, hgt)  # whole image if nothing above threshold
-    origin_y = tiling.random_origin_y(bb, tile_size)
+    # Deterministic image-midpoint centring (no RNG). Target (deferred, needs a mask):
+    # centre on the leaf centroid; bb is already computed and could give a cheap upgrade.
+    origin_y = tiling.centered_origin_y(hgt, tile_size)
     con.execute(
         '''INSERT INTO project_image
              (id, project_id, image_hash, image_ext, source_name, source_path,
@@ -412,7 +415,7 @@ def import_images(project_id: str):
     """Import images from a server-side file or directory path (buffered summary).
 
     No browser upload — files already live on the server (e.g. /deltos/c/maize/...).
-    For each image: store content-addressed, compute leaf_bbox + random origin_y, insert.
+    For each image: store content-addressed, compute leaf_bbox + centred origin_y, insert.
     """
     raw_path = ((request.json or {}).get('path') or '').strip()
     files, err = _resolve_import_path(raw_path)
@@ -523,7 +526,8 @@ def upload_images(project_id: str):
             for fname, data in file_data:
                 ev = {'type': 'file', 'name': fname, 'path': fname}
                 try:
-                    res = _import_one_file(con, project_id, fname, data, fname,
+                    # Uploads have no server-side original location → store NULL source_path.
+                    res = _import_one_file(con, project_id, fname, data, None,
                                           threshold, tile_size)
                     con.commit()
                     if res['imported']:
