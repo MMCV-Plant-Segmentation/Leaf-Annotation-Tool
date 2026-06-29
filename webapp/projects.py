@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,8 +32,14 @@ projects_bp = Blueprint('projects', __name__)
 
 IMAGE_EXTS = {'.tif', '.tiff', '.png', '.jpg', '.jpeg'}
 
+# Max simultaneous browser uploads (matches FE UPLOAD_CONCURRENCY).
+UPLOAD_CONCURRENCY = 4
+# Per-process semaphore — single dev server; multi-worker prod would need shared state.
+_upload_sema = threading.BoundedSemaphore(UPLOAD_CONCURRENCY)
+
 
 # ── small helpers ─────────────────────────────────────────────────────────────
+
 
 def _uid() -> str:
     return str(uuid.uuid4())
@@ -116,6 +123,34 @@ def _mark_tiles_dirty(con, tile_ids: list[str], annotator: str) -> None:
     )
 
 
+# ── membership helpers ────────────────────────────────────────────────────────
+
+def _add_annotator(con, project_id: str, user_id, byline: str) -> None:
+    """INSERT user into project_annotator. Caller handles IntegrityError and commit."""
+    con.execute(
+        'INSERT INTO project_annotator (id, project_id, user_id, byline) VALUES (?, ?, ?, ?)',
+        (_uid(), project_id, user_id, byline),
+    )
+
+
+def _member_or_403(con, project_id: str):
+    """Return (json 403 response, 403) when the session user is not a project member.
+
+    Admin (session username == 'admin', matching auth.admin_required) always passes.
+    Returns None if the user is permitted.
+    """
+    if session.get('username') == 'admin':
+        return None
+    user_id = session.get('user_id')
+    row = con.execute(
+        'SELECT 1 FROM project_annotator WHERE project_id = ? AND user_id = ?',
+        (project_id, user_id),
+    ).fetchone()
+    if row is None:
+        return jsonify({'error': 'forbidden'}), 403
+    return None
+
+
 # ── projects CRUD ─────────────────────────────────────────────────────────────
 
 @projects_bp.get('/api/projects')
@@ -123,7 +158,18 @@ def _mark_tiles_dirty(con, tile_ids: list[str], annotator: str) -> None:
 def list_projects():
     con = _db.get_db()
     try:
-        rows = con.execute('SELECT * FROM project ORDER BY created_at DESC').fetchall()
+        if session.get('username') == 'admin':
+            rows = con.execute('SELECT * FROM project ORDER BY created_at DESC').fetchall()
+        else:
+            rows = con.execute(
+                '''SELECT p.* FROM project p
+                   WHERE EXISTS (
+                     SELECT 1 FROM project_annotator pa
+                     WHERE pa.project_id = p.id AND pa.user_id = ?
+                   )
+                   ORDER BY p.created_at DESC''',
+                (session.get('user_id'),),
+            ).fetchall()
         out = []
         for r in rows:
             p = _project_out(r)
@@ -168,6 +214,11 @@ def create_project():
             (pid, name, tile_size, threshold, json.dumps(classes),
              _byline(), session.get('user_id'), _now()),
         )
+        # Auto-add creator as an annotator so the project is immediately visible to them.
+        try:
+            _add_annotator(con, pid, session.get('user_id'), _byline())
+        except _db.sqlite3.IntegrityError:
+            pass  # already on roster — idempotent
         con.commit()
         return jsonify(_project_out(_project(con, pid))), 201
     finally:
@@ -182,6 +233,9 @@ def update_project(project_id: str):
     try:
         if not _project(con, project_id):
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         sets, vals = [], []
         if 'name' in body:
             sets.append('name = ?'); vals.append((body['name'] or '').strip())
@@ -217,6 +271,9 @@ def update_project(project_id: str):
 def delete_project(project_id: str):
     con = _db.get_db()
     try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         con.execute('DELETE FROM project WHERE id = ?', (project_id,))  # cascades
         con.commit()
         return jsonify({'ok': True})
@@ -232,6 +289,9 @@ def get_project(project_id: str):
         row = _project(con, project_id)
         if not row:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         out = _project_out(row)
         out['annotators'] = con.execute(
             'SELECT id, user_id, byline FROM project_annotator WHERE project_id = ? ORDER BY byline',
@@ -310,6 +370,9 @@ def add_annotator(project_id: str):
     try:
         if not _project(con, project_id):
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         user = con.execute(
             'SELECT id, username FROM users WHERE id = ?', (user_id,)
         ).fetchone()
@@ -317,10 +380,7 @@ def add_annotator(project_id: str):
             return jsonify({'error': 'user not found'}), 404
         byline = user['username']
         try:
-            con.execute(
-                'INSERT INTO project_annotator (id, project_id, user_id, byline) VALUES (?, ?, ?, ?)',
-                (_uid(), project_id, user_id, byline),
-            )
+            _add_annotator(con, project_id, user_id, byline)
             con.commit()
         except _db.sqlite3.IntegrityError:
             return jsonify({'error': 'already on roster'}), 409
@@ -334,6 +394,9 @@ def add_annotator(project_id: str):
 def remove_annotator(project_id: str, annotator_id: str):
     con = _db.get_db()
     try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         con.execute(
             'DELETE FROM project_annotator WHERE id = ? AND project_id = ?',
             (annotator_id, project_id),
@@ -517,7 +580,16 @@ def upload_images(project_id: str):
     if not proj:
         _db.close_db(con)
         return jsonify({'error': 'not found'}), 404
+    err = _member_or_403(con, project_id)
+    if err:
+        _db.close_db(con)
+        return err
     threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
+    # Cap concurrent uploads per process (single dev server; multi-worker prod needs shared
+    # state such as Redis — out of scope).
+    if not _upload_sema.acquire(blocking=False):
+        _db.close_db(con)
+        return jsonify({'error': 'too many concurrent uploads'}), 429
 
     def generate():
         imported, skipped, errors = 0, 0, []
@@ -544,6 +616,7 @@ def upload_images(project_id: str):
                               'skipped': skipped, 'errors': errors}) + '\n'
         finally:
             _db.close_db(con)
+            _upload_sema.release()
 
     return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
 
@@ -553,6 +626,9 @@ def upload_images(project_id: str):
 def delete_image(project_id: str, image_id: str):
     con = _db.get_db()
     try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         con.execute(
             'DELETE FROM project_image WHERE id = ? AND project_id = ?', (image_id, project_id)
         )
@@ -575,6 +651,9 @@ def preview_tiles(project_id: str, image_id: str):
         ).fetchone()
         if not proj or not img_row:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         tile_size = int(request.args.get('tile_size', proj['tile_size_px']))
         threshold = int(request.args.get('black_threshold', proj['black_threshold']))
         img = imaging.get_image(img_row['image_hash'], img_row['image_ext'])
@@ -615,6 +694,9 @@ def create_batch(project_id: str):
         proj = _project(con, project_id)
         if not proj:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         roster = [r['byline'] for r in con.execute(
             'SELECT byline FROM project_annotator WHERE project_id = ?', (project_id,)
         ).fetchall()]
@@ -700,6 +782,9 @@ def get_batch(batch_id: str):
         batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
         if not batch:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
         proj = con.execute(
             'SELECT classes_json FROM project WHERE id = ?', (batch['project_id'],)
         ).fetchone()
@@ -790,6 +875,9 @@ def create_annotation(project_id: str):
         return jsonify({'error': 'imageId, kind, points, annotator required'}), 400
     con = _db.get_db()
     try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
         tile_ids = _tiles_intersecting(con, image_id, kind, points)
         if not tile_ids:
             return jsonify({'error': 'annotation must intersect at least one tile'}), 422
@@ -828,6 +916,9 @@ def update_annotation(annotation_id: str):
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
         if not row or row['deleted_at']:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, row['project_id'])
+        if err:
+            return err
         old_tiles = [r['tile_id'] for r in con.execute(
             'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
         ).fetchall()]
@@ -864,6 +955,9 @@ def delete_annotation(annotation_id: str):
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
         if not row:
             return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, row['project_id'])
+        if err:
+            return err
         tiles = [r['tile_id'] for r in con.execute(
             'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
         ).fetchall()]
@@ -886,6 +980,17 @@ def set_tile_state(at_id: str):
         return jsonify({'error': 'state must be assigned|completed|dirty'}), 400
     con = _db.get_db()
     try:
+        # Resolve project_id through the annotator_tile → batch_tile → batch chain.
+        at_row = con.execute(
+            '''SELECT b.project_id FROM annotator_tile at
+               JOIN batch_tile bt ON bt.id = at.batch_tile_id
+               JOIN batch b ON b.id = bt.batch_id
+               WHERE at.id = ?''', (at_id,),
+        ).fetchone()
+        if at_row:
+            err = _member_or_403(con, at_row['project_id'])
+            if err:
+                return err
         con.execute(
             'UPDATE annotator_tile SET state = ?, updated_at = ? WHERE id = ?',
             (state, _now(), at_id),
@@ -908,10 +1013,13 @@ def image_overview(image_id: str):
     con = _db.get_db()
     try:
         im = _image_row(con, image_id)
+        if not im:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, im['project_id'])
+        if err:
+            return err
     finally:
         _db.close_db(con)
-    if not im:
-        return jsonify({'error': 'not found'}), 404
     img = imaging.get_image(im['image_hash'], im['image_ext'])
     return send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
 
@@ -922,10 +1030,13 @@ def image_crop(image_id: str):
     con = _db.get_db()
     try:
         im = _image_row(con, image_id)
+        if not im:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, im['project_id'])
+        if err:
+            return err
     finally:
         _db.close_db(con)
-    if not im:
-        return jsonify({'error': 'not found'}), 404
     try:
         x, y = int(request.args['x']), int(request.args['y'])
         w, h = int(request.args['w']), int(request.args['h'])

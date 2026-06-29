@@ -26,6 +26,10 @@ const AppRoot: Component<RouteSectionProps> = (props) => {
     if (user && loc.pathname === '/login') {
       nav('/', { replace: true });
     }
+    // Gate /admin: resolved + logged-in + not admin → bounce home.
+    if (user !== undefined && user && !user.is_admin && loc.pathname === '/admin') {
+      nav('/', { replace: true });
+    }
   });
 
   const isPublic = () =>

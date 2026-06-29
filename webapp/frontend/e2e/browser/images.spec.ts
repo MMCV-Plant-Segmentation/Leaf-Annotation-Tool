@@ -15,9 +15,9 @@ const FLAT_IMAGES = [
   path.join(FIXTURE_DIR, 'flat-images', 'upload2.png'),
 ];
 
-// ── I1: Sequential per-file upload ──────────────────────────────────────────
+// ── I1: Parallel per-file upload (≤4 concurrent) ─────────────────────────────
 
-test('I1: sequential upload — 3 files → 3 POSTs + aggregate imported=3', async ({ page }) => {
+test('I1: parallel upload — 3 files → 3 POSTs (one per file) + aggregate imported=3', async ({ page }) => {
   // Create a fresh project for this test.
   const projResp = await page.request.post('/api/projects', { data: { name: 'Upload e2e test' } });
   expect(projResp.ok()).toBeTruthy();
@@ -26,7 +26,7 @@ test('I1: sequential upload — 3 files → 3 POSTs + aggregate imported=3', asy
   await page.goto(`/projects/${id}/images`);
   await expect(page.getByTestId('upload-btn')).toBeVisible();
 
-  // Count upload POSTs to verify sequential (one per file) behaviour.
+  // Count upload POSTs: there should be exactly one POST per file (one per file, ≤4 concurrent).
   const uploadUrls: string[] = [];
   page.on('request', (req) => {
     if (req.url().includes('/images/upload') && req.method() === 'POST') {
@@ -37,15 +37,14 @@ test('I1: sequential upload — 3 files → 3 POSTs + aggregate imported=3', asy
   await page.locator('[data-testid="import-files"]').setInputFiles(FLAT_IMAGES);
   await page.click('[data-testid="upload-btn"]');
 
-  // "Uploading N of M" should appear in the progress label during transfer.
+  // Progress label and summary must appear.
   await expect(page.getByTestId('import-progress')).toBeVisible({ timeout: 5000 });
-  // Eventually the label transitions to per-file progress; wait for the summary.
   await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
   const summaryText = await page.getByTestId('import-summary').textContent();
   expect(summaryText).toContain('Imported 3');
   expect(summaryText).toContain('skipped 0');
 
-  // Three separate POSTs (sequential, not one multipart with all files).
+  // Still one POST per file (pool drains the queue; not one multipart with all files).
   expect(uploadUrls).toHaveLength(3);
 });
 
@@ -88,10 +87,18 @@ test('I3: admin sees server-path section; non-admin does not', async ({ page, br
 
   // Non-admin: create a fresh user via the admin API, set their password,
   // then log in with a new browser context.
-  const username = `gate-user-${Date.now()}`;
+  const username = `gateuser-${Date.now()}`;
   const createResp = await page.request.post('/api/users', { data: { username } });
   expect(createResp.ok()).toBeTruthy();
-  const { invite } = (await createResp.json()) as { invite: { token: string } };
+  const newUser = await createResp.json() as { id: number; invite: { token: string } };
+  const { invite } = newUser;
+
+  // Add the non-admin as a project member so they can access the images screen.
+  // (Fix 3 requires membership; the server-path section visibility depends on is_admin, not membership.)
+  const addResp = await page.request.post(`/api/projects/${id}/annotators`, {
+    data: { user_id: newUser.id },
+  });
+  expect(addResp.ok()).toBeTruthy();
 
   // Accept the invite (no auth required) to set the user's password.
   // NOTE: api_accept_invite clears the caller's session; we use a throwaway request
@@ -117,7 +124,7 @@ test('I3: admin sees server-path section; non-admin does not', async ({ page, br
 
   await p2.goto(`/projects/${id}/images`);
   await expect(p2.getByTestId('upload-btn')).toBeVisible({ timeout: 5000 });
-  // Non-admin: serverPathSection must be absent from the DOM.
+  // Non-admin (but project member): serverPathSection must be absent from the DOM.
   await expect(p2.getByTestId('serverPathSection')).not.toBeVisible();
   await ctx.close();
 });

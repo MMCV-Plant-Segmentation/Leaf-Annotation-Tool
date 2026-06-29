@@ -1,6 +1,9 @@
 // Streaming (NDJSON) import/upload client. Reads the chunked response one line at a
 // time and invokes a callback per event, reassembling lines that straddle chunk boundaries.
 
+/** Max simultaneous upload POSTs (matches BE _upload_sema). */
+const UPLOAD_CONCURRENCY = 4;
+
 export type ImportEvent =
   | { type: 'start'; total: number }
   | { type: 'uploading'; index: number; total: number }
@@ -24,10 +27,11 @@ export async function streamImport(
 }
 
 /**
- * POST browser File objects one at a time, streaming NDJSON per file.
- * Emits a synthetic 'start' event upfront, then an 'uploading' event before each
- * file's POST (showing "Uploading N of M" in the UI), then forwards each 'file'
- * event, and finally emits a single aggregate 'done' event.
+ * POST browser File objects up to UPLOAD_CONCURRENCY at a time, streaming NDJSON per
+ * file. Emits a synthetic 'start' event upfront, then an 'uploading' event before each
+ * file's POST, then forwards each 'file' event, and finally emits one aggregate 'done'.
+ * Completions may interleave; the running index count will reach total, and the final
+ * summary aggregates imported/skipped/errors across all files.
  */
 export async function streamUpload(
   id: string, files: File[], onEvent: (ev: ImportEvent) => void,
@@ -36,25 +40,35 @@ export async function streamUpload(
   onEvent({ type: 'start', total });
   let imported = 0, skipped = 0;
   const errors: { file: string; error: string }[] = [];
-  for (let i = 0; i < files.length; i++) {
-    onEvent({ type: 'uploading', index: i + 1, total });
-    const fd = new FormData();
-    fd.append('files', files[i]);
-    const r = await fetch(`/api/projects/${id}/images/upload`, { method: 'POST', body: fd });
-    if (!r.ok || !r.body) {
-      const data = (await r.json().catch(() => null)) as { error?: string } | null;
-      throw new Error((data && data.error) || `HTTP ${r.status}`);
-    }
-    await readNdjsonStream(r.body, (ev) => {
-      if (ev.type === 'file') onEvent(ev);
-      else if (ev.type === 'done') {
-        imported += ev.imported;
-        skipped += ev.skipped;
-        errors.push(...ev.errors);
+
+  // Shared mutable queue — JS is single-threaded so shift() between awaits is safe.
+  const queue = files.map((file, i) => ({ file, index: i + 1 }));
+
+  const worker = async (): Promise<void> => {
+    let item;
+    while ((item = queue.shift())) {
+      onEvent({ type: 'uploading', index: item.index, total });
+      const fd = new FormData();
+      fd.append('files', item.file);
+      const r = await fetch(`/api/projects/${id}/images/upload`, { method: 'POST', body: fd });
+      if (!r.ok || !r.body) {
+        const data = (await r.json().catch(() => null)) as { error?: string } | null;
+        throw new Error((data && data.error) || `HTTP ${r.status}`);
       }
-      // absorb per-file 'start' events — the outer start covers the full selection
-    });
-  }
+      await readNdjsonStream(r.body, (ev) => {
+        if (ev.type === 'file') onEvent(ev);
+        else if (ev.type === 'done') {
+          imported += ev.imported;
+          skipped += ev.skipped;
+          errors.push(...ev.errors);
+        }
+        // absorb per-file 'start' events — the outer start covers the full selection
+      });
+    }
+  };
+
+  // Spawn min(UPLOAD_CONCURRENCY, total) workers; all drain from the shared queue.
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, () => worker()));
   onEvent({ type: 'done', imported, skipped, errors });
 }
 

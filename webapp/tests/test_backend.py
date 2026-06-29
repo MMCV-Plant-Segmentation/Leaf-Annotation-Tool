@@ -59,7 +59,7 @@ print('re-import skips dupes ok')
 
 # 4) project detail + preview
 det = jdump(client.get(f'/api/projects/{pid}'))
-assert len(det['images'])==2 and len(det['annotators'])==2
+assert len(det['images'])==2 and len(det['annotators'])==3  # admin (auto-added creator) + alice + bob
 img0 = det['images'][0]
 pv = jdump(client.get(f'/api/projects/{pid}/images/{img0["id"]}/tiles/preview?black_threshold=50'))
 print('preview tiles for img0:', len(pv['tiles']), 'leafBbox=', pv['leafBbox'])
@@ -73,7 +73,7 @@ print('threshold slider reduces tiles ok', len(pv['tiles']),'->',len(pv_hi['tile
 r = client.post(f'/api/projects/{pid}/batches', json={'size':4}); assert r.status_code==201, jdump(r)
 batch = jdump(r); bid = batch['id']
 print('batch:', batch)
-assert batch['tileCount'] >= 1 and batch['rosterSize']==2
+assert batch['tileCount'] >= 1 and batch['rosterSize']==3  # admin (auto-added creator) + alice + bob
 
 # 6) canvas read for alice
 cv = jdump(client.get(f'/api/batches/{bid}?annotator=alice'))
