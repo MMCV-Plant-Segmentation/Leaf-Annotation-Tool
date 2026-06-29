@@ -114,7 +114,7 @@ function jbody(method: string, body: unknown): RequestInit {
 
 // Streaming import lives in its own module to keep this file ≤200 lines; re-export so
 // callers (and the unit tests) keep a single import surface.
-export { streamImport, type ImportEvent } from './importStream';
+export { streamImport, streamUpload, type ImportEvent } from './importStream';
 
 export const projectsApi = {
   list: () => jfetch<ProjectSummary[]>('/api/projects'),

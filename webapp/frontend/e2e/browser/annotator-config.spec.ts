@@ -206,3 +206,50 @@ test('canvas open-as selector lists registered roster users', async ({ page }) =
   await expect(openAsSelect).toBeVisible();
   await expect(openAsSelect.locator('option', { hasText: 'admin' })).toHaveCount(1);
 });
+
+
+// ── 6. Browser upload flow ────────────────────────────────────────────────────
+
+const FIXTURE_FLAT = '/tmp/leaf-e2e-fixture/flat-images';
+
+test('upload via file picker shows per-file progress and final count', async ({ page }) => {
+  const pid = await createProject(page, `Upload ${Date.now()}`);
+  await page.goto(`/projects/${pid}/images`);
+
+  const files = [
+    `${FIXTURE_FLAT}/upload0.png`,
+    `${FIXTURE_FLAT}/upload1.png`,
+    `${FIXTURE_FLAT}/upload2.png`,
+  ];
+
+  await page.getByTestId('import-files').setInputFiles(files);
+  await page.getByTestId('upload-btn').click();
+
+  // Progress label shows 3 / 3 once complete
+  await expect(page.getByTestId('import-progress-label')).toContainText('3', { timeout: 15000 });
+  // Summary appears with imported count
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('import-summary')).toContainText('3');
+});
+
+test('re-uploading same files skips them (dedup)', async ({ page }) => {
+  const pid = await createProject(page, `Dedup ${Date.now()}`);
+  await page.goto(`/projects/${pid}/images`);
+
+  const files = [
+    `${FIXTURE_FLAT}/upload0.png`,
+    `${FIXTURE_FLAT}/upload1.png`,
+  ];
+
+  // First upload
+  await page.getByTestId('import-files').setInputFiles(files);
+  await page.getByTestId('upload-btn').click();
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('import-summary')).toContainText('Imported 2');
+
+  // Second upload of same files — summary should report skipped
+  await page.getByTestId('import-files').setInputFiles(files);
+  await page.getByTestId('upload-btn').click();
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByTestId('import-summary')).toContainText('skipped 2');
+});

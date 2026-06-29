@@ -1,14 +1,17 @@
 /**
- * Images sub-route (`/projects/:id/images`): streaming folder/path import with a live
- * progress bar, plus a clamped, lazy-loading preview of the imported images.
+ * Images sub-route (`/projects/:id/images`): browser upload (primary) with per-file
+ * streaming progress, plus a de-emphasized server-path import for dev/admin use,
+ * and a clamped lazy-loading preview of the imported images.
  */
 import { type Component, createResource, createSignal, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, streamImport, type ImportEvent } from './api';
+import { projectsApi, imageUrls, streamImport, streamUpload, type ImportEvent } from './api';
 import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
 import * as styles from './ProjectImagesScreen.css';
+
+const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.tif,.tiff';
 
 const ProjectImagesScreen: Component = () => {
   const params = useParams();
@@ -16,15 +19,24 @@ const ProjectImagesScreen: Component = () => {
   const id = () => params.id!;
   const [project, { refetch }] = createResource(id, (pid) => projectsApi.get(pid));
 
-  const [path, setPath] = createSignal('');
+  // Shared progress state (used by both upload and path-import flows)
   const [busy, setBusy] = createSignal(false);
   const [total, setTotal] = createSignal(0);
   const [done, setDone] = createSignal(0);
   const [errs, setErrs] = createSignal(0);
   const [summary, setSummary] = createSignal('');
   const [boxId, setBoxId] = createSignal<string | null>(null);
-  const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
 
+  // Upload-specific state
+  const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
+  const [dragging, setDragging] = createSignal(false);
+
+  // Path-import state (dev convenience)
+  const [path, setPath] = createSignal('');
+
+  let fileInputRef!: HTMLInputElement;
+
+  const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
   const pct = () => (total() > 0 ? Math.round((done() / total()) * 100) : 0);
 
   const onEvent = (ev: ImportEvent) => {
@@ -37,9 +49,25 @@ const ProjectImagesScreen: Component = () => {
     }
   };
 
+  const doUpload = async () => {
+    const files = selectedFiles();
+    if (!files.length || busy()) return;
+    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
+    try {
+      await streamUpload(id(), files, onEvent);
+      setSelectedFiles([]);
+      if (fileInputRef) fileInputRef.value = '';
+      void refetch();
+    } catch (e) {
+      setSummary(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doImport = async () => {
     const p = path().trim();
-    if (!p) return;
+    if (!p || busy()) return;
     setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
     try {
       await streamImport(id(), p, onEvent);
@@ -49,6 +77,20 @@ const ProjectImagesScreen: Component = () => {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onFileChange = (e: Event) => {
+    const input = e.currentTarget as HTMLInputElement;
+    setSelectedFiles(Array.from(input.files ?? []));
+  };
+
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const files = Array.from(e.dataTransfer?.files ?? []).filter(
+      (f) => /\.(png|jpe?g|tiff?)$/i.test(f.name),
+    );
+    if (files.length) setSelectedFiles(files);
   };
 
   const items = (): LazyImageItem[] => (project()?.images ?? []).map((im) => ({
@@ -69,15 +111,44 @@ const ProjectImagesScreen: Component = () => {
             <h2 class={styles.title}>{t('detail.images', { count: p().images.length })}</h2>
           </div>
 
-          <div class={styles.importRow}>
-            <input type="text" placeholder={t('detail.images.importPlaceholder')}
-              value={path()} data-testid="import-path"
-              onInput={(e) => setPath(e.currentTarget.value)} />
-            <button disabled={busy()} onClick={() => void doImport()}>
-              {busy() ? t('detail.images.importing') : t('detail.images.import')}
+          {/* ── Primary: browser file upload ── */}
+          <div class={styles.uploadSection}>
+            <input type="file" multiple accept={IMAGE_ACCEPT}
+              ref={fileInputRef} data-testid="import-files"
+              class={styles.fileInputHidden} onChange={onFileChange} />
+            <div class={styles.dropZone}
+              classList={{ [styles.dropZoneOver]: dragging() }}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              onClick={() => fileInputRef.click()}
+            >
+              <Show when={selectedFiles().length > 0}
+                fallback={<span>{t('detail.images.dropHint')}</span>}>
+                <span>{t('detail.images.filesSelected', { n: selectedFiles().length })}</span>
+              </Show>
+            </div>
+            <button disabled={busy() || selectedFiles().length === 0}
+              data-testid="upload-btn" class={styles.uploadBtn}
+              onClick={() => void doUpload()}>
+              {busy() ? t('detail.images.uploading') : t('detail.images.upload')}
             </button>
           </div>
 
+          {/* ── Secondary (de-emphasized): server-path import for dev/admin ── */}
+          <div class={styles.serverPathSection}>
+            <span class={styles.serverPathLabel}>{t('detail.images.serverPathSection')}</span>
+            <div class={styles.importRow}>
+              <input type="text" placeholder={t('detail.images.importPlaceholder')}
+                value={path()} data-testid="import-path"
+                onInput={(e) => setPath(e.currentTarget.value)} />
+              <button disabled={busy()} onClick={() => void doImport()}>
+                {busy() ? t('detail.images.importing') : t('detail.images.import')}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Shared progress UI (reused by both flows) ── */}
           <Show when={busy() || total() > 0}>
             <div class={styles.progressWrap} data-testid="import-progress">
               <div class={styles.progressTrack}>
