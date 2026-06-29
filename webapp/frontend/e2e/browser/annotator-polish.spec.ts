@@ -203,6 +203,35 @@ test('saving the tiling default shows "Saved" and persists on reload', async ({ 
   await expect(page.getByText(/luminance 77/i)).toBeVisible();
 });
 
+// Rapidly moving the threshold slider must NOT fire one /preview request per step; the
+// readout updates live, but the fetch is debounced and lands on the FINAL value.
+test('rapid threshold changes are debounced into a final preview request', async ({ page }) => {
+  const pid = await createProject(page, `Debounce ${Date.now()}`);
+  await importImages(page, pid);
+
+  const previewUrls: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/tiles/preview')) previewUrls.push(req.url());
+  });
+
+  await page.goto(`/projects/${pid}/tiling`);
+  // Wait for the initial preview to land so we count only the burst that follows.
+  await expect(page.getByTestId('survive-count').first()).toBeVisible();
+  const before = previewUrls.length;
+
+  // Five quick slider moves ending on 200.
+  const slider = page.getByTestId('background-slider');
+  for (const v of ['40', '80', '120', '160', '200']) await slider.fill(v);
+
+  // The readout reflects the final value immediately (live, not debounced).
+  await expect(page.getByText(/luminance 200/i)).toBeVisible();
+
+  // After the settle, the LAST preview request used the final threshold…
+  await expect.poll(() => previewUrls.at(-1) ?? '').toContain('black_threshold=200');
+  // …and the burst collapsed to far fewer requests than the 5 inputs (debounced).
+  expect(previewUrls.length - before).toBeLessThan(5);
+});
+
 
 // ── Polish 3 ─────────────────────────────────────────────────────────────────
 
