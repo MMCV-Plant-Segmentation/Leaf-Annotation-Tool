@@ -13,8 +13,8 @@
  *     after a batch is created the tile-size control is disabled. (@full)
  *  5. Canvas "open as" lists the project's registered roster.
  *
- * The fixture server uses FIXTURE_DIR=/tmp/leaf-e2e-fixture.
- * The seed creates a "nested-images" directory for the recursive import test.
+ * The fixture server reads the seeded fixture dir (HT_E2E_FIXTURE_DIR; default
+ * /tmp/leaf-e2e-fixture). The seed creates a "nested-images" dir for the recursive import test.
  */
 
 import { test, expect, type Page } from '@playwright/test';
@@ -37,7 +37,10 @@ async function createProject(page: Page, name: string): Promise<string> {
   return url.split('/projects/')[1].split('?')[0];
 }
 
-const FIXTURE_NESTED = '/tmp/leaf-e2e-fixture/nested-images';
+// Server-side import path. The concurrency-safe gate seeds into a per-run temp dir and
+// exports it via HT_E2E_FIXTURE_DIR; fall back to the fixed path for a plain test run.
+const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
+const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
 
 async function importImages(page: Page, pid: string) {
   await page.goto(`/projects/${pid}/images`);
@@ -210,7 +213,7 @@ test('canvas open-as selector lists registered roster users', async ({ page }) =
 
 // ── 6. Browser upload flow ────────────────────────────────────────────────────
 
-const FIXTURE_FLAT = '/tmp/leaf-e2e-fixture/flat-images';
+const FIXTURE_FLAT = `${FIXTURE_DIR}/flat-images`;
 
 test('upload via file picker shows per-file progress and final count', async ({ page }) => {
   const pid = await createProject(page, `Upload ${Date.now()}`);

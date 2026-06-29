@@ -7,7 +7,10 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 
-const FIXTURE_NESTED = '/tmp/leaf-e2e-fixture/nested-images';
+// Server-side import path. The concurrency-safe gate seeds into a per-run temp dir and
+// exports it via HT_E2E_FIXTURE_DIR; fall back to the fixed path for a plain test run.
+const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
+const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
 
 async function createProject(page: Page, name: string): Promise<string> {
   await page.goto('/projects');

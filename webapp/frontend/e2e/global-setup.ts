@@ -6,8 +6,10 @@ import { fileURLToPath } from 'url';
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const WEBAPP_DIR  = path.join(__dirname, '..', '..'); // webapp/frontend/e2e/ → webapp/
 const SEED_SCRIPT = path.join(__dirname, 'fixtures', 'seed.py');
-const FIXTURE_DIR = '/tmp/leaf-e2e-fixture'; // must match playwright.config.ts
-const AUTH_FILE   = path.join(__dirname, '.auth.json');
+// Fixture dir + storageState path: the gate overrides via env (per-run temp dir) for
+// concurrency; fall back to the fixed paths so a plain `npx playwright test` still works.
+const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
+const AUTH_FILE   = process.env.HT_E2E_STATE_FILE ?? path.join(__dirname, '.auth.json');
 const ADMIN_PW    = 'e2e-admin-pw'; // must match playwright.config.ts webServer env
 const TEST_PORT   = process.env.TEST_PORT ?? '5000'; // gate may override via env
 

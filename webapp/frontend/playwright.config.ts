@@ -4,12 +4,13 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Fixed fixture dir: globalSetup seeds into it, webServer uses it.
-// Flask is connection-per-request, so rows inserted by seed (after startup) are visible to tests.
-const FIXTURE_DIR = '/tmp/leaf-e2e-fixture';
+// Fixture dir + storageState path: globalSetup seeds/writes them, webServer + tests read them.
+// The concurrency-safe gate (scripts/gate.py) overrides both via env so parallel runs use
+// per-run temp dirs; a plain `npx playwright test` falls back to the fixed paths below.
+const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
+const STATE_FILE = process.env.HT_E2E_STATE_FILE ?? path.join(__dirname, 'e2e', '.auth.json');
 
-// The gate may use an alternate port (TEST_PORT) when the default is occupied by a foreign
-// process (e.g. the sandbox harness's granian server). Normal dev use: defaults to 5000.
+// The gate runs its server on an ephemeral port (TEST_PORT). Normal dev use defaults to 5000.
 const TEST_PORT = process.env.TEST_PORT ?? '5000';
 
 export default defineConfig({
@@ -22,7 +23,7 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${TEST_PORT}`,
     // Global login state: globalSetup logs in and saves the session cookie here.
-    storageState: path.join(__dirname, 'e2e', '.auth.json'),
+    storageState: STATE_FILE,
   },
   projects: [
     {
