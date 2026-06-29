@@ -9,6 +9,7 @@ const SEED_SCRIPT = path.join(__dirname, 'fixtures', 'seed.py');
 const FIXTURE_DIR = '/tmp/leaf-e2e-fixture'; // must match playwright.config.ts
 const AUTH_FILE   = path.join(__dirname, '.auth.json');
 const ADMIN_PW    = 'e2e-admin-pw'; // must match playwright.config.ts webServer env
+const TEST_PORT   = process.env.TEST_PORT ?? '5000'; // gate may override via env
 
 export default async function globalSetup() {
   const result = spawnSync(
@@ -24,7 +25,7 @@ export default async function globalSetup() {
   // The webServer must already be up (Playwright starts it before globalSetup).
   const browser = await chromium.launch();
   const ctx     = await browser.newContext();
-  const res     = await ctx.request.post('http://localhost:5000/api/login', {
+  const res     = await ctx.request.post(`http://localhost:${TEST_PORT}/api/login`, {
     data: { username: 'admin', password: ADMIN_PW },
   });
   if (!res.ok()) throw new Error(`[global-setup] login failed: ${res.status()}`);

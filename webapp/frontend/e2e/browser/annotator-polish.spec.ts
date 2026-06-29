@@ -239,8 +239,10 @@ test('tiling lightbox keeps the SVG tile overlay over the enlarged image', async
   expect(await overlay.locator('rect').count()).toBeGreaterThan(0);
 });
 
-test('clicking a tile in the enlarged preview zooms that tile (nice-to-have)', async ({ page }) => {
-  const pid = await createProject(page, `Zoom ${Date.now()}`);
+// Replaces the old crop-swap test: clicking a tile now zooms/centres the viewport
+// onto that tile without cropping — the overlay stays, and the selected tile is highlighted.
+test('clicking a tile zooms and highlights it; overlay stays (replaces crop-swap)', async ({ page }) => {
+  const pid = await createProject(page, `TileZoom ${Date.now()}`);
   await importImages(page, pid);
   await page.goto(`/projects/${pid}/tiling`);
 
@@ -248,8 +250,53 @@ test('clicking a tile in the enlarged preview zooms that tile (nice-to-have)', a
   const overlay = page.getByTestId('lightbox-tile-overlay');
   await expect(overlay).toBeVisible();
 
-  // Click the first tile rect → the overlay is replaced by the magnified tile crop.
+  // Click first tile → overlay still present (not replaced by a bare crop)
   await overlay.locator('rect').first().click();
-  await expect(page.getByTestId('lightbox-tile-overlay')).toHaveCount(0);
+  await expect(page.getByTestId('lightbox-tile-overlay')).toBeVisible();
+  // Selected tile is highlighted with a data-selected rect
+  await expect(overlay.locator('[data-selected="true"]')).toHaveCount(1);
+  // Full image still visible (surrounding leaf visible — not a bare crop)
   await expect(page.getByTestId('lightbox-image')).toBeVisible();
+});
+
+test('wheel zoom changes the viewport scale in the lightbox @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  const pid = await createProject(page, `WheelScale ${Date.now()}`);
+  await importImages(page, pid);
+  await page.goto(`/projects/${pid}/tiling`);
+
+  await page.getByTestId('tile-preview-enlarge').click();
+  await expect(page.getByTestId('lightbox-image')).toBeVisible();
+
+  const canvas = page.getByTestId('zoom-pan-canvas');
+  const getScale = () => canvas.evaluate((el: HTMLElement) => {
+    const m = el.style.transform.match(/scale\(([^,)]+)\)/);
+    return m ? parseFloat(m[1]) : null;
+  });
+  const initialScale = await getScale();
+
+  await page.getByTestId('lightbox').hover();
+  await page.mouse.wheel(0, -300);  // negative deltaY = zoom in
+
+  const newScale = await getScale();
+  expect(newScale).not.toBeNull();
+  expect(newScale!).toBeGreaterThan(initialScale ?? 0);
+});
+
+test('tile overlay stays aligned after wheel zoom', async ({ page }) => {
+  const pid = await createProject(page, `ZoomAlign ${Date.now()}`);
+  await importImages(page, pid);
+  await page.goto(`/projects/${pid}/tiling`);
+
+  await page.getByTestId('tile-preview-enlarge').click();
+  const overlay = page.getByTestId('lightbox-tile-overlay');
+  await expect(overlay).toBeVisible();
+  const initialCount = await overlay.locator('rect').count();
+
+  await page.getByTestId('lightbox').hover();
+  await page.mouse.wheel(0, -300);
+
+  // Overlay still present with same number of tile rects
+  await expect(page.getByTestId('lightbox-tile-overlay')).toBeVisible();
+  expect(await overlay.locator('rect').count()).toBe(initialCount);
 });

@@ -1,9 +1,10 @@
 /**
- * The surviving-tiles SVG overlay, shared by the inline tiling preview and the enlarged
- * tiling lightbox. viewBox is the full image size + `xMidYMid meet`, so it scales to match
- * the image it's laid over (small or enlarged). Optional onTileClick magnifies one tile.
+ * Surviving-tiles SVG overlay, shared by the inline tiling preview and the enlarged
+ * tiling lightbox. viewBox is the full image size + xMidYMid meet so it scales to match
+ * the image it's laid over. Optional selectedTile draws a highlighted bounding box;
+ * clicking the same tile again deselects. Optional onTileClick handles tile selection.
  */
-import { type Component, For } from 'solid-js';
+import { type Component, For, Show } from 'solid-js';
 import type { Rect } from './api';
 import * as styles from './TileOverlaySvg.css';
 
@@ -13,6 +14,8 @@ type Props = {
   tiles: Rect[];
   class?: string;
   testid?: string;
+  /** The currently selected tile — renders a highlighted bounding box. */
+  selectedTile?: Rect | null;
   onTileClick?: (tile: Rect) => void;
 };
 
@@ -29,6 +32,15 @@ const TileOverlaySvg: Component<Props> = (props) => (
           onClick={() => props.onTileClick?.(tile)} />
       )}
     </For>
+    <Show when={props.selectedTile}>
+      {(t) => (
+        <rect x={t().x} y={t().y} width={t().w} height={t().h}
+          fill="rgba(245,158,11,0.22)" stroke="#f59e0b" stroke-width="4"
+          vector-effect="non-scaling-stroke"
+          style={{ 'pointer-events': 'none' }}
+          data-selected="true" />
+      )}
+    </Show>
   </svg>
 );
 

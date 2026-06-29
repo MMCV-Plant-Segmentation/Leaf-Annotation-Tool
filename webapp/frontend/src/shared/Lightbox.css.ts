@@ -49,8 +49,7 @@ export const closeBtn = style({
   cursor: 'pointer',
 });
 
-// The frame shrink-wraps the displayed image so an absolutely-positioned overlay (the
-// tile SVG) aligns exactly with the rendered pixels (image uses width/height auto).
+// The old shrink-wrapping frame (kept for reference; not used since ZoomPanViewport).
 export const frame = style({
   position: 'relative',
   display: 'inline-block',
@@ -58,6 +57,7 @@ export const frame = style({
   alignSelf: 'center',
 });
 
+// Fallback: shown when natural image dimensions are not yet known (auto-measured).
 export const image = style({
   display: 'block',
   width: 'auto',
@@ -68,6 +68,34 @@ export const image = style({
   background: vars.color.bg,
 });
 
+/**
+ * Fixed-size container for ZoomPanViewport (fills the dialog panel's content area).
+ * The ZoomPanViewport (overflow:hidden) fills this 100%×100%.
+ */
+export const viewportWrap = style({
+  width: 'min(88vw, 1200px)',
+  height: '80vh',
+  position: 'relative',
+  alignSelf: 'center',
+});
+
+/**
+ * The image rendered inside the ZoomPanViewport canvas.
+ * Canvas is exactly naturalWidth × naturalHeight, so 100%×100% is pixel-perfect.
+ */
+export const viewportImage = style({
+  display: 'block',
+  width: '100%',
+  height: '100%',
+  borderRadius: '4px',
+  background: vars.color.bg,
+});
+
+/**
+ * Overlay slot rendered on top of (and aligned with) the image inside the canvas.
+ * pointer-events: none so the blank SVG area doesn't block canvas drag; SVG rect
+ * children explicitly set pointer-events: auto to remain clickable.
+ */
 export const overlaySlot = style({
   position: 'absolute',
   inset: 0,
