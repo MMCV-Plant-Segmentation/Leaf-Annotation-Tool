@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from PIL import Image
-from webapp.tiling import (Rect, compute_leaf_bbox, centered_origin_y,
+from webapp.tiling import (Rect, compute_leaf_bbox, bbox_centered_origin_y,
                            enumerate_tiles, tile_is_black, surviving_tiles, sample_positions)
 
 # Build a synthetic image: 300x200 black, with a bright leaf blob at x[40..240), y[30..170)
@@ -18,29 +18,46 @@ print('leaf bbox:', bb, 'OK')
 assert compute_leaf_bbox(Image.fromarray(np.zeros((10,10),np.uint8),'L'), 50) is None
 print('empty image -> None OK')
 
-# 2) origin_y = deterministic image-midpoint centre (no randomness).
-#    Margin above the top row == margin below the bottom row (within 1px for odd leftover).
-def _check_centered(height, tile, expected):
-    oy = centered_origin_y(height, tile)
-    assert oy == expected, f'centered_origin_y({height},{tile})={oy}, expected {expected}'
-    leftover = height % tile
-    top, bottom = oy, leftover - oy
-    assert 0 <= bottom - top <= 1, f'unbalanced margins top={top} bottom={bottom}'
-    return oy
+# 2) origin_y = deterministic LEAF-BBOX centre (no randomness). The grid is sized to the
+#    leaf (ceil(bbox.h/tile) rows) and centred on the bbox; top/bottom background margins
+#    around the leaf are balanced within 1px (unless the origin clamps to 0 near the top).
+def _margins(bb, tile, oy):
+    n_rows = max(1, -(-bb.h // tile))
+    grid_h = n_rows * tile
+    top = bb.y - oy                         # background above the leaf inside the grid
+    bottom = (oy + grid_h) - (bb.y + bb.h)  # background below the leaf inside the grid
+    return top, bottom
 
-# exact fit -> origin 0 (no leftover)
-_check_centered(256, 64, 0)
-_check_centered(200, 50, 0)
-# even leftover -> split evenly (200 % 64 = 8 -> 4)
-_check_centered(200, 64, 4)
-# odd leftover -> floor (101 % 30 = 11 -> 5; bottom = 6)
-_check_centered(101, 30, 5)
+# main: leaf bbox of the synthetic image (Rect(40,30,200,140)), centred at y=100.
+oy = bbox_centered_origin_y(bb, 200, 64)
+# ceil(140/64)=3 rows, grid_h=192; origin=round(100-96)=4
+assert oy == 4, f'expected 4, got {oy}'
+top, bottom = _margins(bb, 64, oy)
+assert abs(top - bottom) <= 1 and top >= 0, f'unbalanced margins top={top} bottom={bottom}'
+
 # determinism: same args -> same origin, no rng involved
-assert centered_origin_y(200, 64) == centered_origin_y(200, 64)
-# tile_size <= 0 guarded -> 0
-assert centered_origin_y(200, 0) == 0
-oy = centered_origin_y(200, 64)
-print('origin_y (centered):', oy, 'OK')
+assert bbox_centered_origin_y(bb, 200, 64) == bbox_centered_origin_y(bb, 200, 64)
+
+# edge: leaf SHORTER than one tile -> single row centred on the leaf
+small = Rect(0, 100, 10, 50)
+o_small = bbox_centered_origin_y(small, 400, 128)   # n_rows=1, grid_h=128, c=125 -> 61
+assert o_small == 61, f'leaf<tile expected 61, got {o_small}'
+t2, b2 = _margins(small, 128, o_small)
+assert abs(t2 - b2) <= 1, f'leaf<tile margins unbalanced: {t2} {b2}'
+
+# edge: leaf near the image TOP -> origin clamps to 0 (never negative)
+top_leaf = Rect(0, 10, 10, 140)
+assert bbox_centered_origin_y(top_leaf, 400, 64) == 0, 'near-top leaf must clamp origin to 0'
+
+# edge: EXACT fit (grid_h == bbox.h) -> origin == bbox.y, margins both 0
+exact = Rect(0, 50, 10, 128)
+o_exact = bbox_centered_origin_y(exact, 400, 64)    # n_rows=2, grid_h=128 == bbox.h
+assert o_exact == 50, f'exact-fit expected origin==bbox.y(50), got {o_exact}'
+assert _margins(exact, 64, o_exact) == (0, 0), 'exact fit should have zero margins'
+
+# edge: tile_size <= 0 guarded -> 0
+assert bbox_centered_origin_y(bb, 200, 0) == 0
+print('origin_y (bbox-centered):', oy, 'OK')
 
 # 3) enumerate tiles: non-overlapping, cover the leaf bbox, clipped to image
 tiles = enumerate_tiles(300, 200, bb, tile_size=64, origin_y=oy)

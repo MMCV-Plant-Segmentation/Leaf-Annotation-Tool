@@ -8,8 +8,8 @@ without touching the endpoint or UI layers.
 
 Concepts (see docs/Annotator Plan.md → "Tiling" and "Data model"):
   - A project has ONE tile size (`tile_size_px`, default 128) and a `black_threshold`.
-  - `origin_x` is always 0; `origin_y` is the deterministic image-midpoint centre, so the
-    leftover margin is shared evenly between the top and bottom edge rows (no random phase).
+  - `origin_x` is always 0; `origin_y` centres the tile grid on the LEAF BBOX, so the
+    background split is balanced between the leaf's top and bottom edge rows (no random phase).
   - A leaf image is a single contiguous bright region on a black background; its bounding
     box (`leaf_bbox`) is computed once at import and used to (a) bound the valid origin_y
     range and (b) skip all-black tiles quickly.
@@ -24,10 +24,11 @@ ASSUMPTIONS worth flagging (all easy to revise — they live only in this file):
       (`tile_is_black(leaf_mask, tile)`). Real edge slivers of the leaf (connected to the
       body) keep their tile; disconnected specks do not. Supersedes the earlier
       any-above-threshold rule, which kept specks.
-  A3. `origin_y = (image_height % tile_size) // 2` — the grid is centred on the image
-      midpoint so the leftover margin is split evenly top/bottom (deterministic, no RNG).
-      This REPLACES the earlier per-image random origin. Target (deferred, needs a mask):
-      centre on the leaf centroid instead of the image midpoint.
+  A3. `origin_y = bbox_centered_origin_y(leaf_bbox, image_height, tile_size)` — the grid is
+      sized to the leaf (ceil(bbox.h/tile_size) rows) and centred on the leaf bbox, clamped
+      >= 0 (deterministic, no RNG). This REPLACES the earlier image-midpoint origin (which
+      barely helped, since the leaf is only a band in the image). Target (deferred, needs a
+      mask): centre on the leaf centroid instead of the bbox centre.
 """
 
 from __future__ import annotations
@@ -99,25 +100,34 @@ def compute_leaf_bbox(img: Image.Image, black_threshold: int) -> Rect | None:
 
 # ── Centered origin (A3) ──────────────────────────────────────────────────────
 
-def centered_origin_y(image_height: int, tile_size: int) -> int:
-    """Deterministic vertical grid origin that centres the grid on the image midpoint.
+def bbox_centered_origin_y(leaf_bbox: Rect, image_height: int, tile_size: int) -> int:
+    """Deterministic vertical grid origin that centres the tile grid on the LEAF BBOX.
 
-    The leftover margin (`image_height % tile_size`) is split evenly between the top and
-    bottom edge rows, so a large tile size can't leave the top row almost entirely
-    background. Pure + deterministic (same height + tile_size → same origin), so re-tiling
-    is stable. When `image_height % tile_size == 0` the grid fits exactly → origin 0.
+    The leaf is only a band within the image, so centring the grid on the image midpoint
+    barely helps — at a large tile size the top row still lands almost entirely above the
+    leaf. Instead, size the grid to the leaf and centre it on the bbox:
+        n_rows  = ceil(bbox.h / tile_size)   (min 1)
+        grid_h  = n_rows * tile_size
+        origin  = round((bbox vertical centre) − grid_h / 2)
+    then clamp `origin >= 0` (mask/array indexing needs a non-negative y). This balances
+    the background split between the leaf's top and bottom edge rows. Pure + deterministic
+    (same bbox + height + tile_size → same origin), so re-tiling is stable. `image_height`
+    is accepted for API symmetry / future bottom-clamping; it is not needed for centring.
 
     `origin_x` stays 0 for now (Christian's pain is vertical). Horizontal centring would
     need a new `origin_x` column — a possible follow-up, not built here.
 
-    TARGET (deferred): centre on the leaf *centroid* via the optional per-image mask. The
-    leaf bbox is already computed at import (`compute_leaf_bbox`) and centring on its mid-y
-    would be a cheap better-than-midpoint upgrade; the interim per Christian is the plain
-    image midpoint (no mask needed).
+    TARGET (deferred): centre on the leaf *centroid* via the optional per-image mask.
+    Bbox-centring is the interim better-than-image-midpoint upgrade (the bbox is already
+    computed at import via `compute_leaf_bbox`).
     """
     if tile_size <= 0:
         return 0
-    return (image_height % tile_size) // 2
+    n_rows = max(1, -(-leaf_bbox.h // tile_size))      # ceil(bbox.h / tile_size), min 1
+    grid_h = n_rows * tile_size
+    bbox_center = leaf_bbox.y + leaf_bbox.h / 2
+    origin = round(bbox_center - grid_h / 2)
+    return max(0, int(origin))
 
 
 # ── Tile enumeration ──────────────────────────────────────────────────────────
