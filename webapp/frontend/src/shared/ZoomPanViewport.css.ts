@@ -1,6 +1,11 @@
 import { style } from '@vanilla-extract/css';
 import { vars } from '../theme/contract.css';
 
+// `-webkit-user-drag` is a non-standard WebKit property (blocks native image drag in
+// Safari) and is absent from csstype. Spreading it bypasses the excess-property check
+// while keeping the rest of each rule fully type-checked.
+const noNativeDrag = { WebkitUserDrag: 'none' } as const;
+
 /** The outer scrollable viewport container. */
 export const container = style({
   position: 'relative',
@@ -9,8 +14,10 @@ export const container = style({
   height: '100%',
   cursor: 'grab',
   userSelect: 'none',
+  WebkitUserSelect: 'none',
   touchAction: 'none',
   selectors: { '&:active': { cursor: 'grabbing' } },
+  ...noNativeDrag,
 });
 
 /**
@@ -21,6 +28,9 @@ export const container = style({
 export const canvas = style({
   // Size and transform are set via reactive inline style.
   // Keep this class for testid targeting.
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  ...noNativeDrag,
 });
 
 /** "Fit" reset button — fixed in the lower-right corner of the viewport. */

@@ -55,13 +55,13 @@ const Lightbox: Component<Props> = (props) => {
             <DialogClose class={styles.closeBtn} aria-label={t('common.cancel')}>×</DialogClose>
             <Show when={hasNat()} fallback={
               <img class={styles.image} src={props.src} alt={props.alt ?? ''}
-                data-testid="lightbox-image" onLoad={onLoad} />
+                draggable={false} data-testid="lightbox-image" onLoad={onLoad} />
             }>
               <div class={styles.viewportWrap}>
                 <ZoomPanViewport naturalWidth={natW()} naturalHeight={natH()}
                   zoomTarget={props.zoomTarget} onReset={props.onZoomReset}>
                   <img class={styles.viewportImage} src={props.src} alt={props.alt ?? ''}
-                    data-testid="lightbox-image" onLoad={onLoad} />
+                    draggable={false} data-testid="lightbox-image" onLoad={onLoad} />
                   <Show when={props.overlay}>
                     <div class={styles.overlaySlot}>{props.overlay}</div>
                   </Show>
