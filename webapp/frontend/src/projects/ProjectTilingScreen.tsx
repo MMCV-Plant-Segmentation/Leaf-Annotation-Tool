@@ -4,8 +4,11 @@
  * the lock. Clicking a preview opens an interactive zoom/pan lightbox with the tile SVG
  * overlay; clicking a tile zooms to it and highlights it. The Fit button (or clicking the
  * same tile again) deselects and resets. Saving shows a "Saved ✓" confirmation.
+ * The threshold/tile-size readouts stay live, but the values that drive the /preview
+ * fetch are debounced (~275ms) so dragging issues one request on settle, not per step.
  */
 import { type Component, createMemo, createResource, createSignal, Show } from 'solid-js';
+import { debounce } from '@solid-primitives/scheduled';
 import { useNavigate, useParams } from '@solidjs/router';
 import {
   Root as PopoverRoot, Trigger as PopoverTrigger,
@@ -36,14 +39,28 @@ const ProjectTilingScreen: Component = () => {
 
   const [localTh, setLocalTh] = createSignal<number | null>(null);
   const [localTs, setLocalTs] = createSignal<number | null>(null);
+  // Debounced mirrors of the two controls — these (not the live signals) drive the
+  // /preview fetch, so dragging the slider issues one request once the user settles
+  // rather than one per intermediate value.
+  const [debTh, setDebTh] = createSignal<number | null>(null);
+  const [debTs, setDebTs] = createSignal<number | null>(null);
+  const pushDebTh = debounce((v: number) => setDebTh(v), 275);
+  const pushDebTs = debounce((v: number) => setDebTs(v), 275);
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
   const [box, setBox] = createSignal<BoxState | null>(null);
   const [selectedTile, setSelectedTile] = createSignal<Rect | null>(null);
   const closeBox = () => { setBox(null); setSelectedTile(null); };
 
+  // Live values — drive the on-screen readout/input every onInput (responsive feel).
   const threshold = createMemo(() => localTh() ?? project()?.black_threshold ?? 0);
   const tileSize = createMemo(() => localTs() ?? project()?.tile_size_px ?? 128);
+  // Debounced values — drive the preview fetch (fall back to the saved project value
+  // until the user has actually moved a control).
+  const previewThreshold = createMemo(() => debTh() ?? project()?.black_threshold ?? 0);
+  const previewTileSize = createMemo(() => debTs() ?? project()?.tile_size_px ?? 128);
+  const onThInput = (v: number) => { setLocalTh(v); pushDebTh(v); };
+  const onTsInput = (v: number) => { setLocalTs(v); pushDebTs(v); };
   const hasBatch = () => (project()?.batches.length ?? 0) > 0;
 
   const save = async () => {
@@ -53,6 +70,7 @@ const ProjectTilingScreen: Component = () => {
       const p = await projectsApi.update(id(), { black_threshold: threshold(), tiling_confirmed: true });
       mutate((prev) => prev && { ...prev, ...p });
       setLocalTh(null); setLocalTs(null);
+      setDebTh(null); setDebTs(null);   // fall the preview back to the freshly-saved values
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
@@ -94,14 +112,14 @@ const ProjectTilingScreen: Component = () => {
                 </span>
                 <input type="range" min="0" max="255" value={threshold()}
                   data-testid="background-slider"
-                  onInput={(e) => setLocalTh(Number(e.currentTarget.value))} />
+                  onInput={(e) => onThInput(Number(e.currentTarget.value))} />
                 <span class={styles.value}>{t('detail.tile.backgroundValue', { value: threshold() })}</span>
               </label>
               <label class={styles.field}>
                 <span>{t('detail.tile.sizeLabel')}</span>
                 <input type="number" min="8" value={tileSize()} disabled={hasBatch()}
                   data-testid="tile-size-input"
-                  onInput={(e) => setLocalTs(Number(e.currentTarget.value))} />
+                  onInput={(e) => onTsInput(Number(e.currentTarget.value))} />
                 <Show when={hasBatch()}>
                   <span class={styles.locked}>{t('detail.tile.sizeLocked')}</span>
                 </Show>
@@ -122,7 +140,7 @@ const ProjectTilingScreen: Component = () => {
             >
               {(im) => (
                 <TilePreview projectId={id()} imageId={im.id}
-                  threshold={threshold()} tileSize={tileSize()}
+                  threshold={previewThreshold()} tileSize={previewTileSize()}
                   onEnlarge={(pv) => { setSelectedTile(null); setBox({ im, preview: pv }); }} />
               )}
             </Carousel>
