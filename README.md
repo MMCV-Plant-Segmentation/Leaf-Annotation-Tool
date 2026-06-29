@@ -10,8 +10,9 @@ There are two ways to run it: **Docker** (production / collaborators) and **nati
 
 ## Production (Docker)
 
-**Prerequisites:** Docker with `buildx` and `compose`. The backup services (litestream + lsyncd)
-mirror to `BACKUP_DIR`, so that path must exist on the host — or skip them (see note below).
+**Prerequisites:** Docker with `buildx` and `compose`. Backup is **opt-in**: the litestream + lsyncd
+sidecars run only under the `backup` compose profile (see step 4). Plain `docker compose up` runs the
+web app alone, with no backup.
 
 1. **Create `.env`** from the template and fill in real values:
 
@@ -23,7 +24,8 @@ mirror to `BACKUP_DIR`, so that path must exist on the host — or skip them (se
    - `SECRET_KEY` — a random 32+ char string. Generate one with:
      `uv run python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
    - `ADMIN_PASSWORD` — the password for the built-in `admin` account (required on first boot).
-   - `BACKUP_DIR` — where backups are mirrored (defaults to the `/deltos` path in `.env.example`).
+   - `BACKUP_DIR` — absolute host path where backups are mirrored. Optional; required only if you
+     run the `backup` profile (step 4). No default — leave unset to run without backup.
    - `PORT` — host port (defaults to `5000`).
 
 2. **Build the images:**
@@ -38,7 +40,13 @@ mirror to `BACKUP_DIR`, so that path must exist on the host — or skip them (se
    docker compose run --rm restore
    ```
 
-4. **Start it:**
+4. **Start it.** With backup (requires `BACKUP_DIR` to exist on the host):
+
+   ```sh
+   docker compose --profile backup up -d
+   ```
+
+   Or app-only, no backup (e.g. just trying it / no backup target yet):
 
    ```sh
    docker compose up -d
@@ -47,9 +55,8 @@ mirror to `BACKUP_DIR`, so that path must exist on the host — or skip them (se
 5. Open `http://<host>:<PORT>`, log in as **`admin`** with `ADMIN_PASSWORD`, then go to the
    **Admin** panel to create invite codes for collaborators.
 
-> **Just trying it / no backup target yet?** `docker compose up -d app` runs only the web app
-> (skips litestream + lsyncd, so `BACKUP_DIR` need not exist). Data persists in the `leaf-data`
-> Docker volume regardless.
+> Data persists in the `leaf-data` Docker volume either way. The `backup` profile only adds the
+> litestream + lsyncd mirrors to `BACKUP_DIR`.
 
 ---
 
