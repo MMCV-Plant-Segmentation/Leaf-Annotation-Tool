@@ -289,6 +289,7 @@ def auto_create_schema() -> None:
     migrate_project_annotator_user_fk()
     migrate_project_image_source_path()
     migrate_project_tiling_confirmed()
+    migrate_backfill_project_creator_annotator()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -368,6 +369,36 @@ def migrate_project_tiling_confirmed() -> None:
         close_db(con)
 
 
+def migrate_backfill_project_creator_annotator() -> None:
+    """Backfill: add the creator to project_annotator for projects that pre-date auto-add.
+
+    For each project with created_by_user_id NOT NULL and no existing project_annotator
+    row for that user, insert one (byline = users.username).  Idempotent — skips rows
+    that already exist via INSERT OR IGNORE.
+    """
+    con = get_db()
+    try:
+        rows = con.execute(
+            '''SELECT p.id project_id, p.created_by_user_id, u.username
+               FROM project p
+               JOIN users u ON u.id = p.created_by_user_id
+               WHERE p.created_by_user_id IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM project_annotator pa
+                   WHERE pa.project_id = p.id AND pa.user_id = p.created_by_user_id
+                 )'''
+        ).fetchall()
+        import uuid as _uuid
+        for r in rows:
+            con.execute(
+                'INSERT OR IGNORE INTO project_annotator (id, project_id, user_id, byline)'
+                ' VALUES (?, ?, ?, ?)',
+                (str(_uuid.uuid4()), r['project_id'], r['created_by_user_id'], r['username']),
+            )
+        if rows:
+            con.commit()
+    finally:
+        close_db(con)
 
 
 def migrate_manifest(manifest_path: Path) -> int:

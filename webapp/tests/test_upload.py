@@ -200,13 +200,17 @@ pid4 = jdump(client.post('/api/projects', json={'name': 'Gate test'}))['id']
 
 r_import = non_admin_client.post(f'/api/projects/{pid4}/images/import', json={'path': '/tmp'})
 assert r_import.status_code == 403, f'import should be 403 for non-admin, got {r_import.status_code}'
-print('  ✓  non-admin: POST .../images/import → 403')
+print('  ✓  non-admin: POST .../images/import → 403 (admin-only endpoint)')
 
 r_stream = non_admin_client.post(
     f'/api/projects/{pid4}/images/import/stream', json={'path': '/tmp'}
 )
 assert r_stream.status_code == 403, f'import/stream should be 403 for non-admin, got {r_stream.status_code}'
-print('  ✓  non-admin: POST .../images/import/stream → 403')
+print('  ✓  non-admin: POST .../images/import/stream → 403 (admin-only endpoint)')
+
+# Upload requires membership (Fix 3). Add alice as a member first, then she can upload.
+r_add = client.post(f'/api/projects/{pid4}/annotators', json={'user_id': 2})
+assert r_add.status_code == 201, f'failed to add alice as annotator: {r_add.status_code}'
 
 f_upload = _make_leaf_png_bytes(200, 180)
 r_upload = non_admin_client.post(
@@ -214,8 +218,8 @@ r_upload = non_admin_client.post(
     data={'files': [(io.BytesIO(f_upload), 'leaf_na.png', 'image/png')]},
     content_type='multipart/form-data',
 )
-assert r_upload.status_code == 200, f'upload should still be 200 for non-admin, got {r_upload.status_code}'
-print('  ✓  non-admin: POST .../images/upload → 200 (upload open to all users)')
+assert r_upload.status_code == 200, f'member non-admin upload should be 200, got {r_upload.status_code}'
+print('  ✓  non-admin member: POST .../images/upload → 200')
 
 # Admin still succeeds on both import endpoints (U5 already covers this; spot-check here)
 r_admin_import = client.post(f'/api/projects/{pid4}/images/import', json={'path': '/nonexistent-path-ignored-ok'})

@@ -57,6 +57,44 @@ test('admin can navigate to /admin', async ({ page }) => {
   await expect(page.getByRole('tab', { name: 'Users' })).toBeVisible();
 });
 
+// ── Fix 1: admin UI gate — non-admin bounced from /admin ──────────────────
+
+test('non-admin navigating to /admin is redirected to home', async ({ page, browser }) => {
+  // Create a non-admin user via the admin API.
+  // NOTE: avoid 'admin' in the username — it would contaminate the roster autocomplete
+  // in other tests that search for the exact user 'admin' (substring match).
+  const username = `gatetest-${Date.now()}`;
+  const createResp = await page.request.post('/api/users', { data: { username } });
+  expect(createResp.ok()).toBeTruthy();
+  const { invite } = (await createResp.json()) as { invite: { token: string } };
+
+  // Accept the invite to set a password.
+  const pw = 'TestPass99!';
+  const anonCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const anonPage = await anonCtx.newPage();
+  const acceptResp = await anonPage.request.post(`/api/invite/${invite.token}`, {
+    data: { password: pw, confirm: pw },
+  });
+  expect(acceptResp.ok()).toBeTruthy();
+  await anonCtx.close();
+
+  // Log in as non-admin.
+  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const p2 = await ctx.newPage();
+  await p2.goto('/login');
+  await p2.fill('#login-username', username);
+  await p2.fill('#login-password', pw);
+  await p2.click('button[type=submit]');
+  await expect(p2.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
+
+  // Navigate directly to /admin — should be bounced to home.
+  await p2.goto('/admin');
+  await expect(p2).not.toHaveURL(/\/admin/, { timeout: 5000 });
+  // Should be at / (home).
+  await expect(p2).toHaveURL(/\/$/, { timeout: 5000 });
+  await ctx.close();
+});
+
 test('admin can create a user and see invite token', async ({ page }) => {
   await page.goto('/admin');
   await expect(page.getByTestId('auth-username')).toBeVisible(); // app-ready before interacting
