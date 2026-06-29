@@ -299,6 +299,9 @@ test('hovering a tile fills it translucently (hover highlight) @full', async ({ 
   await expect(overlay).toBeVisible();
 
   const rect = overlay.locator('rect').first();
+  // Move the cursor off the grid first so the baseline fill is the un-hovered value
+  // (the enlarge-click can leave the pointer sitting on a tile).
+  await page.mouse.move(0, 0);
   const fillBefore = await rect.evaluate((el) => getComputedStyle(el).fill);
   await rect.hover();
   const fillHover = await rect.evaluate((el) => getComputedStyle(el).fill);
