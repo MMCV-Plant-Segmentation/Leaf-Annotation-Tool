@@ -30,7 +30,7 @@ const TileOverlaySvg: Component<Props> = (props) => (
           <rect x={tile.x} y={tile.y} width={tile.w} height={tile.h}
             fill="transparent" stroke="#2563eb" stroke-width="2"
             vector-effect="non-scaling-stroke"
-            class={props.onTileClick ? styles.clickable : undefined}
+            class={props.onTileClick ? styles.gridTile : undefined}
             onClick={() => props.onTileClick?.(tile)} />
         )}
       </For>
@@ -40,7 +40,7 @@ const TileOverlaySvg: Component<Props> = (props) => (
         <rect x={t().x} y={t().y} width={t().w} height={t().h}
           fill="transparent" stroke="#f59e0b" stroke-width="4"
           vector-effect="non-scaling-stroke"
-          class={props.onTileClick ? styles.clickable : undefined}
+          class={props.onTileClick ? styles.hit : undefined}
           onClick={() => props.onTileClick?.(t())}
           data-selected="true" />
       )}
