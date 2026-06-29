@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css';
+import { vars } from '../theme/contract.css';
 
 // Default fill: the overlay matches the size of its positioned parent (the lightbox slot).
 export const fill = style({
@@ -7,7 +8,17 @@ export const fill = style({
   height: '100%',
 });
 
-export const clickable = style({
-  cursor: 'zoom-in',
+// A plain clickable hit target — keeps the container's grab/grabbing cursor (no zoom-in).
+export const hit = style({
   pointerEvents: 'auto',
+});
+
+// A grid tile: a hit target that fills translucently only while hovered (CSS `fill`
+// overrides the transparent presentation attribute). Theme-aware via color-mix so the
+// css-hygiene guard (no raw hex/rgba in .css.ts) stays satisfied.
+export const gridTile = style({
+  pointerEvents: 'auto',
+  selectors: {
+    '&:hover': { fill: `color-mix(in srgb, ${vars.color.accent} 22%, transparent)` },
+  },
 });

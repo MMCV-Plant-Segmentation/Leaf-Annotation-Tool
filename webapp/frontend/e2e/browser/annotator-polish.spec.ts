@@ -262,6 +262,50 @@ test('clicking a tile zooms and highlights it; overlay stays (replaces crop-swap
   await expect(page.getByTestId('lightbox-image')).toBeVisible();
 });
 
+// A drag that starts on a tile rect must PAN, not select/zoom that tile.
+test('dragging across the tiling lightbox pans without selecting a tile', async ({ page }) => {
+  const pid = await createProject(page, `Pan ${Date.now()}`);
+  await importImages(page, pid);
+  await page.goto(`/projects/${pid}/tiling`);
+
+  await page.getByTestId('tile-preview-enlarge').click();
+  const overlay = page.getByTestId('lightbox-tile-overlay');
+  await expect(overlay).toBeVisible();
+  const gridCount = await overlay.locator('rect').count();
+
+  // Press on a tile rect, move well past the drag threshold, release.
+  const box = await overlay.locator('rect').first().boundingBox();
+  const cx = box!.x + box!.width / 2;
+  const cy = box!.y + box!.height / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 40, cy + 40, { steps: 8 });
+  await page.mouse.move(cx + 80, cy + 80, { steps: 8 });
+  await page.mouse.up();
+
+  // No tile selected (the drag was a pan): no highlight, full grid still shown.
+  await expect(overlay.locator('[data-selected="true"]')).toHaveCount(0);
+  expect(await overlay.locator('rect').count()).toBe(gridCount);
+});
+
+test('hovering a tile fills it translucently (hover highlight) @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  const pid = await createProject(page, `Hover ${Date.now()}`);
+  await importImages(page, pid);
+  await page.goto(`/projects/${pid}/tiling`);
+
+  await page.getByTestId('tile-preview-enlarge').click();
+  const overlay = page.getByTestId('lightbox-tile-overlay');
+  await expect(overlay).toBeVisible();
+
+  const rect = overlay.locator('rect').first();
+  const fillBefore = await rect.evaluate((el) => getComputedStyle(el).fill);
+  await rect.hover();
+  const fillHover = await rect.evaluate((el) => getComputedStyle(el).fill);
+  // Hover adds a translucent fill (transparent → a resolved color).
+  expect(fillHover).not.toBe(fillBefore);
+});
+
 test('tile rects render with a transparent fill (outlines only)', async ({ page }) => {
   const pid = await createProject(page, `Fill ${Date.now()}`);
   await importImages(page, pid);

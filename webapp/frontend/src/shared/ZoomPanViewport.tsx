@@ -32,6 +32,9 @@ const ZoomPanViewport: Component<Props> = (props) => {
 
   // Pointer drag state — plain vars, not signals (no re-render needed).
   let startX = 0, startY = 0, prevX = 0, prevY = 0, didDrag = false;
+  // After a real drag we swallow the trailing `click` so a pan that started on a tile
+  // rect doesn't also select/zoom that tile. Cleared once the click is consumed.
+  let suppressClick = false;
 
   const containerSize = () => ({
     cw: containerRef?.offsetWidth ?? 800,
@@ -59,7 +62,19 @@ const ZoomPanViewport: Component<Props> = (props) => {
     };
   };
 
-  onMount(() => setXform(fitXform()));
+  // Capture-phase click guard: swallow the trailing click after a real drag so a pan
+  // that started on a tile rect doesn't reach the rect's onClick (which selects/zooms).
+  const onClickCapture = (e: MouseEvent) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  onMount(() => {
+    setXform(fitXform());
+    containerRef.addEventListener('click', onClickCapture, true);
+  });
 
   // Zoom/centre on a target tile; null → reset to fit.
   createEffect(() => {
@@ -101,14 +116,19 @@ const ZoomPanViewport: Component<Props> = (props) => {
   };
 
   const onUp = () => {
+    if (didDrag) suppressClick = true;   // swallow the click that follows a real drag
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onUp);
   };
 
-  onCleanup(onUp);
+  onCleanup(() => {
+    onUp();
+    containerRef?.removeEventListener('click', onClickCapture, true);
+  });
 
   const onPointerDown = (e: PointerEvent) => {
-    startX = prevX = e.clientX; startY = prevY = e.clientY; didDrag = false;
+    startX = prevX = e.clientX; startY = prevY = e.clientY;
+    didDrag = false; suppressClick = false;
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
   };
