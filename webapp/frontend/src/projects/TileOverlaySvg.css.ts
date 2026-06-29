@@ -8,11 +8,6 @@ export const fill = style({
   height: '100%',
 });
 
-// A plain clickable hit target — keeps the container's grab/grabbing cursor (no zoom-in).
-export const hit = style({
-  pointerEvents: 'auto',
-});
-
 // A grid tile: a hit target that fills translucently only while hovered (CSS `fill`
 // overrides the transparent presentation attribute). Theme-aware via color-mix so the
 // css-hygiene guard (no raw hex/rgba in .css.ts) stays satisfied.

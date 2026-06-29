@@ -25,7 +25,7 @@ os.environ['SECRET_KEY'] = 'test-secret'
 import numpy as np
 from PIL import Image
 from webapp import db, app as appmod
-from webapp import tiling
+from webapp import tiling, imaging
 
 db.auto_create_schema()
 _c = db.get_db()
@@ -113,6 +113,27 @@ print('\n── P3: explicit origin_y override honored ──')
 forced = _preview(pid, image_id, 500, origin_y=7)
 assert forced['originY'] == 7, f'explicit origin_y override ignored: {forced["originY"]}'
 print('  ✓  explicit origin_y=7 overrides the recomputed default')
+
+
+# ── P4: stale stored bbox is ignored — preview recomputes from the image ─────────
+# Images imported before the largest-connected-component bbox rule have a stored bbox
+# that spans nearly the whole image (the old all-above-threshold span). Centering on that
+# collapses origin to 0 and leaves the top row ~90% background. The preview must recompute
+# the bbox from the image, so the stale stored columns must not affect the result.
+print('\n── P4: stale full-image stored bbox is ignored ──')
+_c = db.get_db()
+_c.execute(
+    'UPDATE project_image SET leaf_x=0, leaf_y=0, leaf_w=?, leaf_h=? WHERE id=?',
+    (det['images'][0]['width'], height, image_id),
+)
+_c.commit()
+db.close_db(_c)
+true_bb = tiling.compute_leaf_bbox(imaging.get_image(im['image_hash'], im['image_ext']), 0)
+expected = tiling.bbox_centered_origin_y(true_bb, height, 500)
+got = _preview(pid, image_id, 500)['originY']
+assert got == expected, f'stale stored bbox leaked into preview: got {got}, expected {expected}'
+assert got != 0, 'recomputed origin should not collapse to 0 for a mid-image leaf band'
+print(f'  ✓  preview origin {got} comes from the recomputed bbox, not the stale full-image one')
 
 
 print('\nALL PREVIEW-ORIGIN TESTS PASSED ✓')

@@ -578,7 +578,13 @@ def preview_tiles(project_id: str, image_id: str):
         tile_size = int(request.args.get('tile_size', proj['tile_size_px']))
         threshold = int(request.args.get('black_threshold', proj['black_threshold']))
         img = imaging.get_image(img_row['image_hash'], img_row['image_ext'])
-        bb = tiling.Rect(img_row['leaf_x'], img_row['leaf_y'], img_row['leaf_w'], img_row['leaf_h'])
+        # Recompute the leaf bbox from the image at the REQUESTED threshold rather than
+        # trusting the stored leaf_* columns. Two reasons: (a) the threshold slider changes
+        # the foreground, so the bbox (and thus centring) must track it; (b) images imported
+        # before the largest-connected-component bbox rule have a stale stored bbox that spans
+        # nearly the whole image (the old all-above-threshold span), which collapses centring
+        # to origin 0 and leaves the top row ~90% background.
+        bb = tiling.compute_leaf_bbox(img, threshold) or tiling.Rect(0, 0, img_row['width'], img_row['height'])
         # Default origin is RECOMPUTED for the requested tile_size (not the stale stored
         # import-time origin_y, which was computed for the default 128px tile). An explicit
         # origin_y query-arg still overrides. This is what makes the slider's preview track
