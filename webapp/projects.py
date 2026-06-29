@@ -395,9 +395,9 @@ def _import_one_file(
     bb = tiling.compute_leaf_bbox(img, threshold)
     if bb is None:
         bb = tiling.Rect(0, 0, w, hgt)  # whole image if nothing above threshold
-    # Deterministic image-midpoint centring (no RNG). Target (deferred, needs a mask):
-    # centre on the leaf centroid; bb is already computed and could give a cheap upgrade.
-    origin_y = tiling.centered_origin_y(hgt, tile_size)
+    # Deterministic leaf-bbox centring (no RNG). Target (deferred, needs a mask): centre on
+    # the leaf centroid; bb is already computed just above and gives this cheap upgrade.
+    origin_y = tiling.bbox_centered_origin_y(bb, hgt, tile_size)
     con.execute(
         '''INSERT INTO project_image
              (id, project_id, image_hash, image_ext, source_name, source_path,
@@ -577,9 +577,14 @@ def preview_tiles(project_id: str, image_id: str):
             return jsonify({'error': 'not found'}), 404
         tile_size = int(request.args.get('tile_size', proj['tile_size_px']))
         threshold = int(request.args.get('black_threshold', proj['black_threshold']))
-        origin_y = int(request.args.get('origin_y', img_row['origin_y']))
         img = imaging.get_image(img_row['image_hash'], img_row['image_ext'])
         bb = tiling.Rect(img_row['leaf_x'], img_row['leaf_y'], img_row['leaf_w'], img_row['leaf_h'])
+        # Default origin is RECOMPUTED for the requested tile_size (not the stale stored
+        # import-time origin_y, which was computed for the default 128px tile). An explicit
+        # origin_y query-arg still overrides. This is what makes the slider's preview track
+        # tile_size — otherwise a 500px row sits ~92% above the leaf at origin≈30.
+        origin_y = int(request.args.get(
+            'origin_y', tiling.bbox_centered_origin_y(bb, img_row['height'], tile_size)))
         surv = tiling.surviving_tiles(img, bb, tile_size, origin_y, threshold)
         return jsonify({
             'imageWidth': img_row['width'],
