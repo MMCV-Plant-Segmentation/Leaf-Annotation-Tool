@@ -1,12 +1,12 @@
-// Streaming (NDJSON) import client. Reads the chunked response one line at a time and
-// invokes a callback per event, reassembling lines that straddle chunk boundaries.
+// Streaming (NDJSON) import/upload client. Reads the chunked response one line at a
+// time and invokes a callback per event, reassembling lines that straddle chunk boundaries.
 
 export type ImportEvent =
   | { type: 'start'; total: number }
   | { type: 'file'; name: string; path: string; ok: boolean; imported?: boolean; skipped?: boolean; error?: string }
   | { type: 'done'; imported: number; skipped: number; errors: { file: string; error: string }[] };
 
-/** POST a path, read the NDJSON stream, invoking onEvent per line. */
+/** POST a server path, read the NDJSON stream, invoking onEvent per line. */
 export async function streamImport(
   id: string, path: string, onEvent: (ev: ImportEvent) => void,
 ): Promise<void> {
@@ -19,7 +19,27 @@ export async function streamImport(
     const data = (await r.json().catch(() => null)) as { error?: string } | null;
     throw new Error((data && data.error) || `HTTP ${r.status}`);
   }
-  const reader = r.body.getReader();
+  await readNdjsonStream(r.body, onEvent);
+}
+
+/** POST browser File objects as multipart, read the NDJSON stream, invoking onEvent per line. */
+export async function streamUpload(
+  id: string, files: File[], onEvent: (ev: ImportEvent) => void,
+): Promise<void> {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const r = await fetch(`/api/projects/${id}/images/upload`, { method: 'POST', body: fd });
+  if (!r.ok || !r.body) {
+    const data = (await r.json().catch(() => null)) as { error?: string } | null;
+    throw new Error((data && data.error) || `HTTP ${r.status}`);
+  }
+  await readNdjsonStream(r.body, onEvent);
+}
+
+async function readNdjsonStream(
+  body: ReadableStream<Uint8Array>, onEvent: (ev: ImportEvent) => void,
+): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
   for (;;) {

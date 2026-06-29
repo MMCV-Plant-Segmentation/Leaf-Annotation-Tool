@@ -369,14 +369,19 @@ def _resolve_import_path(raw_path: str):
     return files, None
 
 
-def _import_one_file(con, project_id: str, f: Path, threshold: int, tile_size: int) -> dict:
-    """Import a single image file. Returns a per-file result dict.
+def _import_one_file(
+    con, project_id: str,
+    filename: str, data: bytes, provenance: str,
+    threshold: int, tile_size: int,
+) -> dict:
+    """Import a single image. Returns a per-file result dict.
 
-    Shared by the buffered and streaming endpoints so dedup/convert/leaf-bbox/provenance
-    live in exactly one place. Does NOT commit — the caller controls the transaction.
+    Shared by path-scan and upload endpoints — dedup/store/leaf-bbox/insert live here.
+    filename: basename used for source_name.
+    provenance: stored as source_path (server path for disk imports; filename for uploads).
+    Does NOT commit — the caller controls the transaction.
     """
-    data = f.read_bytes()
-    ext = f.suffix.lstrip('.').lower()
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     h = imaging.store_image(data, ext)
     exists = con.execute(
         'SELECT 1 FROM project_image WHERE project_id = ? AND image_hash = ?',
@@ -395,7 +400,7 @@ def _import_one_file(con, project_id: str, f: Path, threshold: int, tile_size: i
              (id, project_id, image_hash, image_ext, source_name, source_path,
               width, height, origin_y, leaf_x, leaf_y, leaf_w, leaf_h, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (_uid(), project_id, h, ext, f.name, str(f), w, hgt,
+        (_uid(), project_id, h, ext, filename, provenance, w, hgt,
          origin_y, bb.x, bb.y, bb.w, bb.h, _now()),
     )
     return {'imported': True, 'skipped': False}
@@ -423,7 +428,8 @@ def import_images(project_id: str):
         imported, skipped, errors = 0, 0, []
         for f in files:
             try:
-                res = _import_one_file(con, project_id, f, threshold, tile_size)
+                res = _import_one_file(con, project_id, f.name, f.read_bytes(), str(f),
+                                       threshold, tile_size)
                 if res['imported']:
                     imported += 1
                 elif res['skipped']:
@@ -464,7 +470,8 @@ def import_images_stream(project_id: str):
             for f in files:
                 ev = {'type': 'file', 'name': f.name, 'path': str(f)}
                 try:
-                    res = _import_one_file(con, project_id, f, threshold, tile_size)
+                    res = _import_one_file(con, project_id, f.name, f.read_bytes(), str(f),
+                                           threshold, tile_size)
                     con.commit()  # commit per-file so a later failure can't lose earlier work
                     if res['imported']:
                         imported += 1
@@ -474,6 +481,59 @@ def import_images_stream(project_id: str):
                         ev.update(ok=True, imported=False, skipped=True)
                 except Exception as exc:  # noqa: BLE001 — report per-file, keep importing
                     errors.append({'file': f.name, 'error': str(exc)})
+                    ev.update(ok=False, error=str(exc))
+                yield json.dumps(ev) + '\n'
+            yield json.dumps({'type': 'done', 'imported': imported,
+                              'skipped': skipped, 'errors': errors}) + '\n'
+        finally:
+            _db.close_db(con)
+
+    return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
+
+
+@projects_bp.post('/api/projects/<project_id>/images/upload')
+@login_required
+def upload_images(project_id: str):
+    """Browser multipart upload. Streams the same NDJSON events as import_images_stream.
+
+    Files are posted as `files` fields in a multipart/form-data body (many files OK).
+    source_path = the original filename (no server path); source_name = same.
+    Events: {"type":"start","total":N} → per-file {"type":"file",...} → {"type":"done",...}
+    """
+    uploaded = request.files.getlist('files')
+    if not uploaded:
+        return jsonify({'error': 'no files provided'}), 400
+    # Pre-read bytes now (FileStorage streams close once the generator yields control
+    # back to Flask's response machinery; read while the request context is hot).
+    file_data = [
+        ((uf.filename or 'unknown').rsplit('/', 1)[-1].rsplit('\\', 1)[-1], uf.read())
+        for uf in uploaded
+    ]
+    con = _db.get_db()
+    proj = _project(con, project_id)
+    if not proj:
+        _db.close_db(con)
+        return jsonify({'error': 'not found'}), 404
+    threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
+
+    def generate():
+        imported, skipped, errors = 0, 0, []
+        try:
+            yield json.dumps({'type': 'start', 'total': len(file_data)}) + '\n'
+            for fname, data in file_data:
+                ev = {'type': 'file', 'name': fname, 'path': fname}
+                try:
+                    res = _import_one_file(con, project_id, fname, data, fname,
+                                          threshold, tile_size)
+                    con.commit()
+                    if res['imported']:
+                        imported += 1
+                        ev.update(ok=True, imported=True, skipped=False)
+                    else:
+                        skipped += 1
+                        ev.update(ok=True, imported=False, skipped=True)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append({'file': fname, 'error': str(exc)})
                     ev.update(ok=False, error=str(exc))
                 yield json.dumps(ev) + '\n'
             yield json.dumps({'type': 'done', 'imported': imported,

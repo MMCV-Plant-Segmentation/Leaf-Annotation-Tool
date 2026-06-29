@@ -217,6 +217,18 @@ def _seed_nested_images(out_dir: Path) -> None:
     (root / 'notes.txt').write_text('ignore me')
 
 
+def _seed_flat_images(out_dir: Path) -> None:
+    """Create flat-images/ with three leaf PNGs for the browser upload test.
+
+    Used by the upload e2e test (setInputFiles). Different dimensions → different hashes.
+    """
+    root = out_dir / 'flat-images'
+    root.mkdir(exist_ok=True)
+    _make_leaf_png_pillow(root / 'upload0.png', w=202, h=182)
+    _make_leaf_png_pillow(root / 'upload1.png', w=222, h=162)
+    _make_leaf_png_pillow(root / 'upload2.png', w=242, h=202)
+
+
 def seed(out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / 'images').mkdir(exist_ok=True)
@@ -233,6 +245,8 @@ def seed(out_dir: Path) -> None:
 
     # Synthetic leaf images for the recursive-import browser test
     _seed_nested_images(out_dir)
+    # Flat leaf images for the browser-upload test (setInputFiles)
+    _seed_flat_images(out_dir)
 
     from werkzeug.security import generate_password_hash
     admin_hash = generate_password_hash(ADMIN_PW)
