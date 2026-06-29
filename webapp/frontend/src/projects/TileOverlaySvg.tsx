@@ -3,7 +3,8 @@
  * tiling lightbox. viewBox is the full image size + xMidYMid meet so it scales to match
  * the image it's laid over. Outlines only (transparent fill, kept clickable as hit
  * targets). When selectedTile is set we hide the full grid and show only that tile's
- * highlight box; clicking the same tile again deselects. onTileClick handles selection.
+ * highlight box. onTileClick selects a tile from the grid; the selected highlight is
+ * inert (use the viewport's Fit button to deselect/zoom out — clicking it must not reset).
  */
 import { type Component, For, Show } from 'solid-js';
 import type { Rect } from './api';
@@ -40,8 +41,7 @@ const TileOverlaySvg: Component<Props> = (props) => (
         <rect x={t().x} y={t().y} width={t().w} height={t().h}
           fill="transparent" stroke="#f59e0b" stroke-width="4"
           vector-effect="non-scaling-stroke"
-          class={props.onTileClick ? styles.hit : undefined}
-          onClick={() => props.onTileClick?.(t())}
+          pointer-events="none"
           data-selected="true" />
       )}
     </Show>
