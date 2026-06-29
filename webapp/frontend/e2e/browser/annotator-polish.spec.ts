@@ -255,8 +255,25 @@ test('clicking a tile zooms and highlights it; overlay stays (replaces crop-swap
   await expect(page.getByTestId('lightbox-tile-overlay')).toBeVisible();
   // Selected tile is highlighted with a data-selected rect
   await expect(overlay.locator('[data-selected="true"]')).toHaveCount(1);
+  // The non-selected grid rects are hidden — only the selected box remains.
+  await expect(overlay.locator('rect:not([data-selected])')).toHaveCount(0);
+  await expect(overlay.locator('rect')).toHaveCount(1);
   // Full image still visible (surrounding leaf visible — not a bare crop)
   await expect(page.getByTestId('lightbox-image')).toBeVisible();
+});
+
+test('tile rects render with a transparent fill (outlines only)', async ({ page }) => {
+  const pid = await createProject(page, `Fill ${Date.now()}`);
+  await importImages(page, pid);
+  await page.goto(`/projects/${pid}/tiling`);
+
+  await page.getByTestId('tile-preview-enlarge').click();
+  const overlay = page.getByTestId('lightbox-tile-overlay');
+  await expect(overlay).toBeVisible();
+
+  const rect = overlay.locator('rect').first();
+  // Transparent fill (attribute set to literal "transparent"); stroke stays colored.
+  await expect(rect).toHaveAttribute('fill', 'transparent');
 });
 
 test('wheel zoom changes the viewport scale in the lightbox @full', async ({ page }, testInfo) => {

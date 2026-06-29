@@ -1,6 +1,11 @@
 import { style } from '@vanilla-extract/css';
 import { vars } from '../theme/contract.css';
 
+// `-webkit-user-drag` is a non-standard WebKit property (blocks native image drag in
+// Safari) and is absent from csstype. Spreading it bypasses the excess-property check
+// while keeping the rest of each rule fully type-checked.
+const noNativeDrag = { WebkitUserDrag: 'none' } as const;
+
 export const overlay = style({
   position: 'fixed',
   inset: 0,
@@ -58,6 +63,7 @@ export const frame = style({
 });
 
 // Fallback: shown when natural image dimensions are not yet known (auto-measured).
+// userSelect/WebkitUserDrag none so dragging pans rather than starting a native image drag.
 export const image = style({
   display: 'block',
   width: 'auto',
@@ -66,6 +72,9 @@ export const image = style({
   maxHeight: '80vh',
   borderRadius: '4px',
   background: vars.color.bg,
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  ...noNativeDrag,
 });
 
 /**
@@ -89,6 +98,9 @@ export const viewportImage = style({
   height: '100%',
   borderRadius: '4px',
   background: vars.color.bg,
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  ...noNativeDrag,
 });
 
 /**

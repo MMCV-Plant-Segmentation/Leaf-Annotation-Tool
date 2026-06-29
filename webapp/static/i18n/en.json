@@ -149,7 +149,7 @@
 
   "projects.title": "Projects",
   "projects.form.name": "Name",
-  "projects.form.namePlaceholder": "e.g. Maize lesions 2026",
+  "projects.form.namePlaceholder": "e.g. My lesion project",
   "projects.form.tileSize": "Tile size (px)",
   "projects.form.blackThreshold": "Black threshold",
   "projects.form.classes": "Classes (comma-separated)",
