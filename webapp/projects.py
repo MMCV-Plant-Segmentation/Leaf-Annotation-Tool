@@ -25,7 +25,7 @@ from shapely.geometry import box as shapely_box
 
 from . import db as _db
 from . import imaging, tiling
-from .auth import login_required
+from .auth import admin_required, login_required
 
 projects_bp = Blueprint('projects', __name__)
 
@@ -410,7 +410,7 @@ def _import_one_file(
 
 
 @projects_bp.post('/api/projects/<project_id>/images/import')
-@login_required
+@admin_required
 def import_images(project_id: str):
     """Import images from a server-side file or directory path (buffered summary).
 
@@ -446,7 +446,7 @@ def import_images(project_id: str):
 
 
 @projects_bp.post('/api/projects/<project_id>/images/import/stream')
-@login_required
+@admin_required
 def import_images_stream(project_id: str):
     """Streaming import: NDJSON, one event per line, flushed as each file completes.
 

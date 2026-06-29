@@ -3,6 +3,7 @@
 
 export type ImportEvent =
   | { type: 'start'; total: number }
+  | { type: 'uploading'; index: number; total: number }
   | { type: 'file'; name: string; path: string; ok: boolean; imported?: boolean; skipped?: boolean; error?: string }
   | { type: 'done'; imported: number; skipped: number; errors: { file: string; error: string }[] };
 
@@ -22,18 +23,39 @@ export async function streamImport(
   await readNdjsonStream(r.body, onEvent);
 }
 
-/** POST browser File objects as multipart, read the NDJSON stream, invoking onEvent per line. */
+/**
+ * POST browser File objects one at a time, streaming NDJSON per file.
+ * Emits a synthetic 'start' event upfront, then an 'uploading' event before each
+ * file's POST (showing "Uploading N of M" in the UI), then forwards each 'file'
+ * event, and finally emits a single aggregate 'done' event.
+ */
 export async function streamUpload(
   id: string, files: File[], onEvent: (ev: ImportEvent) => void,
 ): Promise<void> {
-  const fd = new FormData();
-  for (const f of files) fd.append('files', f);
-  const r = await fetch(`/api/projects/${id}/images/upload`, { method: 'POST', body: fd });
-  if (!r.ok || !r.body) {
-    const data = (await r.json().catch(() => null)) as { error?: string } | null;
-    throw new Error((data && data.error) || `HTTP ${r.status}`);
+  const total = files.length;
+  onEvent({ type: 'start', total });
+  let imported = 0, skipped = 0;
+  const errors: { file: string; error: string }[] = [];
+  for (let i = 0; i < files.length; i++) {
+    onEvent({ type: 'uploading', index: i + 1, total });
+    const fd = new FormData();
+    fd.append('files', files[i]);
+    const r = await fetch(`/api/projects/${id}/images/upload`, { method: 'POST', body: fd });
+    if (!r.ok || !r.body) {
+      const data = (await r.json().catch(() => null)) as { error?: string } | null;
+      throw new Error((data && data.error) || `HTTP ${r.status}`);
+    }
+    await readNdjsonStream(r.body, (ev) => {
+      if (ev.type === 'file') onEvent(ev);
+      else if (ev.type === 'done') {
+        imported += ev.imported;
+        skipped += ev.skipped;
+        errors.push(...ev.errors);
+      }
+      // absorb per-file 'start' events — the outer start covers the full selection
+    });
   }
-  await readNdjsonStream(r.body, onEvent);
+  onEvent({ type: 'done', imported, skipped, errors });
 }
 
 async function readNdjsonStream(

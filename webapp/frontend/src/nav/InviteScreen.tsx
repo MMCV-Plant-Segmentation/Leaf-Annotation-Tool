@@ -1,5 +1,6 @@
-import { type Component, createResource, createSignal, Match, Switch } from 'solid-js';
+import { type Component, createResource, createSignal, Match, onMount, Switch } from 'solid-js';
 import { useParams } from '@solidjs/router';
+import { fetchMe } from '../auth';
 import { t } from '../i18n/catalog';
 import * as styles from './InviteScreen.css';
 
@@ -7,6 +8,13 @@ type InviteInfo = { username: string } | { error: string };
 
 const InviteScreen: Component = () => {
   const params = useParams<{ token: string }>();
+
+  // On mount: log out any active session so an admin who opens an invite link is
+  // immediately cleared. The invite GET (below) also clears the server session, so
+  // the explicit logout is belt-and-suspenders; fetchMe() then syncs the client store.
+  onMount(() => {
+    void fetch('/api/logout', { method: 'POST' }).then(() => void fetchMe());
+  });
 
   const [info] = createResource<InviteInfo>(async () => {
     const r = await fetch(`/api/invite/${params.token}`);

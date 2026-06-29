@@ -182,4 +182,46 @@ assert jdump(r2)['skipped'] == 3, 'path re-import should skip all 3'
 print('  ✓  path re-import → all skipped (idempotent)')
 
 
+
+# ── U6: admin gate — non-admin gets 403 from path-import, not from upload ────
+print('\n── U6: admin gate ──')
+
+# Create a second client with a non-admin session.
+non_admin_client = app.test_client()
+_c2 = db.get_db()
+_c2.execute("INSERT INTO users (id, username) VALUES (2, 'alice')")
+_c2.commit()
+db.close_db(_c2)
+with non_admin_client.session_transaction() as s:
+    s['user_id'] = 2
+    s['username'] = 'alice'
+
+pid4 = jdump(client.post('/api/projects', json={'name': 'Gate test'}))['id']
+
+r_import = non_admin_client.post(f'/api/projects/{pid4}/images/import', json={'path': '/tmp'})
+assert r_import.status_code == 403, f'import should be 403 for non-admin, got {r_import.status_code}'
+print('  ✓  non-admin: POST .../images/import → 403')
+
+r_stream = non_admin_client.post(
+    f'/api/projects/{pid4}/images/import/stream', json={'path': '/tmp'}
+)
+assert r_stream.status_code == 403, f'import/stream should be 403 for non-admin, got {r_stream.status_code}'
+print('  ✓  non-admin: POST .../images/import/stream → 403')
+
+f_upload = _make_leaf_png_bytes(200, 180)
+r_upload = non_admin_client.post(
+    f'/api/projects/{pid4}/images/upload',
+    data={'files': [(io.BytesIO(f_upload), 'leaf_na.png', 'image/png')]},
+    content_type='multipart/form-data',
+)
+assert r_upload.status_code == 200, f'upload should still be 200 for non-admin, got {r_upload.status_code}'
+print('  ✓  non-admin: POST .../images/upload → 200 (upload open to all users)')
+
+# Admin still succeeds on both import endpoints (U5 already covers this; spot-check here)
+r_admin_import = client.post(f'/api/projects/{pid4}/images/import', json={'path': '/nonexistent-path-ignored-ok'})
+# path-import validates the path: /nonexistent gives 400 or 404, not 403 — that's fine
+assert r_admin_import.status_code != 403, f'admin should not get 403 from import, got {r_admin_import.status_code}'
+print('  ✓  admin: POST .../images/import → not 403')
+
+
 print('\n\nALL UPLOAD BACKEND TESTS PASSED ✓  (data dir:', TMP, ')')
