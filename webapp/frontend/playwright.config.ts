@@ -8,6 +8,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Flask is connection-per-request, so rows inserted by seed (after startup) are visible to tests.
 const FIXTURE_DIR = '/tmp/leaf-e2e-fixture';
 
+// The gate may use an alternate port (TEST_PORT) when the default is occupied by a foreign
+// process (e.g. the sandbox harness's granian server). Normal dev use: defaults to 5000.
+const TEST_PORT = process.env.TEST_PORT ?? '5000';
+
 export default defineConfig({
   testDir: './e2e',
   workers: 1,
@@ -16,7 +20,7 @@ export default defineConfig({
   globalSetup:    './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
-    baseURL: 'http://localhost:5000',
+    baseURL: `http://localhost:${TEST_PORT}`,
     // Global login state: globalSetup logs in and saves the session cookie here.
     storageState: path.join(__dirname, 'e2e', '.auth.json'),
   },
@@ -41,7 +45,7 @@ export default defineConfig({
   webServer: {
     command: 'uv run leaf-annotation',
     cwd: path.join(__dirname, '..'),
-    url: 'http://localhost:5000',
+    url: `http://localhost:${TEST_PORT}`,
     // Point the server at the fixture dir regardless of when it starts.
     // globalSetup seeds into the same path before tests begin.
     env: {

@@ -1,7 +1,9 @@
 /**
  * Tiling sub-route (`/projects/:id/tiling`): the Minimum Luminance Threshold (MLT) +
  * tile-size controls and a per-image preview carousel. Guarded — if no images yet, show
- * the lock. Clicking a preview opens a lightbox; saving shows a "Saved ✓" confirmation.
+ * the lock. Clicking a preview opens an interactive zoom/pan lightbox with the tile SVG
+ * overlay; clicking a tile zooms to it and highlights it. The Fit button (or clicking the
+ * same tile again) deselects and resets. Saving shows a "Saved ✓" confirmation.
  */
 import { type Component, createMemo, createResource, createSignal, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
@@ -22,6 +24,10 @@ import * as styles from './ProjectTilingScreen.css';
 
 type BoxState = { im: ProjectImage; preview: TilePreviewData };
 
+/** Toggle-deselect helper: same tile by value → deselect; different → select. */
+const sameTile = (a: Rect | null, b: Rect): boolean =>
+  a !== null && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+
 const ProjectTilingScreen: Component = () => {
   const params = useParams();
   const nav = useNavigate();
@@ -33,19 +39,12 @@ const ProjectTilingScreen: Component = () => {
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
   const [box, setBox] = createSignal<BoxState | null>(null);
-  const [zoomTile, setZoomTile] = createSignal<Rect | null>(null);
-  const closeBox = () => { setBox(null); setZoomTile(null); };
+  const [selectedTile, setSelectedTile] = createSignal<Rect | null>(null);
+  const closeBox = () => { setBox(null); setSelectedTile(null); };
 
   const threshold = createMemo(() => localTh() ?? project()?.black_threshold ?? 0);
   const tileSize = createMemo(() => localTs() ?? project()?.tile_size_px ?? 128);
   const hasBatch = () => (project()?.batches.length ?? 0) > 0;
-
-  // Lightbox shows the whole image (with the tile overlay) or, once a tile is clicked,
-  // a full-res crop of just that tile.
-  const lightboxSrc = (b: BoxState | null, zt: Rect | null): string => {
-    if (!b) return '';
-    return zt ? imageUrls.crop(b.im.id, zt) : imageUrls.overview(b.im.id);
-  };
 
   const save = async () => {
     setSaving(true); setSaved(false);
@@ -124,23 +123,26 @@ const ProjectTilingScreen: Component = () => {
               {(im) => (
                 <TilePreview projectId={id()} imageId={im.id}
                   threshold={threshold()} tileSize={tileSize()}
-                  onEnlarge={(pv) => { setZoomTile(null); setBox({ im, preview: pv }); }} />
+                  onEnlarge={(pv) => { setSelectedTile(null); setBox({ im, preview: pv }); }} />
               )}
             </Carousel>
 
             <Lightbox
               open={box() !== null}
-              src={lightboxSrc(box(), zoomTile())}
-              caption={zoomTile()
-                ? t('detail.tile.tileZoom')
-                : (box()?.im.source_path ?? box()?.im.source_name ?? '')}
-              onImageClick={zoomTile() ? () => setZoomTile(null) : undefined}
-              overlay={box() && !zoomTile()
+              src={box() ? imageUrls.overview(box()!.im.id) : ''}
+              caption={box()?.im.source_path ?? box()?.im.source_name ?? ''}
+              naturalWidth={box()?.preview.imageWidth}
+              naturalHeight={box()?.preview.imageHeight}
+              zoomTarget={selectedTile()}
+              onZoomReset={() => setSelectedTile(null)}
+              overlay={box()
                 ? <TileOverlaySvg testid="lightbox-tile-overlay"
                     imageWidth={box()!.preview.imageWidth}
                     imageHeight={box()!.preview.imageHeight}
                     tiles={box()!.preview.tiles}
-                    onTileClick={setZoomTile} />
+                    selectedTile={selectedTile()}
+                    onTileClick={(tile) =>
+                      setSelectedTile((s) => sameTile(s, tile) ? null : tile)} />
                 : undefined}
               onClose={closeBox}
             />
