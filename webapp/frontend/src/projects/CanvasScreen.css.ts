@@ -80,16 +80,6 @@ export const toolActive = style({
   textTransform: 'capitalize',
 });
 
-export const danger = style({
-  padding: '0.3rem 0.6rem',
-  border: `1px solid ${vars.color.danger}`,
-  color: vars.color.danger,
-  borderRadius: '6px',
-  background: vars.color.surface,
-  cursor: 'pointer',
-  fontSize: '0.82rem',
-});
-
 export const classPick = style({
   fontSize: '0.82rem',
   display: 'flex',

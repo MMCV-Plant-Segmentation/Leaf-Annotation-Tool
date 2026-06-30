@@ -73,6 +73,10 @@ export type CanvasTile = Rect & {
   state: 'assigned' | 'completed' | 'dirty' | null;
 };
 
+/** A tile flipped server-side as a side effect of an annotation mutation (BUGS #16:
+ * editing a completed tile re-opens it) — enough for the FE to patch its local state. */
+export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
+
 export type CanvasAnnotation = {
   id: string;
   kind: string;
@@ -171,14 +175,14 @@ export const projectsApi = {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
     strokeWidth?: number; outline?: number[][];
-  }) => jfetch<CanvasAnnotation & { tileIds: string[]; lesions: CanvasLesion[] }>(
+  }) => jfetch<CanvasAnnotation & { tileIds: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
     `/api/projects/${projectId}/annotations`, jbody('POST', body)),
   updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>
     jfetch<CanvasAnnotation>(`/api/annotations/${annotationId}`, jbody('PATCH', body)),
   deleteAnnotation: (annotationId: string) =>
-    jfetch<{ ok: boolean; lesions: CanvasLesion[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
+    jfetch<{ ok: boolean; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
   mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
-    jfetch<{ ok: boolean; ids: string[]; lesions: CanvasLesion[] }>(
+    jfetch<{ ok: boolean; ids: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
 
   setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>

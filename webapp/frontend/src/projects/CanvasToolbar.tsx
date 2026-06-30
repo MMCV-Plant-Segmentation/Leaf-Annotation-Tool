@@ -14,12 +14,10 @@ type Props = {
   selClass: Accessor<string>;
   setSelClass: (c: string) => void;
   classOptions: () => string[];
-  selAnn: Accessor<string | null>;
   imgIdx: Accessor<number>;
   imgCount: number;
   onBack: () => void;
   onFit: () => void;
-  onDelete: () => void;
   onImgPrev: () => void;
   onImgNext: () => void;
   onUndo: () => void;
@@ -64,9 +62,6 @@ export const CanvasToolbar: Component<Props> = (props) => (
       </select>
     </label>
     <button class={styles.tool} onClick={props.onFit}>{t('canvas.fit')}</button>
-    <Show when={props.selAnn()}>
-      <button class={styles.danger} onClick={props.onDelete}>{t('canvas.deleteShape')}</button>
-    </Show>
     <Show when={props.imgCount > 1}>
       <span class={styles.sep} />
       <button class={styles.tool} disabled={props.imgIdx() === 0}

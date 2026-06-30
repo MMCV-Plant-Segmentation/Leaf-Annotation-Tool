@@ -16,8 +16,9 @@
  */
 
 import { createSignal } from 'solid-js';
-import type { CanvasAnnotation, CanvasImage, CanvasLesion } from './api';
+import type { CanvasAnnotation, CanvasImage, CanvasLesion, TileStateUpdate } from './api';
 import { projectsApi } from './api';
+import { mergeTileStates } from './canvasShapes';
 
 export type HistoryAction =
   | { kind: 'draw'; ann: CanvasAnnotation }
@@ -31,6 +32,7 @@ function applyDelta(
   lesions: CanvasLesion[],
   add: CanvasAnnotation[],
   removeIds: string[],
+  tileStates: TileStateUpdate[] = [],
 ): void {
   updateImg((im) => ({
     ...im,
@@ -39,6 +41,8 @@ function applyDelta(
       ...im.annotations.filter((a) => !removeIds.includes(a.id)),
       ...add,
     ],
+    // BUGS #16: the server may have re-opened a completed tile this mutation touched.
+    tiles: mergeTileStates(im.tiles, tileStates),
   }));
 }
 
@@ -66,7 +70,7 @@ export function createCanvasHistory(
     if (!anns.length) return;
     const ids = anns.map((a) => a.id);
     const r = await projectsApi.mutateAnnotations(getProjectId(), 'delete', ids);
-    applyDelta(updateImg, r.lesions, [], ids);
+    applyDelta(updateImg, r.lesions, [], ids, r.tileStates);
     push({ kind: 'erase', anns });
   };
 
@@ -76,11 +80,11 @@ export function createCanvasHistory(
     const pid = getProjectId();
     if (action.kind === 'draw') {
       const r = await projectsApi.mutateAnnotations(pid, 'delete', [action.ann.id]);
-      applyDelta(updateImg, r.lesions, [], [action.ann.id]);
+      applyDelta(updateImg, r.lesions, [], [action.ann.id], r.tileStates);
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'restore', ids);
-      applyDelta(updateImg, r.lesions, action.anns, []);
+      applyDelta(updateImg, r.lesions, action.anns, [], r.tileStates);
     }
     setCursor((c) => c - 1);
   };
@@ -91,11 +95,11 @@ export function createCanvasHistory(
     const pid = getProjectId();
     if (action.kind === 'draw') {
       const r = await projectsApi.mutateAnnotations(pid, 'restore', [action.ann.id]);
-      applyDelta(updateImg, r.lesions, [action.ann], []);
+      applyDelta(updateImg, r.lesions, [action.ann], [], r.tileStates);
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'delete', ids);
-      applyDelta(updateImg, r.lesions, [], ids);
+      applyDelta(updateImg, r.lesions, [], ids, r.tileStates);
     }
     setCursor((c) => c + 1);
   };

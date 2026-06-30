@@ -46,6 +46,8 @@
   padding: 24px;
 }
 .setup-card h1 { font-size: 1.3rem; font-weight: 700; }
+.setup-card h1 a { color: inherit; text-decoration: none; }
+.setup-card h1 a:hover { text-decoration: underline; }
 
 .resume-btns {
   display: flex;

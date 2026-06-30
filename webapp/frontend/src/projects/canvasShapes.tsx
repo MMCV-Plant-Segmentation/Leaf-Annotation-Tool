@@ -1,6 +1,6 @@
 import { type Component, For, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
-import type { CanvasAnnotation, CanvasLesion, CanvasTile, Rect } from './api';
+import type { CanvasAnnotation, CanvasLesion, CanvasTile, Rect, TileStateUpdate } from './api';
 
 export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser';
 export type ViewBox = { x: number; y: number; w: number; h: number };
@@ -47,20 +47,21 @@ export function ringsToPath(rings: number[][][]): string {
   }).join(' ');
 }
 
-/** Render a lesion as one fused polygon (union geometry from server). */
+/** Render a lesion as one fused polygon (union geometry from server). Click-to-erase only
+ * (eraser tool) — there is no select/delete affordance on the canvas (see BUGS #17). */
 export const LesionShape: Component<{
-  lesion: CanvasLesion; selected: boolean; onSelect: () => void; onErase?: () => void;
+  lesion: CanvasLesion; onErase?: () => void;
 }> = (props) => {
-  const color = () => props.selected ? '#dc2626' : '#2563eb';
   const onDown = (e: PointerEvent) => {
+    if (!props.onErase) return;
     e.stopPropagation();
-    if (props.onErase) props.onErase(); else props.onSelect();
+    props.onErase();
   };
   return (
     <Show when={props.lesion.rings && props.lesion.rings.length > 0}>
       <path d={ringsToPath(props.lesion.rings!)} fill-rule="evenodd"
-        fill={color()} fill-opacity="0.35"
-        stroke={color()} stroke-width="1.5" vector-effect="non-scaling-stroke"
+        fill="#2563eb" fill-opacity="0.35"
+        stroke="#2563eb" stroke-width="1.5" vector-effect="non-scaling-stroke"
         onPointerDown={onDown} />
     </Show>
   );
@@ -91,31 +92,32 @@ export const CanvasTiles: Component<{
   </For>
 );
 
-// One committed annotation rendered as the appropriate SVG primitive.
+// One committed annotation rendered as the appropriate SVG primitive. Click-to-erase only
+// (eraser tool) — there is no select/delete affordance on the canvas (see BUGS #17).
 export const AnnotationShape: Component<{
-  ann: CanvasAnnotation; selected: boolean; onSelect: () => void; onErase?: () => void;
+  ann: CanvasAnnotation; onErase?: () => void;
 }> = (props) => {
-  const stroke = () => (props.selected ? '#dc2626' : '#2563eb');
-  const onDown = (e: PointerEvent) => { e.stopPropagation(); if (props.onErase) props.onErase(); else props.onSelect(); };
+  const stroke = '#2563eb';
+  const onDown = (e: PointerEvent) => { if (!props.onErase) return; e.stopPropagation(); props.onErase(); };
   return (
     <Show when={props.ann.kind === 'stroke'} fallback={
       <Show when={props.ann.kind === 'point'} fallback={
         <Show when={props.ann.kind === 'line'} fallback={
           <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="rgba(37,99,235,0.18)" stroke={stroke()} stroke-width="2"
+            fill="rgba(37,99,235,0.18)" stroke={stroke} stroke-width="2"
             vector-effect="non-scaling-stroke" onPointerDown={onDown} />
         }>
           <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="none" stroke={stroke()} stroke-width="2"
+            fill="none" stroke={stroke} stroke-width="2"
             vector-effect="non-scaling-stroke" onPointerDown={onDown} />
         </Show>
       }>
         <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
-          fill={stroke()} vector-effect="non-scaling-stroke" onPointerDown={onDown} />
+          fill={stroke} vector-effect="non-scaling-stroke" onPointerDown={onDown} />
       </Show>
     }>
       <path d={buildStrokePath(props.ann.points, props.ann.strokeWidth ?? 10)}
-        fill={stroke()} fill-opacity="0.75" onPointerDown={onDown} />
+        fill={stroke} fill-opacity="0.75" onPointerDown={onDown} />
     </Show>
   );
 };
@@ -125,4 +127,14 @@ export function clampRect(v: ViewBox, w: number, h: number): Rect {
   const x = Math.max(0, Math.round(v.x));
   const y = Math.max(0, Math.round(v.y));
   return { x, y, w: Math.min(w - x, Math.round(v.w)), h: Math.min(h - y, Math.round(v.h)) };
+}
+
+// BUGS #16: patch the matching tiles' state from a mutation response — shared by
+// CanvasScreen's draw-commit path and canvasHistory's undo/redo/erase (same server shape).
+export function mergeTileStates(tiles: CanvasTile[], updates: TileStateUpdate[]): CanvasTile[] {
+  if (!updates.length) return tiles;
+  return tiles.map((t) => {
+    const u = updates.find((s) => s.tileId === t.tileId);
+    return u ? { ...t, state: u.state } : t;
+  });
 }
