@@ -2,10 +2,9 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, TILE_COLORS, AnnotationShape, clampRect, buildStrokePath } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
-import { lesionAnnsFor } from './canvasLesions';
 import { CanvasToolbar } from './CanvasToolbar';
 import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
@@ -25,7 +24,7 @@ const CanvasScreen: Component = () => {
   const [tool, setTool] = createSignal<Tool>('pan');
   const [draft, setDraft] = createSignal<number[][]>([]);
   const [selClass, setSelClass] = createSignal('lesion');
-  const [selAnn, setSelAnn] = createSignal<string | null>(null);
+  const [selAnn, setSelAnn] = createSignal<string | null>(null); // holds selected lesion key
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
 
@@ -42,7 +41,6 @@ const CanvasScreen: Component = () => {
     setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
   }));
 
-  // Helper: apply a transform to the image at the current imgIdx
   const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
 
@@ -94,16 +92,20 @@ const CanvasScreen: Component = () => {
     updateImg((im) => ({ ...im, annotations: [...im.annotations, ann] }));
   };
 
+  // Delete the selected lesion (all its member strokes).
   const deleteSelected = async () => {
-    const id = selAnn(); const c = canvas(); if (!id || !c) return;
-    const r = await projectsApi.mutateAnnotations(c.projectId, 'delete', [id]);
+    const key = selAnn(); const c = canvas(); const im = image(); if (!key || !c || !im) return;
+    const lesion = im.lesions.find((l) => l.key === key);
+    if (!lesion) return;
+    const r = await projectsApi.mutateAnnotations(c.projectId, 'delete', lesion.memberIds);
     setSelAnn(null);
-    updateImg((im) => ({ ...im, annotations: im.annotations.filter((a) => a.id !== id), lesions: r.lesions }));
+    updateImg((im2) => ({ ...im2, annotations: im2.annotations.filter((a) => !lesion.memberIds.includes(a.id)), lesions: r.lesions }));
   };
 
-  const eraseStroke = async (a: CanvasAnnotation) => {
+  // Erase all member strokes of a lesion (eraser tool).
+  const eraseLesion = async (lesion: CanvasLesion) => {
     const im = image(); if (!im) return;
-    await history.erase(lesionAnnsFor(im.lesions ?? [], a.id, im.annotations));
+    await history.erase(im.annotations.filter((a) => lesion.memberIds.includes(a.id)));
   };
 
   const toggleTile = async (tile: import('./api').CanvasTile) => {
@@ -160,28 +162,20 @@ const CanvasScreen: Component = () => {
             >
               <image href={imageUrls.overview(im().imageId)} x="0" y="0"
                 width={im().width} height={im().height} />
-              <For each={im().tiles}>
-                {(tile) => (
-                  <g>
-                    <rect x={tile.x} y={tile.y} width={tile.w} height={tile.h}
-                      fill="none" stroke={TILE_COLORS[tile.state ?? 'assigned']}
-                      stroke-width="2" vector-effect="non-scaling-stroke"
-                      stroke-dasharray={tile.state === 'completed' ? undefined : '6 4'} />
-                    <circle data-testid="tile-complete" class={styles.check}
-                      cx={tile.x + tile.w} cy={tile.y} r="8"
-                      fill={tile.state === 'completed' ? '#16a34a' : '#fff'}
-                      stroke="#16a34a" stroke-width="1.5" vector-effect="non-scaling-stroke"
-                      onPointerDown={(e) => { e.stopPropagation(); void toggleTile(tile); }} />
-                  </g>
-                )}
+              <CanvasTiles tiles={im().tiles} checkClass={styles.check}
+                onToggle={(tile) => void toggleTile(tile)} />
+              <For each={im().lesions}>
+                {(l) => <LesionShape lesion={l} selected={selAnn() === l.key}
+                  onSelect={() => setSelAnn(l.key)}
+                  onErase={tool() === 'eraser' ? () => void eraseLesion(l) : undefined} />}
               </For>
-              <For each={im().annotations}>
+              <For each={im().annotations.filter((a) => a.kind !== 'stroke')}>
                 {(a) => <AnnotationShape ann={a} selected={selAnn() === a.id}
                   onSelect={() => setSelAnn(a.id)}
-                  onErase={tool() === 'eraser' ? () => void eraseStroke(a) : undefined} />}
+                  onErase={tool() === 'eraser' ? () => void history.erase([a]) : undefined} />}
               </For>
               <Show when={draft().length > 0 && tool() === 'brush'}>
-                <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.7)" />
+                <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.35)" />
               </Show>
               <Show when={tool() === 'brush' && interaction.hoverImg()}>
                 {(c) => <circle cx={c()[0]} cy={c()[1]} r={brushSize() / 2} fill="none" stroke="rgba(37,99,235,0.85)" stroke-width="1.5" vector-effect="non-scaling-stroke" pointer-events="none" />}

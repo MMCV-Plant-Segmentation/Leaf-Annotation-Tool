@@ -106,12 +106,24 @@ def _stroke_polygon(points, stroke_width):
     return LineString(pts).buffer(width / 2, cap_style='round', join_style='round')
 
 
+def _poly_rings(poly) -> list:
+    """Extract exterior + interior rings from a Shapely Polygon as [[x,y],...] lists.
+
+    Returns [] for degenerate/empty geometry so the frontend can fall back gracefully.
+    """
+    if poly is None or poly.is_empty or poly.geom_type != 'Polygon':
+        return []
+    def coords(ring):
+        return [[round(float(pt[0])), round(float(pt[1]))] for pt in ring.coords]
+    return [coords(poly.exterior)] + [coords(r) for r in poly.interiors]
+
+
 def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
     """Derive lesion groupings (connected components) for one annotator's strokes.
 
     A lesion = a connected component of the geometric union of strokes sharing a label.
-    Returns [{'key': str, 'label': str, 'memberIds': [annId, ...]}, ...].
-    Non-stroke kinds are excluded. Geometry is not in the payload.
+    Returns [{'key': str, 'label': str, 'memberIds': [...], 'rings': [...]}, ...].
+    Non-stroke kinds are excluded.
     """
     rows = con.execute(
         '''SELECT id, label, points_json, stroke_width FROM annotation
@@ -136,7 +148,7 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
 
         # Degenerate strokes (no geometry) each become their own lesion
         for ann_id in invalid_ids:
-            lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+            lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id], 'rings': []})
 
         if not valid:
             continue
@@ -146,7 +158,7 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
         # Walk connected components
         if union.is_empty:
             for ann_id, _ in valid:
-                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id], 'rings': []})
             continue
 
         components = list(union.geoms) if union.geom_type == 'MultiPolygon' else [union]
@@ -161,18 +173,29 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
                     break
             if not placed:
                 # Shouldn't happen (stroke is part of union) but handle defensively
-                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id], 'rings': []})
 
-        for members in component_members:
+        for i, members in enumerate(component_members):
             if members:
-                lesions.append({'key': min(members), 'label': lbl, 'memberIds': members})
+                comp_simp = components[i].simplify(0.75, preserve_topology=True)
+                lesions.append({'key': min(members), 'label': lbl, 'memberIds': members,
+                                'rings': _poly_rings(comp_simp)})
 
     return lesions
 
 
-def _tiles_intersecting(con, project_image_id: str, kind: str, points: list) -> list[str]:
-    """Return ids of existing tiles (on this image) that the shape intersects."""
-    geom = _shape_geom(kind, points)
+def _tiles_intersecting(con, project_image_id: str, kind: str, points: list,
+                        stroke_width=None) -> list[str]:
+    """Return ids of existing tiles (on this image) that the shape's painted area intersects.
+
+    For strokes, tests against the buffered footprint (_stroke_polygon) when stroke_width is
+    supplied — this catches strokes whose centerline misses a tile but whose painted width
+    overlaps it. Falls back to _shape_geom for other kinds or when width is unknown.
+    """
+    if kind == 'stroke' and stroke_width is not None:
+        geom = _stroke_polygon(points, stroke_width)
+    else:
+        geom = _shape_geom(kind, points)
     if geom is None:
         return []
     rows = con.execute(
@@ -980,10 +1003,8 @@ def create_annotation(project_id: str):
         err = _member_or_403(con, project_id)
         if err:
             return err
-        tile_ids = _tiles_intersecting(con, image_id, kind, points)
-        if not tile_ids:
-            return jsonify({'error': 'annotation must intersect at least one tile'}), 422
         # Clamp stroke width to [1px, image diagonal] — the API must not trust the client.
+        # Computed first so _tiles_intersecting can test the buffered AREA, not the centerline.
         stroke_width = None
         if kind == 'stroke' and body.get('strokeWidth') is not None:
             im = _image_row(con, image_id)
@@ -993,6 +1014,9 @@ def create_annotation(project_id: str):
                 stroke_width = max(1.0, min(w, diag) if diag else w)
             except (TypeError, ValueError):
                 stroke_width = None
+        tile_ids = _tiles_intersecting(con, image_id, kind, points, stroke_width)
+        if not tile_ids:
+            return jsonify({'error': 'annotation must intersect at least one tile'}), 422
         aid = _uid()
         now = _now()
         con.execute(
@@ -1044,7 +1068,8 @@ def update_annotation(annotation_id: str):
             (json.dumps(points), label, _now(), annotation_id),
         )
         # Recompute tile membership and dirty every touched tile (old ∪ new).
-        new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
+        new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points,
+                                       row['stroke_width'])
         con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
         for tid in new_tiles:
             con.execute(

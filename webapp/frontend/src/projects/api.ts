@@ -86,7 +86,11 @@ export type CanvasAnnotation = {
 };
 
 /** A connected component of one annotator's strokes sharing the same label. */
-export type CanvasLesion = { key: string; label: string; memberIds: string[] };
+export type CanvasLesion = {
+  key: string; label: string; memberIds: string[];
+  /** Polygon rings from server union geometry: [[x,y],...] per ring (exterior first, then holes). */
+  rings?: number[][][];
+};
 
 export type CanvasImage = {
   imageId: string;

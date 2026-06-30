@@ -55,9 +55,10 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
 
-  // Step brush size by 5% of max (at least 1px) — used by [ / ] keys and scroll
+  // Multiplicative brush resize for fine low-end control; used by scroll wheel.
   const stepSize = (dir: 1 | -1) => {
-    o.setBrushSize(clampSize(o.brushSize() + dir * Math.max(1, Math.round(o.maxBrushSize() * 0.05))));
+    const cur = o.brushSize();
+    o.setBrushSize(dir > 0 ? clampSize(Math.max(cur + 1, Math.round(cur * 1.15))) : clampSize(Math.min(cur - 1, Math.round(cur / 1.15))));
   };
 
   const panBy = (dClientX: number, dClientY: number) => {
@@ -144,12 +145,11 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
 
-    // Space-pan (§C, §D)
+    // Space-pan (§C, §D) — uses same CTM scale as panBy for 1:1 tracking.
     if (spacePanRef && !strokeInProgress) {
+      const ctm = o.getSvg()!.getScreenCTM(); if (!ctm) return;
       const sv = spacePanRef.vb;
-      const rect = o.getSvg()!.getBoundingClientRect();
-      o.setVb({ ...sv, x: sv.x - ((e.clientX - spacePanRef.x) / rect.width) * sv.w,
-                        y: sv.y - ((e.clientY - spacePanRef.y) / rect.height) * sv.h });
+      o.setVb({ ...sv, x: sv.x - (e.clientX - spacePanRef.x) / ctm.a, y: sv.y - (e.clientY - spacePanRef.y) / ctm.d });
       return;
     }
 
