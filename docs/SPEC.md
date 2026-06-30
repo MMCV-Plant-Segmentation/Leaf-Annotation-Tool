@@ -650,14 +650,18 @@ grid geometry) · `batch` (a unit of work over sampled tiles) · `batch_tile` (s
 batch) · `annotator_tile` (per-annotator **private** progress; `state ∈ assigned|completed|dirty`) ·
 `annotation` (one drawn shape/row; `kind` free-text — `polygon|line|point|stroke`; `pass_no`;
 `points_json`; `annotator`; `project_image_id` = coord space; `stroke_width` for brush; soft-delete via
-`deleted_at`) · `annotation_tile` (which tiles a shape intersects → dirty propagation). Schema changes
-go through idempotent `migrate_*` functions in `auto_create_schema()` — **no alembic**.
+`deleted_at`) · `annotation_tile` (which tiles a shape intersects → dirty propagation). **Lesions are derived, not
+stored** — a lesion = a connected component of the Shapely union of an annotator's strokes sharing a
+`label` (`_lesions_for_image`, buffering each stroke via `_stroke_polygon`). Schema changes go through
+idempotent `migrate_*` functions in `auto_create_schema()` — **no alembic**.
 
 ### 10.2 Endpoints (all `@login_required`; project-scoped ones also authorize)
 Projects CRUD; roster add/remove; image import (admin-only path-import + streaming NDJSON) and
 **browser upload** (`/images/upload`, capped at 4 concurrent via a `BoundedSemaphore` → 429 when
 exhausted; correctness assumes Granian `--workers 1`); tile preview; batch creation; batch/canvas read
-(`/api/batches/<id>`); annotation create/update/delete (soft); tile-completion toggle
+(`/api/batches/<id>`); annotation create/update/delete (soft — create & delete return the edited
+image's **lesion grouping**); **bulk mutate** (`/api/projects/<id>/annotations/mutate`, `delete|restore`
+with per-row ownership, returns the grouping) for the eraser + undo/redo; tile-completion toggle
 (`/api/annotator-tiles/<id>`); project-image overview/crop serving.
 
 ### 10.3 Authorization model
@@ -674,11 +678,18 @@ exhausted; correctness assumes Granian `--workers 1`); tile preview; batch creat
 SolidJS SVG surface, full-width. Annotates the logged-in user's tiles in a batch (no "open-as"
 chooser). View is an SVG `viewBox` signal (`vb`); the fit is keyed to image **identity** so drawing
 never resets zoom.
-- **Tools:** Pan (`H`) + Brush (`B`). Brush uses **perfect-freehand** → smoothed, variable-width
-  filled outline; a single click = a filled circle. Stroke is stored as a point list; the outline is
-  derived at render. Per-stroke width persists via `annotation.stroke_width`.
+- **Tools:** Pan + Brush + Eraser (toolbar-selected — **no tool hotkeys**). Brush uses
+  **perfect-freehand** → smoothed, variable-width filled outline; a single click = a filled circle.
+  Stroke is stored as a point list; the outline is derived at render. Per-stroke width persists via
+  `annotation.stroke_width`. Rendering is per-stroke (overlapping strokes already look fused) — merge
+  is a server-side *grouping*, not a re-render.
 - **Brush size:** toolbar slider, range `[1px, image diagonal]`, default 10% of the tile diagonal;
-  also `[` / `]` keys and (in brush mode) the scroll wheel.
+  also (in brush mode) the scroll wheel.
+- **Eraser:** clicking a stroke deletes its **whole lesion** (every stroke in that connected
+  component) in one undoable action, via the bulk `mutate` endpoint.
+- **Undo/redo:** client-only action stack (`canvasHistory.ts`; not persisted across reload) on
+  `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, `Ctrl+Y`, plus toolbar buttons; each step round-trips through
+  `mutate` (delete/restore) and applies the returned grouping.
 - **Zoom/pan (mouse/trackpad):** `Ctrl/Cmd+scroll` zoom-to-cursor; `scroll` pan-vertical (outside
   brush mode); `Shift+scroll` pan-horizontal; drag / `Space`+drag pan; `Ctrl/Cmd+0` fit. **All panning
   is disabled mid-stroke.** **Touch:** one finger draws; two fingers pinch-zoom/pan keeping the
@@ -687,7 +698,7 @@ never resets zoom.
 
 ### 10.5 Built vs deferred
 **Built:** the full project→batch→paint loop, membership+ownership auth, browser upload with progress,
-the perfect-freehand brush + input scheme. **Deferred (seams left in place):** consensus/merge
-(two-pass reconcile), stroke-merging + undo/redo + eraser (Tier-1 Phase 2), per-batch annotators,
-batch state machine, progress redesign, dirty *pull-forward* (today tiles dirty in place), HSV
+the perfect-freehand brush + input scheme, server-side lesion merge + eraser + client-only undo/redo
+(Tier-1 Phase 2). **Deferred (seams left in place):** consensus/merge (two-pass reconcile), per-batch
+annotators, batch state machine, progress redesign, dirty *pull-forward* (today tiles dirty in place), HSV
 histogram capture, labelme export. Active roadmap: `Plan — Annotator next passes.md`.
