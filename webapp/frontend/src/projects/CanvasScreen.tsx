@@ -1,9 +1,11 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasTile } from './api';
+import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion } from './api';
 import { t } from '../i18n/catalog';
 import { type Tool, type ViewBox, TILE_COLORS, AnnotationShape, clampRect, buildStrokePath } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
+import { createCanvasHistory } from './canvasHistory';
+import { lesionAnnsFor } from './canvasLesions';
 import { CanvasToolbar } from './CanvasToolbar';
 import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
@@ -31,15 +33,25 @@ const CanvasScreen: Component = () => {
 
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
   const imageId = createMemo(() => image()?.imageId);
-  createEffect(on(imageId, () => { if (image()) fitImage(); }));
+  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); }));
 
-  // Max brush size = image diagonal; default = 10% of tile diagonal (set once on canvas load)
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
     if (!c || brushSize() !== 0) return;
     const tile = c.images.flatMap((im) => im.tiles)[0];
     setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
   }));
+
+  // Helper: apply a transform to the image at the current imgIdx
+  const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
+    setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
+
+  const applyLesions = (ls: CanvasLesion[]) => updateImg((im) => ({ ...im, lesions: ls }));
+
+  const history = createCanvasHistory(
+    () => canvas()?.projectId ?? '',
+    updateImg,
+  );
 
   // ── persistence ──
   const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => {
@@ -52,6 +64,8 @@ const CanvasScreen: Component = () => {
         strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
       });
       pushAnnotation(ann);
+      applyLesions(ann.lesions ?? []);
+      history.push({ kind: 'draw', ann });
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : 'Save failed');
     }
@@ -66,9 +80,10 @@ const CanvasScreen: Component = () => {
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') interaction.finishDraft();
     if (e.key === 'Escape') setDraft([]);
-    if (e.key === 'b' || e.key === 'B') { setTool('brush'); setDraft([]); }
-    if (e.key === 'h' || e.key === 'H') { setTool('pan'); setDraft([]); }
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
+    if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
     interaction.handleKeyDown(e);
   };
   const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
@@ -76,24 +91,22 @@ const CanvasScreen: Component = () => {
   onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
 
   const pushAnnotation = (ann: CanvasAnnotation) => {
-    setCanvas((c) => c && ({
-      ...c,
-      images: c.images.map((im, i) => i === imgIdx() ? { ...im, annotations: [...im.annotations, ann] } : im),
-    }));
+    updateImg((im) => ({ ...im, annotations: [...im.annotations, ann] }));
   };
 
   const deleteSelected = async () => {
-    const id = selAnn(); if (!id) return;
-    await projectsApi.deleteAnnotation(id);
+    const id = selAnn(); const c = canvas(); if (!id || !c) return;
+    const r = await projectsApi.mutateAnnotations(c.projectId, 'delete', [id]);
     setSelAnn(null);
-    setCanvas((c) => c && ({
-      ...c,
-      images: c.images.map((im, i) => i === imgIdx()
-        ? { ...im, annotations: im.annotations.filter((a) => a.id !== id) } : im),
-    }));
+    updateImg((im) => ({ ...im, annotations: im.annotations.filter((a) => a.id !== id), lesions: r.lesions }));
   };
 
-  const toggleTile = async (tile: CanvasTile) => {
+  const eraseStroke = async (a: CanvasAnnotation) => {
+    const im = image(); if (!im) return;
+    await history.erase(lesionAnnsFor(im.lesions ?? [], a.id, im.annotations));
+  };
+
+  const toggleTile = async (tile: import('./api').CanvasTile) => {
     if (!tile.annotatorTileId) return;
     const next = tile.state === 'completed' ? 'assigned' : 'completed';
     await projectsApi.setTileState(tile.annotatorTileId, next);
@@ -124,6 +137,8 @@ const CanvasScreen: Component = () => {
         onBack={() => nav(-1)} onFit={fitImage}
         onDelete={() => void deleteSelected()}
         onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
+        onUndo={() => void history.undo()} onRedo={() => void history.redo()}
+        canUndo={history.canUndo} canRedo={history.canRedo}
       />
 
       <Show when={image()} fallback={<div class={styles.stage}>{t('common.loading')}</div>}>
@@ -139,6 +154,7 @@ const CanvasScreen: Component = () => {
               classList={{
                 [styles.panning]: tool() === 'pan',
                 [styles.spacePanning]: interaction.isSpaceDown() && tool() !== 'pan',
+                [styles.erasing]: tool() === 'eraser',
               }}
             >
               <image href={imageUrls.overview(im().imageId)} x="0" y="0"
@@ -160,9 +176,9 @@ const CanvasScreen: Component = () => {
               </For>
               <For each={im().annotations}>
                 {(a) => <AnnotationShape ann={a} selected={selAnn() === a.id}
-                  onSelect={() => setSelAnn(a.id)} />}
+                  onSelect={() => setSelAnn(a.id)}
+                  onErase={tool() === 'eraser' ? () => void eraseStroke(a) : undefined} />}
               </For>
-              {/* Live brush draft rendered via perfect-freehand */}
               <Show when={draft().length > 0 && tool() === 'brush'}>
                 <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.7)" />
               </Show>

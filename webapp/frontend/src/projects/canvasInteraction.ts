@@ -178,8 +178,6 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === ' ') setSpaceDown(true);
-    if (e.key === '[') { e.preventDefault(); stepSize(-1); }
-    if (e.key === ']') { e.preventDefault(); stepSize(1); }
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
