@@ -306,4 +306,110 @@ alice_client.delete(f'/api/annotations/{eight_resp["id"]}')
 print('  ✓  self-intersecting stroke → single lesion with valid rings')
 
 
+
+# ── L10: migration idempotency — outline_json column ─────────────────────────
+
+print('\n── L10: migrate_annotation_outline idempotency ──')
+
+# Call twice; second call must not raise
+db.migrate_annotation_outline()
+db.migrate_annotation_outline()
+# Column must exist
+_c4 = db.get_db()
+try:
+    cols = {r['name'] for r in _c4.execute('PRAGMA table_info(annotation)').fetchall()}
+    assert 'outline_json' in cols, f'outline_json column missing; columns: {cols}'
+finally:
+    db.close_db(_c4)
+print('  ✓  migrate_annotation_outline is idempotent and column exists')
+
+
+# ── L11: outline drives geometry (outline larger than centerline buffer) ──────
+
+print('\n── L11: outline drives lesion geometry ──')
+
+# Stroke: a single mouse point (degenerate centerline) with a large outline square.
+# The outline square is 40×40 centred at (cx, cy).
+big_outline = [
+    [cx - 20, cy - 20], [cx + 20, cy - 20],
+    [cx + 20, cy + 20], [cx - 20, cy + 20],
+    [cx - 20, cy - 20],
+]
+r_out = alice_client.post(f'/api/projects/{pid}/annotations', json={
+    'imageId': image_id, 'annotator': 'alice', 'kind': 'stroke',
+    'points': [[cx, cy]], 'label': 'outline-test', 'strokeWidth': 2,
+    'outline': big_outline,
+    'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th},
+})
+assert r_out.status_code == 201, f'outline-driven stroke failed: {jdump(r_out)}'
+out_data = jdump(r_out)
+out_lesions = [l for l in out_data['lesions'] if l['label'] == 'outline-test']
+assert len(out_lesions) == 1, f'expected 1 outline-test lesion, got {out_lesions}'
+rings_out = out_lesions[0]['rings']
+assert rings_out, f'expected non-empty rings: {out_lesions[0]}'
+# Exterior ring bbox must reflect the 40×40 outline (width ≥ 30), not the 2px centerline
+xs = [pt[0] for pt in rings_out[0]]
+ring_width = max(xs) - min(xs)
+assert ring_width >= 30, (
+    f'ring bbox should reflect large outline (width≥30), got {ring_width}; ring={rings_out[0]}')
+alice_client.delete(f'/api/annotations/{out_data["id"]}')
+print(f'  ring width={ring_width} ✓  outline drives lesion geometry')
+
+
+# ── L12: loop outline → no hole (donut fix) ──────────────────────────────────
+
+print('\n── L12: loop outline → exactly one ring (no donut) ──')
+
+# A figure-eight outline (self-intersecting loop): two diamond loops sharing a centre.
+# buffer(0) should dissolve the self-crossing and fill any holes.
+loop_outline = [
+    [cx, cy],
+    [cx + 15, cy - 15], [cx, cy - 30], [cx - 15, cy - 15],  # top lobe
+    [cx, cy],
+    [cx + 15, cy + 15], [cx, cy + 30], [cx - 15, cy + 15],  # bottom lobe
+    [cx, cy],
+]
+r_loop = alice_client.post(f'/api/projects/{pid}/annotations', json={
+    'imageId': image_id, 'annotator': 'alice', 'kind': 'stroke',
+    'points': [[cx, cy]], 'label': 'loop-test', 'strokeWidth': 2,
+    'outline': loop_outline,
+    'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th},
+})
+assert r_loop.status_code == 201, f'loop stroke creation failed: {jdump(r_loop)}'
+loop_data = jdump(r_loop)
+loop_lesions = [l for l in loop_data['lesions'] if l['label'] == 'loop-test']
+assert loop_lesions, f'no loop-test lesion returned: {loop_data["lesions"]}'
+loop_rings = loop_lesions[0]['rings']
+assert loop_rings, f'expected non-empty rings for loop lesion: {loop_lesions[0]}'
+assert len(loop_rings) == 1, (
+    f'loop lesion must have exactly 1 ring (no holes); got {len(loop_rings)} rings: {loop_rings}')
+# Sanity: the exterior ring must have meaningful area (not a point)
+lxs = [pt[0] for pt in loop_rings[0]]
+lys = [pt[1] for pt in loop_rings[0]]
+assert max(lxs) - min(lxs) > 5, f'exterior ring too small: {loop_rings[0]}'
+assert max(lys) - min(lys) > 5, f'exterior ring too small: {loop_rings[0]}'
+alice_client.delete(f'/api/annotations/{loop_data["id"]}')
+print(f'  {len(loop_rings[0])} exterior pts, no holes ✓  loop → no donut')
+
+
+# ── L13: legacy fallback — stroke without outline still works ─────────────────
+
+print('\n── L13: legacy fallback (no outline) ──')
+
+# Stroke submitted without an outline field — must fall back to centerline buffer.
+r_leg = alice_client.post(f'/api/projects/{pid}/annotations', json={
+    'imageId': image_id, 'annotator': 'alice', 'kind': 'stroke',
+    'points': [[cx - 10, cy], [cx + 10, cy]], 'label': 'legacy-test', 'strokeWidth': 20,
+    'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th},
+    # no 'outline' key
+})
+assert r_leg.status_code == 201, f'legacy stroke failed: {jdump(r_leg)}'
+leg_data = jdump(r_leg)
+leg_lesions = [l for l in leg_data['lesions'] if l['label'] == 'legacy-test']
+assert len(leg_lesions) == 1, f'expected 1 legacy lesion, got {leg_lesions}'
+assert leg_lesions[0]['rings'], f'legacy lesion must have rings: {leg_lesions[0]}'
+alice_client.delete(f'/api/annotations/{leg_data["id"]}')
+print('  ✓  legacy stroke (no outline) produces valid lesion via centerline buffer')
+
+
 print('\n✓ All lesion tests passed')

@@ -291,6 +291,7 @@ def auto_create_schema() -> None:
     migrate_project_tiling_confirmed()
     migrate_backfill_project_creator_annotator()
     migrate_annotation_stroke_width()
+    migrate_annotation_outline()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -411,6 +412,18 @@ def migrate_annotation_stroke_width() -> None:
         cols = {r['name'] for r in con.execute('PRAGMA table_info(annotation)').fetchall()}
         if 'stroke_width' not in cols:
             con.execute('ALTER TABLE annotation ADD COLUMN stroke_width REAL')
+            con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_annotation_outline() -> None:
+    """Add nullable outline_json TEXT column to annotation table (perfect-freehand outline geometry)."""
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(annotation)').fetchall()}
+        if 'outline_json' not in cols:
+            con.execute('ALTER TABLE annotation ADD COLUMN outline_json TEXT')
             con.commit()
     finally:
         close_db(con)
