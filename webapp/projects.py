@@ -151,6 +151,18 @@ def _member_or_403(con, project_id: str):
     return None
 
 
+def _owner_or_403(row_annotator: str):
+    """Members may only mutate their OWN annotator data (annotations, tile state).
+
+    Admin bypasses (matches _member_or_403). Returns a 403 tuple or None.
+    """
+    if session.get('username') == 'admin':
+        return None
+    if (row_annotator or '') != (session.get('username') or ''):
+        return jsonify({'error': 'forbidden'}), 403
+    return None
+
+
 # ── projects CRUD ─────────────────────────────────────────────────────────────
 
 @projects_bp.get('/api/projects')
@@ -874,7 +886,12 @@ def create_annotation(project_id: str):
     image_id = body.get('imageId')
     kind = body.get('kind')
     points = body.get('points') or []
-    annotator = (body.get('annotator') or '').strip()
+    # Annotate-as-yourself: non-admins are forced to their own identity; admin may seed any
+    # annotator (matches the _member_or_403 / _owner_or_403 admin bypass).
+    if session.get('username') == 'admin':
+        annotator = (body.get('annotator') or '').strip()
+    else:
+        annotator = session.get('username') or ''
     if not (image_id and kind and points and annotator):
         return jsonify({'error': 'imageId, kind, points, annotator required'}), 400
     con = _db.get_db()
@@ -885,6 +902,16 @@ def create_annotation(project_id: str):
         tile_ids = _tiles_intersecting(con, image_id, kind, points)
         if not tile_ids:
             return jsonify({'error': 'annotation must intersect at least one tile'}), 422
+        # Clamp stroke width to [1px, image diagonal] — the API must not trust the client.
+        stroke_width = None
+        if kind == 'stroke' and body.get('strokeWidth') is not None:
+            im = _image_row(con, image_id)
+            diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+            try:
+                w = float(body['strokeWidth'])
+                stroke_width = max(1.0, min(w, diag) if diag else w)
+            except (TypeError, ValueError):
+                stroke_width = None
         aid = _uid()
         now = _now()
         con.execute(
@@ -897,7 +924,7 @@ def create_annotation(project_id: str):
              json.dumps(points), body.get('label'),
              json.dumps(body['viewport']) if body.get('viewport') else None,
              json.dumps(body['hsvHist']) if body.get('hsvHist') else None, now, now,
-             body.get('strokeWidth') if kind == 'stroke' else None),
+             stroke_width),
         )
         for tid in tile_ids:
             con.execute(
@@ -922,7 +949,7 @@ def update_annotation(annotation_id: str):
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
         if not row or row['deleted_at']:
             return jsonify({'error': 'not found'}), 404
-        err = _member_or_403(con, row['project_id'])
+        err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
         if err:
             return err
         old_tiles = [r['tile_id'] for r in con.execute(
@@ -961,7 +988,7 @@ def delete_annotation(annotation_id: str):
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
         if not row:
             return jsonify({'error': 'not found'}), 404
-        err = _member_or_403(con, row['project_id'])
+        err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
         if err:
             return err
         tiles = [r['tile_id'] for r in con.execute(
@@ -988,15 +1015,16 @@ def set_tile_state(at_id: str):
     try:
         # Resolve project_id through the annotator_tile → batch_tile → batch chain.
         at_row = con.execute(
-            '''SELECT b.project_id FROM annotator_tile at
+            '''SELECT b.project_id, at.annotator FROM annotator_tile at
                JOIN batch_tile bt ON bt.id = at.batch_tile_id
                JOIN batch b ON b.id = bt.batch_id
                WHERE at.id = ?''', (at_id,),
         ).fetchone()
-        if at_row:
-            err = _member_or_403(con, at_row['project_id'])
-            if err:
-                return err
+        if not at_row:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, at_row['project_id']) or _owner_or_403(at_row['annotator'])
+        if err:
+            return err
         con.execute(
             'UPDATE annotator_tile SET state = ?, updated_at = ? WHERE id = ?',
             (state, _now(), at_id),

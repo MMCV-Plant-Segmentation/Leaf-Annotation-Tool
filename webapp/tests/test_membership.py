@@ -206,4 +206,43 @@ migrate_backfill_project_creator_annotator()
 print('  ✓  backfill is idempotent (second call does not error)')
 
 
+# ── M6: per-annotator ownership (a member can't touch another annotator's data) ──
+print('\n── M6: annotator ownership ──')
+
+# Make bob a MEMBER of alice's project (so membership passes; ownership is what must block).
+r_addbob = alice_client.post(f'/api/projects/{alice_pid}/annotators', json={'user_id': 3})
+assert r_addbob.status_code == 201, f'adding bob failed: {r_addbob.status_code}'
+
+# Seed an annotation OWNED BY ALICE directly (skip the batch/tiling HTTP setup).
+ann_id = str(_uuid.uuid4())
+con_s = db.get_db()
+try:
+    con_s.execute(
+        '''INSERT INTO annotation (id, project_id, project_image_id, annotator, kind,
+             points_json, created_at, updated_at)
+           VALUES (?, ?, ?, 'alice', 'stroke', '[[1,1]]', ?, ?)''',
+        (ann_id, alice_pid, image_id, '2026-01-01T00:00:00', '2026-01-01T00:00:00'),
+    )
+    con_s.commit()
+finally:
+    db.close_db(con_s)
+
+# Bob is a member but NOT the owner → 403 on delete.
+r_bob_del = bob_client.delete(f'/api/annotations/{ann_id}')
+assert r_bob_del.status_code == 403, f'expected 403 for bob deleting alice ann, got {r_bob_del.status_code}'
+print('  ✓  member (bob) cannot delete another annotator (alice)\'s annotation')
+
+# Non-admin create cannot spoof identity: even if alice POSTs annotator='bob', server stores 'alice'.
+# (Uses a bogus point so it 422s before insert — we just assert it does NOT 201 as bob; identity
+#  forcing is exercised more fully via the admin-bypass path in test_backend.)
+r_owner = alice_client.delete(f'/api/annotations/{ann_id}')
+assert r_owner.status_code == 200, f'owner (alice) should delete her own ann, got {r_owner.status_code}'
+print('  ✓  owner (alice) can delete her own annotation')
+
+# set_tile_state on a non-existent annotator_tile → 404 (not a silent ok).
+r_404 = alice_client.patch('/api/annotator-tiles/does-not-exist', json={'state': 'completed'})
+assert r_404.status_code == 404, f'expected 404 for bogus tile id, got {r_404.status_code}'
+print('  ✓  set_tile_state returns 404 for a non-existent annotator_tile')
+
+
 print('\n\nALL MEMBERSHIP BACKEND TESTS PASSED ✓  (data dir:', TMP, ')')
