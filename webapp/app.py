@@ -15,6 +15,7 @@ Endpoints:
   POST /api/compare         → seed a comparison session
 """
 
+import argparse
 import hashlib
 import io
 import json
@@ -1083,15 +1084,27 @@ def api_analyze_set(set_id: str):
 
 
 def main() -> None:
-    """Dev entry point (`uv run leaf-annotation`): init then Werkzeug dev server.
+    """Dev entry point (`uv run leaf-annotation [--port N] [--host H]`): init then dev server.
 
     threaded=True lets the streaming import endpoint serve its long-lived response without
     blocking other requests (e.g. the thumbnails the page fetches while importing). Safe
     because get_db is connection-per-request, WAL is on, and busy_timeout queues writers.
     Production (Granian) is unaffected — this is the dev server only.
+
+    Port/host come from --port/--host (or $HT_PORT/$HT_HOST), defaulting to 127.0.0.1:5000.
+    We deliberately do NOT read the generic $PORT (that's the Docker/.env port) so a plain
+    `uv run leaf-annotation` always lands on 5000 — the Playwright webServer relies on that.
+    Run a second instance for testing with: `uv run leaf-annotation --port 5001`.
     """
+    parser = argparse.ArgumentParser(
+        prog='leaf-annotation', description='Run the leaf-annotation dev server.')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('HT_PORT', '5000')),
+                        help='TCP port to bind (default 5000, or $HT_PORT).')
+    parser.add_argument('--host', default=os.environ.get('HT_HOST', '127.0.0.1'),
+                        help='Host/interface to bind (default 127.0.0.1, or $HT_HOST).')
+    args = parser.parse_args()
     _startup()
-    app.run(debug=True, port=5000, threaded=True)
+    app.run(debug=True, host=args.host, port=args.port, threaded=True)
 
 
 if __name__ == '__main__':
