@@ -31,7 +31,8 @@ const ProjectImagesScreen: Component = () => {
   // Upload-specific state
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
   const [dragging, setDragging] = createSignal(false);
-  const [uploadCurrent, setUploadCurrent] = createSignal(0);
+  const [byteLoaded, setByteLoaded] = createSignal(0);
+  const [byteTotal, setByteTotal] = createSignal(0);
 
   // Path-import state (dev convenience)
   const [path, setPath] = createSignal('');
@@ -39,12 +40,15 @@ const ProjectImagesScreen: Component = () => {
   let fileInputRef!: HTMLInputElement;
 
   const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
-  const pct = () => (total() > 0 ? Math.round((done() / total()) * 100) : 0);
+  // Use byte fraction when available (upload flow); fall back to file count (path-import flow).
+  const pct = () => byteTotal() > 0
+    ? Math.round((byteLoaded() / byteTotal()) * 100)
+    : total() > 0 ? Math.round((done() / total()) * 100) : 0;
 
   const onEvent = (ev: ImportEvent) => {
     if (ev.type === 'start') { setTotal(ev.total); setDone(0); setErrs(0); }
-    else if (ev.type === 'uploading') { setUploadCurrent(ev.index); }
-    else if (ev.type === 'file') { setUploadCurrent(0); setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
+    else if (ev.type === 'progress') { setByteLoaded(ev.loaded); setByteTotal(ev.total); }
+    else if (ev.type === 'file') { setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
     else if (ev.type === 'done') {
       setSummary(t('detail.images.importDone', {
         imported: ev.imported, skipped: ev.skipped, errors: ev.errors.length,
@@ -55,7 +59,7 @@ const ProjectImagesScreen: Component = () => {
   const doUpload = async () => {
     const files = selectedFiles();
     if (!files.length || busy()) return;
-    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0); setUploadCurrent(0);
+    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0); setByteLoaded(0); setByteTotal(0);
     try {
       await streamUpload(id(), files, onEvent);
       setSelectedFiles([]);
@@ -65,7 +69,6 @@ const ProjectImagesScreen: Component = () => {
       setSummary(e instanceof Error ? e.message : 'Failed');
     } finally {
       setBusy(false);
-      setUploadCurrent(0);
     }
   };
 
@@ -162,9 +165,7 @@ const ProjectImagesScreen: Component = () => {
                   data-testid="import-progress-bar" />
               </div>
               <span class={styles.progressLabel} data-testid="import-progress-label">
-                {uploadCurrent() > 0
-                  ? t('detail.images.uploadingN', { current: uploadCurrent(), total: total() })
-                  : t('detail.images.progress', { done: done(), total: total(), errors: errs() })}
+                {t('detail.images.progress', { done: done(), total: total(), errors: errs() })}
               </span>
             </div>
           </Show>
