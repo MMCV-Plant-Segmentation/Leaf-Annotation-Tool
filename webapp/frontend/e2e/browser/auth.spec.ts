@@ -24,6 +24,21 @@ test('logged-out /invite/<token> stays on the invite page, not /login (BUGS #11)
   await ctx.close();
 });
 
+test('legacy __bootLegacy exists but does not autoload /api/images on non-legacy routes', async ({ browser }) => {
+  const ctx  = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const page = await ctx.newPage();
+  // Route-intercept /api/images to detect if the legacy autoload fires on a non-legacy page.
+  // app.js is parsed globally so window.__bootLegacy is always defined; the boot function
+  // itself must be a no-op because _isLegacyRoute() returns false on /login (BUGS #11 guard).
+  let autoloadFired = false;
+  await page.route('/api/images', (route) => { autoloadFired = true; route.continue(); });
+  await page.goto('/login');
+  const hasBootLegacy = await page.evaluate(() => typeof (window as any).__bootLegacy === 'function');
+  expect(hasBootLegacy).toBe(true);
+  expect(autoloadFired).toBe(false);
+  await ctx.close();
+});
+
 test('/login renders sign-in form', async ({ browser }) => {
   const ctx  = await browser.newContext({ storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();

@@ -33,6 +33,7 @@ const TrainScreen: Component = () => {
   const [launching,  setLaunching]  = createSignal(false);
 
   onMount(async () => {
+    w.__bootLegacy?.();
     const data: PairSummary[] = await fetch('/api/images').then(r => r.json());
     const trainable = data.filter(p => p.kind === 'raw' || p.kind === 'reannotated');
     setPairs(trainable);
