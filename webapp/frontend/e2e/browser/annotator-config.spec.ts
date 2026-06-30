@@ -184,12 +184,12 @@ test('tile-size control disabled after batch created @full', async ({ page }, te
 });
 
 
-// ── 5. Canvas "open as" lists registered roster ───────────────────────────────
+// ── 5. Canvas annotates as the logged-in user — no "open as" chooser ─────────
 
-test('canvas open-as selector lists registered roster users', async ({ page }) => {
+test('canvas has no open-as chooser and annotates as the logged-in user', async ({ page }) => {
   const pid = await createProject(page, `Canvas ${Date.now()}`);
 
-  // Add admin to roster via autocomplete (on the hub)
+  // Add admin to roster so the backend creates annotator tiles for admin.
   await page.goto(`/projects/${pid}`);
   await page.fill('[data-testid="roster-search"]', 'admin');
   await page.getByRole('option', { name: 'admin' }).click();
@@ -199,15 +199,21 @@ test('canvas open-as selector lists registered roster users', async ({ page }) =
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  // Create batch on the batches route
+  // Create batch on the batches route.
   await page.goto(`/projects/${pid}/batches`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
 
-  // "Open as" selector should list the registered roster
-  const openAsSelect = page.getByTestId('open-as');
-  await expect(openAsSelect).toBeVisible();
-  await expect(openAsSelect.locator('option', { hasText: 'admin' })).toHaveCount(1);
+  // No "open as" chooser should exist on the batches screen.
+  await expect(page.getByTestId('open-as')).toHaveCount(0);
+
+  // Open the canvas directly (no ?as= param needed).
+  await page.getByRole('button', { name: /open canvas/i }).first().click();
+  await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}/, { timeout: 5000 });
+  await expect(page.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+
+  // Toolbar should display the logged-in user (admin) as the annotator.
+  await expect(page.getByTestId('canvas-toolbar')).toContainText('admin');
 });
 
 
@@ -339,4 +345,30 @@ test('canvas wrap fills the viewport width @full', async ({ page }, testInfo) =>
   const viewportWidth = page.viewportSize()?.width ?? 1280;
   // Canvas wrap should span (near) the full viewport width — not the 420px home-screen card
   expect(wrapWidth).toBeGreaterThanOrEqual(viewportWidth - 20);
+});
+
+test('tile mark-complete button persists state across reload @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  await setupCanvas(page);
+
+  // Wait for the SVG canvas to load (tile circles render after the image loads).
+  const canvasSvg = page.locator('svg').first();
+  await expect(canvasSvg).toBeVisible({ timeout: 10000 });
+
+  // There should be at least one tile complete button.
+  const completeBtn = page.locator('[data-testid="tile-complete"]').first();
+  await expect(completeBtn).toBeVisible({ timeout: 5000 });
+
+  // Initially the tile is not completed (fill is white).
+  await expect(completeBtn).toHaveAttribute('fill', '#fff');
+
+  // Click the complete button (SVG circle with onPointerDown).
+  await completeBtn.dispatchEvent('pointerdown');
+
+  // The button should turn green (fill = #16a34a) to reflect completed state.
+  await expect(completeBtn).toHaveAttribute('fill', '#16a34a', { timeout: 3000 });
+
+  // Reload and verify the completed state persisted in the backend.
+  await page.reload();
+  await expect(page.locator('[data-testid="tile-complete"]').first()).toHaveAttribute('fill', '#16a34a', { timeout: 10000 });
 });

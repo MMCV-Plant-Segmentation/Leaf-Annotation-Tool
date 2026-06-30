@@ -1,6 +1,6 @@
 /**
  * Batches step: locked until tiling_confirmed = true ("Configure tiling first").
- * Lists batches and lets users open the canvas as a roster member.
+ * Lists batches and lets the logged-in user open the canvas (annotates as themselves).
  */
 import { type Component, createSignal, For, Show } from 'solid-js';
 import { useNavigate } from '@solidjs/router';
@@ -19,13 +19,9 @@ type Props = {
 const ProjectBatchesStep: Component<Props> = (props) => {
   const nav = useNavigate();
   const [batchSize, setBatchSize] = createSignal(5);
-  const [openAs, setOpenAs] = createSignal('');
   const [busy, setBusy] = createSignal(false);
 
   const locked = () => !props.tilingConfirmed;
-
-  const effectiveAs = () =>
-    openAs() || props.annotators[0]?.byline || '';
 
   const doCreate = async () => {
     setBusy(true);
@@ -39,10 +35,9 @@ const ProjectBatchesStep: Component<Props> = (props) => {
     }
   };
 
+  // Canvas annotates as the logged-in user — no ?as= param needed.
   const openCanvas = (batchId: string) => {
-    const as = effectiveAs();
-    if (!as) { alert(t('detail.annotator.required')); return; }
-    nav(`/projects/${props.projectId}/batches/${batchId}?as=${encodeURIComponent(as)}`);
+    nav(`/projects/${props.projectId}/batches/${batchId}`);
   };
 
   return (
@@ -63,19 +58,6 @@ const ProjectBatchesStep: Component<Props> = (props) => {
           <button disabled={busy()} onClick={() => void doCreate()}>
             {t('detail.batch.create')}
           </button>
-          <Show when={props.annotators.length > 0}>
-            <label class={styles.openAsLabel}>
-              {t('detail.batch.openAs')}
-              <select
-                data-testid="open-as"
-                onChange={(e) => setOpenAs(e.currentTarget.value)}
-              >
-                <For each={props.annotators}>
-                  {(a) => <option value={a.byline}>{a.byline}</option>}
-                </For>
-              </select>
-            </label>
-          </Show>
         </div>
 
         <ul class={styles.batchList}>

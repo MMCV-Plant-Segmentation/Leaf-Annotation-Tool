@@ -100,17 +100,16 @@ export const classPick = style({
 export const stage = style({
   flex: '1 1 auto',
   minHeight: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
   background: vars.color.bg,
   borderRadius: vars.radius.md,
   overflow: 'hidden',
 });
 
 export const svg = style({
-  maxWidth: '100%',
-  maxHeight: '100%',
+  // Fill the entire stage so no inner clipping rectangle restricts the drawable area.
+  width: '100%',
+  height: '100%',
+  display: 'block',
   touchAction: 'none',
   background: vars.color.bg,
 });
