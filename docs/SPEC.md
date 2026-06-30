@@ -12,13 +12,15 @@ one backend, one `index.html`, and session-based authentication:
 3. **Analyze** — render a footprint k-of-N agreement map over a `merged` (or
    `reannotated`) set, with live agreement-threshold and IoU filters.
 4. **Train** — practice annotating to match a reference ("ground truth").
-5. **Re-annotate** — *tile disabled.* The collaborative consensus builder is not
-   built yet; see [`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md).
+5. **Annotate** (was "Re-annotate") — the **projects / annotator pipeline**:
+   projects → images → tiles → batches → per-annotator painting. Built and
+   reachable (`/projects`); see **§10**. The *consensus/merge* half of this arc
+   is still unbuilt — see [`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md).
 
-Forward-looking work lives in two parked docs:
-[`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md) (the unbuilt
-re-annotation tool) and [`Annotator Plan.md`](./Annotator%20Plan.md) (the
-labelme-replacement annotator).
+Forward-looking work: [`Consensus Builder Plan.md`](./Consensus%20Builder%20Plan.md)
+(the unbuilt consensus/merge flow) and [`Annotator Plan.md`](./Annotator%20Plan.md)
++ [`Plan — Annotator next passes.md`](./Plan%20—%20Annotator%20next%20passes.md)
+(the active annotator roadmap; Tier-1 in progress).
 
 ---
 
@@ -629,3 +631,63 @@ on local disk (SQLite on NFS stalls — see §1).
 **Coverage:** nav, auth (login/logout/admin/invite), manage, train, merge-setup, analyze
 (picker + viewer + k-breakdown). The vanilla trainer/compare viewers are intentionally not covered
 (slated for rewrite).
+
+---
+
+## 10. Projects / Annotator pipeline (as built, 2026-06-30)
+
+The labelme-replacement annotator. Sections 2–9 above describe the **legacy** Train/Merge/Analyze
+tools; this section is the newer, independent pipeline reached from the **Annotate** home tile
+(`/projects`). Backend lives in `webapp/projects.py` (`projects_bp`, DB+HTTP glue), with pure geometry
+in `webapp/tiling.py` and image I/O in `webapp/imaging.py`. Frontend lives in
+`webapp/frontend/src/projects/`. Supersedes the now-stale `ANNOTATOR_STATUS.md` (2026-06-26).
+
+### 10.1 Data model (additive tables, `db.py`)
+`project` (name, `tile_size_px` immutable after creation, `black_threshold`, `classes_json`,
+`created_by_user_id`, `tiling_confirmed`) · `project_annotator` (roster: project ↔ user, `byline`) ·
+`project_image` (content-addressed via `imaging`; `width/height/origin_y/leaf_*`) · `tile` (per-image
+grid geometry) · `batch` (a unit of work over sampled tiles) · `batch_tile` (shared tile geometry in a
+batch) · `annotator_tile` (per-annotator **private** progress; `state ∈ assigned|completed|dirty`) ·
+`annotation` (one drawn shape/row; `kind` free-text — `polygon|line|point|stroke`; `pass_no`;
+`points_json`; `annotator`; `project_image_id` = coord space; `stroke_width` for brush; soft-delete via
+`deleted_at`) · `annotation_tile` (which tiles a shape intersects → dirty propagation). Schema changes
+go through idempotent `migrate_*` functions in `auto_create_schema()` — **no alembic**.
+
+### 10.2 Endpoints (all `@login_required`; project-scoped ones also authorize)
+Projects CRUD; roster add/remove; image import (admin-only path-import + streaming NDJSON) and
+**browser upload** (`/images/upload`, capped at 4 concurrent via a `BoundedSemaphore` → 429 when
+exhausted; correctness assumes Granian `--workers 1`); tile preview; batch creation; batch/canvas read
+(`/api/batches/<id>`); annotation create/update/delete (soft); tile-completion toggle
+(`/api/annotator-tiles/<id>`); project-image overview/crop serving.
+
+### 10.3 Authorization model
+- **Membership:** every project-scoped endpoint calls `_member_or_403` — non-members get 403; the
+  user `admin` bypasses (sees/acts on everything). `create_project` auto-adds its creator to the
+  roster (admin excluded — admin already sees all). `list_projects` is filtered to the caller's
+  memberships (admin sees all).
+- **Ownership (2026-06-30):** annotation create/update/delete and tile-state changes require the
+  caller to **own** the target annotator data (`_owner_or_403`, admin bypass). `create_annotation`
+  derives the `annotator` from the **session** for non-admins (admin may seed any byline) — you
+  annotate as yourself, enforced server-side, not just in the UI.
+
+### 10.4 Annotator canvas (`CanvasScreen.tsx` + `canvasInteraction.ts` + `canvasShapes.tsx`)
+SolidJS SVG surface, full-width. Annotates the logged-in user's tiles in a batch (no "open-as"
+chooser). View is an SVG `viewBox` signal (`vb`); the fit is keyed to image **identity** so drawing
+never resets zoom.
+- **Tools:** Pan (`H`) + Brush (`B`). Brush uses **perfect-freehand** → smoothed, variable-width
+  filled outline; a single click = a filled circle. Stroke is stored as a point list; the outline is
+  derived at render. Per-stroke width persists via `annotation.stroke_width`.
+- **Brush size:** toolbar slider, range `[1px, image diagonal]`, default 10% of the tile diagonal;
+  also `[` / `]` keys and (in brush mode) the scroll wheel.
+- **Zoom/pan (mouse/trackpad):** `Ctrl/Cmd+scroll` zoom-to-cursor; `scroll` pan-vertical (outside
+  brush mode); `Shift+scroll` pan-horizontal; drag / `Space`+drag pan; `Ctrl/Cmd+0` fit. **All panning
+  is disabled mid-stroke.** **Touch:** one finger draws; two fingers pinch-zoom/pan keeping the
+  image-space points under the fingers fixed.
+- Tiles render with state colors + a "mark complete" toggle; the annotator sees only their own shapes.
+
+### 10.5 Built vs deferred
+**Built:** the full project→batch→paint loop, membership+ownership auth, browser upload with progress,
+the perfect-freehand brush + input scheme. **Deferred (seams left in place):** consensus/merge
+(two-pass reconcile), stroke-merging + undo/redo + eraser (Tier-1 Phase 2), per-batch annotators,
+batch state machine, progress redesign, dirty *pull-forward* (today tiles dirty in place), HSV
+histogram capture, labelme export. Active roadmap: `Plan — Annotator next passes.md`.
