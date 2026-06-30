@@ -374,7 +374,8 @@ def migrate_backfill_project_creator_annotator() -> None:
 
     For each project with created_by_user_id NOT NULL and no existing project_annotator
     row for that user, insert one (byline = users.username).  Idempotent — skips rows
-    that already exist via INSERT OR IGNORE.
+    that already exist via INSERT OR IGNORE.  Admin is excluded: admin sees every project
+    via the membership bypass, so the roster stays real-annotators-only.
     """
     con = get_db()
     try:
@@ -383,6 +384,7 @@ def migrate_backfill_project_creator_annotator() -> None:
                FROM project p
                JOIN users u ON u.id = p.created_by_user_id
                WHERE p.created_by_user_id IS NOT NULL
+                 AND u.username != 'admin'
                  AND NOT EXISTS (
                    SELECT 1 FROM project_annotator pa
                    WHERE pa.project_id = p.id AND pa.user_id = p.created_by_user_id
