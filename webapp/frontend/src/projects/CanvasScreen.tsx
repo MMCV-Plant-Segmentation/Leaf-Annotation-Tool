@@ -151,6 +151,7 @@ const CanvasScreen: Component = () => {
               onPointerDown={interaction.onPointerDown}
               onPointerMove={interaction.onPointerMove}
               onPointerUp={interaction.onPointerUp}
+              onPointerLeave={interaction.onPointerLeave}
               classList={{
                 [styles.panning]: tool() === 'pan',
                 [styles.spacePanning]: interaction.isSpaceDown() && tool() !== 'pan',
@@ -181,6 +182,9 @@ const CanvasScreen: Component = () => {
               </For>
               <Show when={draft().length > 0 && tool() === 'brush'}>
                 <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.7)" />
+              </Show>
+              <Show when={tool() === 'brush' && interaction.hoverImg()}>
+                {(c) => <circle cx={c()[0]} cy={c()[1]} r={brushSize() / 2} fill="none" stroke="rgba(37,99,235,0.85)" stroke-width="1.5" vector-effect="non-scaling-stroke" pointer-events="none" />}
               </Show>
             </svg>
           </div>
