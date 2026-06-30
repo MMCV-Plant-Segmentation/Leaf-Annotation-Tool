@@ -91,12 +91,25 @@ def _shape_geom(kind: str, points: list):
     return LineString(pts) if len(pts) >= 2 else Point(pts[0])
 
 
-def _stroke_polygon(points, stroke_width):
-    """Build a shapely polygon for a brush stroke's footprint.
+def _stroke_polygon(points, stroke_width, outline=None):
+    """Build a shapely geometry for a brush stroke's footprint.
 
-    Returns None when there are no usable points. A zero/None width defaults to 1 so
-    a stroke always has area.
+    When `outline` (≥3 pts, a perfect-freehand outline polygon) is provided, use
+    ShapelyPolygon(outline).buffer(0) — buffer(0) repairs self-intersecting contours
+    (e.g. figure-eight loops) into valid (multi)polygon geometry. Falls back to the
+    centerline buffer for legacy rows without an outline.
+
+    Returns None for degenerate input. May return a MultiPolygon when buffer(0) splits
+    a self-intersecting outline into disconnected regions.
     """
+    outline_pts = [(float(p[0]), float(p[1])) for p in (outline or []) if len(p) >= 2]
+    if len(outline_pts) >= 3:
+        try:
+            return ShapelyPolygon(outline_pts).buffer(0)
+        except Exception:
+            pass  # fall through to centerline buffer
+
+    # Legacy / no-outline fallback: centerline buffer
     width = max(float(stroke_width or 0) or 1, 1)
     pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
     if not pts:
@@ -107,15 +120,17 @@ def _stroke_polygon(points, stroke_width):
 
 
 def _poly_rings(poly) -> list:
-    """Extract exterior + interior rings from a Shapely Polygon as [[x,y],...] lists.
+    """Extract only the exterior ring from a Shapely Polygon as a [[x,y],...] list.
 
-    Returns [] for degenerate/empty geometry so the frontend can fall back gracefully.
+    Lesions are solid blobs by definition — interior rings (holes) are dropped so a
+    drawn loop fills solid instead of rendering as a donut. Returns [] for degenerate
+    or empty geometry so the frontend can fall back gracefully.
     """
     if poly is None or poly.is_empty or poly.geom_type != 'Polygon':
         return []
     def coords(ring):
         return [[round(float(pt[0])), round(float(pt[1]))] for pt in ring.coords]
-    return [coords(poly.exterior)] + [coords(r) for r in poly.interiors]
+    return [coords(poly.exterior)]
 
 
 def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
@@ -126,7 +141,7 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
     Non-stroke kinds are excluded.
     """
     rows = con.execute(
-        '''SELECT id, label, points_json, stroke_width FROM annotation
+        '''SELECT id, label, points_json, stroke_width, outline_json FROM annotation
            WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL
              AND kind = 'stroke' ''',
         (image_id, annotator),
@@ -140,8 +155,10 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
 
     lesions = []
     for lbl, strokes in by_label.items():
-        polys = [(s['id'], _stroke_polygon(json.loads(s['points_json']), s['stroke_width']))
-                 for s in strokes]
+        polys = [(s['id'], _stroke_polygon(
+            json.loads(s['points_json']), s['stroke_width'],
+            outline=json.loads(s['outline_json']) if s['outline_json'] else None,
+        )) for s in strokes]
 
         valid = [(ann_id, p) for ann_id, p in polys if p is not None]
         invalid_ids = [ann_id for ann_id, p in polys if p is None]
@@ -185,15 +202,15 @@ def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
 
 
 def _tiles_intersecting(con, project_image_id: str, kind: str, points: list,
-                        stroke_width=None) -> list[str]:
+                        stroke_width=None, outline=None) -> list[str]:
     """Return ids of existing tiles (on this image) that the shape's painted area intersects.
 
-    For strokes, tests against the buffered footprint (_stroke_polygon) when stroke_width is
-    supplied — this catches strokes whose centerline misses a tile but whose painted width
-    overlaps it. Falls back to _shape_geom for other kinds or when width is unknown.
+    For strokes, tests against the outline polygon (when provided) or the centerline buffer
+    — this catches strokes whose centerline misses a tile but whose painted width overlaps
+    it. Falls back to _shape_geom for other kinds.
     """
-    if kind == 'stroke' and stroke_width is not None:
-        geom = _stroke_polygon(points, stroke_width)
+    if kind == 'stroke' and (outline is not None or stroke_width is not None):
+        geom = _stroke_polygon(points, stroke_width, outline=outline)
     else:
         geom = _shape_geom(kind, points)
     if geom is None:
@@ -1014,7 +1031,10 @@ def create_annotation(project_id: str):
                 stroke_width = max(1.0, min(w, diag) if diag else w)
             except (TypeError, ValueError):
                 stroke_width = None
-        tile_ids = _tiles_intersecting(con, image_id, kind, points, stroke_width)
+        # Accept perfect-freehand outline polygon from the FE (stroke only).
+        outline = body.get('outline') if kind == 'stroke' else None
+        tile_ids = _tiles_intersecting(con, image_id, kind, points, stroke_width,
+                                       outline=outline)
         if not tile_ids:
             return jsonify({'error': 'annotation must intersect at least one tile'}), 422
         aid = _uid()
@@ -1023,13 +1043,13 @@ def create_annotation(project_id: str):
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no,
                   points_json, label, viewport_json, hsv_hist_json, created_at, updated_at,
-                  stroke_width)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  stroke_width, outline_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (aid, project_id, image_id, annotator, kind, body.get('passNo'),
              json.dumps(points), body.get('label'),
              json.dumps(body['viewport']) if body.get('viewport') else None,
              json.dumps(body['hsvHist']) if body.get('hsvHist') else None, now, now,
-             stroke_width),
+             stroke_width, json.dumps(outline) if outline is not None else None),
         )
         for tid in tile_ids:
             con.execute(
@@ -1068,8 +1088,9 @@ def update_annotation(annotation_id: str):
             (json.dumps(points), label, _now(), annotation_id),
         )
         # Recompute tile membership and dirty every touched tile (old ∪ new).
+        stored_outline = json.loads(row['outline_json']) if row['outline_json'] else None
         new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points,
-                                       row['stroke_width'])
+                                       row['stroke_width'], outline=stored_outline)
         con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
         for tid in new_tiles:
             con.execute(

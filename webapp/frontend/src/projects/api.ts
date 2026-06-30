@@ -170,7 +170,7 @@ export const projectsApi = {
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number;
+    strokeWidth?: number; outline?: number[][];
   }) => jfetch<CanvasAnnotation & { tileIds: string[]; lesions: CanvasLesion[] }>(
     `/api/projects/${projectId}/annotations`, jbody('POST', body)),
   updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>

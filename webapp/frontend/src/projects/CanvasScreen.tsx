@@ -2,7 +2,7 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath, strokeOutline } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { CanvasToolbar } from './CanvasToolbar';
@@ -56,10 +56,16 @@ const CanvasScreen: Component = () => {
     const im = image(); const c = canvas();
     if (!im || !c) return;
     try {
+      // Compute the perfect-freehand outline polygon for stroke commits so the server
+      // stores and uses it for lesion geometry (fills loops, matches rendered shape).
+      const outline = (kind === 'stroke' && strokeWidth != null)
+        ? strokeOutline(points, strokeWidth)
+        : undefined;
       const ann = await projectsApi.createAnnotation(c.projectId, {
         imageId: im.imageId, annotator: annotator(), kind, points, passNo,
         label: selClass(), viewport: clampRect(vb(), im.width, im.height),
         strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
+        outline,
       });
       pushAnnotation(ann);
       applyLesions(ann.lesions ?? []);

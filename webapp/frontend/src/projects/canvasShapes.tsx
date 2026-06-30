@@ -23,13 +23,19 @@ function outlineToPath(pts: number[][]): string {
   return d.join(' ');
 }
 
+// Compute the perfect-freehand outline polygon for a brush stroke.
+// Returns the raw getStroke result (number[][] polygon in image coords).
+// The outline is the actual painted shape; re-used by buildStrokePath and the API commit.
+export function strokeOutline(points: number[][], size: number, last = true): number[][] {
+  return getStroke(points, {
+    size, thinning: 0, smoothing: 0.5, last, simulatePressure: false,
+  }) as number[][];
+}
+
 // Build an SVG path string for a brush stroke (or live draft when last=false).
 // size is in image-space pixels (constant world size regardless of zoom).
 export function buildStrokePath(points: number[][], size: number, last = true): string {
-  const outline = getStroke(points, {
-    size, thinning: 0, smoothing: 0.5, last, simulatePressure: false,
-  });
-  return outlineToPath(outline as number[][]);
+  return outlineToPath(strokeOutline(points, size, last));
 }
 
 /** Build an SVG "M…L…Z" path from polygon rings (exterior first, then holes). */
