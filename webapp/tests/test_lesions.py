@@ -261,4 +261,49 @@ r = bob_client.post(f'/api/projects/{pid}/annotations/mutate',
 assert r.status_code == 403, f'expected 403 for bob mutating alice annotation, got {r.status_code}'
 print('  ✓  non-owner member gets 403 from mutate')
 
+# ── L8: stroke centerline outside tile but painted width overlaps it ─────────
+
+print('\n── L8: edge-overlapping stroke (B1 fix) ──')
+
+# Tile starts at x=0. Centerline at x=-5 (outside), stroke_width=20 → radius=10 reaches x=+5.
+# Before B1 fix: centerline linestring at x=-5 does NOT intersect tile → 422.
+# After B1 fix: buffered footprint (x=-15 to x=+5) DOES intersect tile → 201.
+edge_resp = alice_client.post(f'/api/projects/{pid}/annotations', json={
+    'imageId': image_id, 'annotator': 'alice', 'kind': 'stroke',
+    'points': [[-5, ty + th // 4], [-5, ty + 3 * th // 4]],
+    'label': 'edge-test', 'strokeWidth': 20,
+    'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th},
+})
+assert edge_resp.status_code == 201, (
+    f'expected 201 for edge-overlapping stroke, got {edge_resp.status_code}: {jdump(edge_resp)}'
+)
+es = jdump(edge_resp)
+assert t0['tileId'] in es['tileIds'], f"tile missing from tileIds: {es['tileIds']}"
+print(f'  tileIds={es["tileIds"]}')
+alice_client.delete(f'/api/annotations/{es["id"]}')
+print('  ✓  edge-overlapping stroke accepted and tile correctly tagged')
+
+
+# ── L9: self-intersecting stroke (figure-eight) → single lesion with rings ───
+
+print('\n── L9: self-intersecting stroke → single lesion + non-empty rings (B2+B3) ──')
+
+# Figure-eight that crosses itself at (cx, cy) — loops above and below.
+eight_pts = [
+    [cx, cy], [cx + 20, cy - 20], [cx, cy - 40], [cx - 20, cy - 20], [cx, cy],
+    [cx + 20, cy + 20], [cx, cy + 40], [cx - 20, cy + 20], [cx, cy],
+]
+eight_resp = make_stroke(eight_pts, label='figure8', sw=10)
+assert eight_resp.get('id'), f'figure-eight stroke not created: {eight_resp}'
+eight_lesions = [l for l in eight_resp['lesions'] if l['label'] == 'figure8']
+print(f'  component count for label=figure8: {len(eight_lesions)}')
+assert len(eight_lesions) == 1, f'expected 1 component, got {len(eight_lesions)}: {eight_lesions}'
+rings = eight_lesions[0]['rings']
+assert rings, f'rings should be non-empty: {eight_lesions[0]}'
+assert len(rings[0]) >= 4, f'exterior ring should have ≥4 points: {rings[0]}'
+print(f'  rings: {len(rings)} ring(s), exterior has {len(rings[0])} pts')
+alice_client.delete(f'/api/annotations/{eight_resp["id"]}')
+print('  ✓  self-intersecting stroke → single lesion with valid rings')
+
+
 print('\n✓ All lesion tests passed')
