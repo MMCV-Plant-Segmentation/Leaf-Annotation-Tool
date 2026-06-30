@@ -1,4 +1,4 @@
-import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
 import { useNavigate, useParams, useSearchParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasTile } from './api';
 import { t } from '../i18n/catalog';
@@ -32,7 +32,8 @@ const CanvasScreen: Component = () => {
     const im = image();
     if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height });
   };
-  createEffect(() => { if (image()) fitImage(); });
+  // Re-fit only when the displayed image changes identity, not on every annotation update.
+  createEffect(on(() => image()?.imageId, () => { if (image()) fitImage(); }));
 
   // ── persistence ──
   const commit = async (kind: string, points: number[][], passNo?: number) => {
@@ -101,15 +102,15 @@ const CanvasScreen: Component = () => {
   };
 
   return (
-    <div class={styles.wrap}>
+    <div class={styles.wrap} data-screen="canvas">
       <Show when={!annotator()}>
         <div class={styles.banner}>{t('canvas.noAnnotator')}</div>
       </Show>
-      <div class={styles.toolbar}>
+      <div class={styles.toolbar} data-testid="canvas-toolbar">
         <button class={styles.back} onClick={() => nav(-1)}>{t('canvas.back')}</button>
         <span class={styles.who}>{t('canvas.as')} <strong>{annotator()}</strong></span>
         <span class={styles.sep} />
-        <For each={['pan', 'polygon', 'point', 'line', 'brush'] as Tool[]}>
+        <For each={['pan', 'brush'] as Tool[]}>
           {(tl) => (
             <button class={tool() === tl ? styles.toolActive : styles.tool}
               onClick={() => { setTool(tl); setDraft([]); }}>{tl}</button>
@@ -124,9 +125,6 @@ const CanvasScreen: Component = () => {
         <button class={styles.tool} onClick={fitImage}>{t('canvas.fit')}</button>
         <Show when={selAnn()}>
           <button class={styles.danger} onClick={() => void deleteSelected()}>{t('canvas.deleteShape')}</button>
-        </Show>
-        <Show when={draft().length > 0}>
-          <button class={styles.tool} onClick={interaction.finishDraft}>{t('canvas.finish')}</button>
         </Show>
         <Show when={(canvas()?.images.length ?? 0) > 1}>
           <span class={styles.sep} />

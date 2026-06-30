@@ -1,5 +1,20 @@
-import { style } from '@vanilla-extract/css';
+import { style, globalStyle } from '@vanilla-extract/css';
 import { vars } from '../theme/contract.css';
+
+// Strip legacy .setup-card chrome when the canvas screen is mounted — the
+// annotation tool needs the full viewport, not the narrow home-screen card.
+// Specificity: 0,2,0 (class + :has attribute), same as the project-screen rule
+// in legacy.css; app.bundle.css loads after legacy.css so this wins the cascade.
+globalStyle('.setup-card:has([data-screen="canvas"])', {
+  width: '100%',
+  height: '100%',
+  padding: '0',
+  border: 'none',
+  borderRadius: '0',
+  background: 'none',
+  gap: '0',
+  margin: '0',
+});
 
 export const wrap = style({
   display: 'flex',

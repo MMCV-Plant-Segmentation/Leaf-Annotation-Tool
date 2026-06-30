@@ -256,3 +256,87 @@ test('re-uploading same files skips them (dedup)', async ({ page }) => {
   await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId('import-summary')).toContainText('skipped 2');
 });
+
+
+// ── Canvas quick-fixes: Fix 1 (toolbar), Fix 2 (zoom), Fix 3 (width) ─────────
+
+/** Full project setup → navigate to the canvas screen as admin. */
+async function setupCanvas(page: Page): Promise<void> {
+  const pid = await createProject(page, `CanvasFix ${Date.now()}`);
+
+  // Add admin to roster so the canvas can be opened as someone
+  await page.goto(`/projects/${pid}`);
+  await page.fill('[data-testid="roster-search"]', 'admin');
+  await page.getByRole('option', { name: 'admin' }).click();
+  await page.getByRole('button', { name: /^add$/i }).click();
+  await expect(page.getByRole('button', { name: /remove/i })).toBeVisible({ timeout: 3000 });
+
+  await importImages(page, pid);
+  await confirmTiling(page, pid);
+
+  await page.goto(`/projects/${pid}/batches`);
+  await page.getByRole('button', { name: /create batch/i }).click();
+  await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
+  // Click the "Open" link on the first batch (i18n: detail.batch.open = "open canvas →")
+  await page.getByRole('button', { name: /open canvas/i }).first().click();
+  await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}/, { timeout: 5000 });
+  // Wait for the toolbar to be present
+  await expect(page.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+}
+
+test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  await setupCanvas(page);
+
+  const toolbar = page.getByTestId('canvas-toolbar');
+  await expect(toolbar.getByRole('button', { name: 'pan' })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'brush' })).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: 'polygon' })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'point' })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'line' })).toHaveCount(0);
+  // Finish button removed: brush commits on pointer-up, no finish needed
+  await expect(toolbar.getByRole('button', { name: /finish/i })).toHaveCount(0);
+});
+
+test('brush stroke does not reset the zoom @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  await setupCanvas(page);
+
+  // Wait for the SVG canvas (the image must be loaded — it's the only svg on this screen)
+  const canvasSvg = page.locator('svg').first();
+  await expect(canvasSvg).toBeVisible({ timeout: 10000 });
+
+  // Zoom in so the viewBox differs from the fit-image default
+  await canvasSvg.hover();
+  await page.mouse.wheel(0, -400);  // zoom in
+  const viewBoxZoomed = await canvasSvg.getAttribute('viewBox');
+
+  // Draw a brush stroke; dismiss any "must intersect a tile" alert
+  await page.getByRole('button', { name: 'brush' }).click();
+  page.on('dialog', (d) => void d.dismiss());
+  const box = await canvasSvg.boundingBox();
+  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
+  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
+  await page.mouse.move(cx - 15, cy - 15);
+  await page.mouse.down();
+  for (let i = 1; i <= 5; i++) {
+    await page.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);
+  }
+  await page.mouse.up();
+
+  // ViewBox must still match the zoomed value — not reset to fit-image
+  const viewBoxAfter = await canvasSvg.getAttribute('viewBox');
+  expect(viewBoxAfter).toBe(viewBoxZoomed);
+});
+
+test('canvas wrap fills the viewport width @full', async ({ page }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  await setupCanvas(page);
+
+  const wrap = page.locator('[data-screen="canvas"]');
+  await expect(wrap).toBeVisible();
+  const wrapWidth = await wrap.evaluate((el) => el.getBoundingClientRect().width);
+  const viewportWidth = page.viewportSize()?.width ?? 1280;
+  // Canvas wrap should span (near) the full viewport width — not the 420px home-screen card
+  expect(wrapWidth).toBeGreaterThanOrEqual(viewportWidth - 20);
+});
