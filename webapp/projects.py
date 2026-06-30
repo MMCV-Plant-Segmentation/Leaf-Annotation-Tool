@@ -861,6 +861,7 @@ def _annotation_out(row: dict) -> dict:
         'points': json.loads(row['points_json']), 'label': row['label'],
         'viewport': json.loads(row['viewport_json']) if row['viewport_json'] else None,
         'annotator': row['annotator'], 'imageId': row['project_image_id'],
+        'strokeWidth': row['stroke_width'],
     }
 
 
@@ -889,12 +890,14 @@ def create_annotation(project_id: str):
         con.execute(
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no,
-                  points_json, label, viewport_json, hsv_hist_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  points_json, label, viewport_json, hsv_hist_json, created_at, updated_at,
+                  stroke_width)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (aid, project_id, image_id, annotator, kind, body.get('passNo'),
              json.dumps(points), body.get('label'),
              json.dumps(body['viewport']) if body.get('viewport') else None,
-             json.dumps(body['hsvHist']) if body.get('hsvHist') else None, now, now),
+             json.dumps(body['hsvHist']) if body.get('hsvHist') else None, now, now,
+             body.get('strokeWidth') if kind == 'stroke' else None),
         )
         for tid in tile_ids:
             con.execute(
