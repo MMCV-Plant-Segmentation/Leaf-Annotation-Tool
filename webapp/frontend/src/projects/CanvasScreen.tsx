@@ -1,20 +1,22 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
-import { useNavigate, useParams, useSearchParams } from '@solidjs/router';
+import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasTile } from './api';
 import { t } from '../i18n/catalog';
 import { type Tool, type ViewBox, TILE_COLORS, AnnotationShape, clampRect } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
+import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
 
 const CanvasScreen: Component = () => {
   const params = useParams();
-  const [search] = useSearchParams();
   const nav = useNavigate();
   const batchId = () => params.batchId;
-  const annotator = () => (search.as as string) || '';
-
-  const [canvas, { mutate: setCanvas }] =
-    createResource(batchId, (bid: string) => projectsApi.batchCanvas(bid, annotator()));
+  const annotator = () => currentUser()?.username ?? '';
+  // Defer fetch until currentUser resolves: empty annotator → no annotatorTileId from backend.
+  const [canvas, { mutate: setCanvas }] = createResource(
+    () => { const bid = batchId(); const u = currentUser(); return (bid && u) ? `${bid}|${u.username}` : undefined; },
+    (key: string) => { const s = key.indexOf('|'); return projectsApi.batchCanvas(key.slice(0, s), key.slice(s + 1)); }
+  );
 
   const [imgIdx, setImgIdx] = createSignal(0);
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
@@ -32,8 +34,10 @@ const CanvasScreen: Component = () => {
     const im = image();
     if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height });
   };
-  // Re-fit only when the displayed image changes identity, not on every annotation update.
-  createEffect(on(() => image()?.imageId, () => { if (image()) fitImage(); }));
+  // Re-fit only when the image ID *string* changes, not on every object-reference
+  // change (which happens on annotation mutations). createMemo notifies by value (===).
+  const imageId = createMemo(() => image()?.imageId);
+  createEffect(on(imageId, () => { if (image()) fitImage(); }));
 
   // ── persistence ──
   const commit = async (kind: string, points: number[][], passNo?: number) => {
@@ -137,7 +141,7 @@ const CanvasScreen: Component = () => {
 
       <Show when={image()} fallback={<div class={styles.stage}>{t('common.loading')}</div>}>
         {(im) => (
-          <div class={styles.stage} style={{ 'aspect-ratio': `${im().width} / ${im().height}` }}>
+          <div class={styles.stage}>
             <svg ref={svgRef} class={styles.svg}
               viewBox={`${vb().x} ${vb().y} ${vb().w} ${vb().h}`}
               preserveAspectRatio="xMidYMid meet"
@@ -158,7 +162,8 @@ const CanvasScreen: Component = () => {
                       fill="none" stroke={TILE_COLORS[tile.state ?? 'assigned']}
                       stroke-width="2" vector-effect="non-scaling-stroke"
                       stroke-dasharray={tile.state === 'completed' ? undefined : '6 4'} />
-                    <circle class={styles.check} cx={tile.x + tile.w} cy={tile.y} r="8"
+                    <circle data-testid="tile-complete" class={styles.check}
+                      cx={tile.x + tile.w} cy={tile.y} r="8"
                       fill={tile.state === 'completed' ? '#16a34a' : '#fff'}
                       stroke="#16a34a" stroke-width="1.5" vector-effect="non-scaling-stroke"
                       onPointerDown={(e) => { e.stopPropagation(); void toggleTile(tile); }} />

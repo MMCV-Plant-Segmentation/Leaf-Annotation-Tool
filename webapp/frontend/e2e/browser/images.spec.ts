@@ -141,19 +141,24 @@ test('I4: visiting invite URL while logged in as admin clears the session', asyn
   const resp = await page.request.post('/api/users', { data: { username } });
   const { invite } = (await resp.json()) as { invite: { token: string } };
 
-  // Navigate to the invite URL. InviteScreen calls logout + fetchMe on mount;
-  // api_get_invite also clears the server session.
+  // Navigate to the invite URL. InviteScreen fetches /api/invite/:token on mount
+  // (clears the server session) and separately POSTs /api/logout. Wait for the
+  // invite page to render its heading — that only appears after the invite GET
+  // completes, by which point the session is cleared.
   await page.goto(`/invite/${invite.token}`);
 
-  // Wait for the invite page to fully render (form or error).
+  // Wait for the invite page to fully render (heading appears after invite GET completes).
   await expect(
     page.getByRole('heading').first(),
   ).toBeVisible({ timeout: 5000 });
 
-  // Session must be cleared: /api/me should return null.
-  const meResp = await page.request.get('/api/me');
-  const me = await meResp.json() as null | { username: string };
-  expect(me).toBeNull();
+  // Retry until the session is confirmed null — absorbs any residual async lag
+  // between the invite-GET session clear and the subsequent /api/me check.
+  await expect(async () => {
+    const r = await page.request.get('/api/me');
+    const me = await r.json() as null | { username: string };
+    expect(me).toBeNull();
+  }).toPass({ timeout: 5000 });
 
   // Navigating to a protected page should redirect to /login.
   await page.goto('/');
