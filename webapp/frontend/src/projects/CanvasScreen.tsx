@@ -2,8 +2,9 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasTile } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, TILE_COLORS, AnnotationShape, clampRect } from './canvasShapes';
+import { type Tool, type ViewBox, TILE_COLORS, AnnotationShape, clampRect, buildStrokePath } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
+import { CanvasToolbar } from './CanvasToolbar';
 import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
 
@@ -12,7 +13,6 @@ const CanvasScreen: Component = () => {
   const nav = useNavigate();
   const batchId = () => params.batchId;
   const annotator = () => currentUser()?.username ?? '';
-  // Defer fetch until currentUser resolves: empty annotator → no annotatorTileId from backend.
   const [canvas, { mutate: setCanvas }] = createResource(
     () => { const bid = batchId(); const u = currentUser(); return (bid && u) ? `${bid}|${u.username}` : undefined; },
     (key: string) => { const s = key.indexOf('|'); return projectsApi.batchCanvas(key.slice(0, s), key.slice(s + 1)); }
@@ -20,52 +20,60 @@ const CanvasScreen: Component = () => {
 
   const [imgIdx, setImgIdx] = createSignal(0);
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
-
   const [tool, setTool] = createSignal<Tool>('pan');
   const [draft, setDraft] = createSignal<number[][]>([]);
   const [selClass, setSelClass] = createSignal('lesion');
   const [selAnn, setSelAnn] = createSignal<string | null>(null);
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
+  const [brushSize, setBrushSize] = createSignal(0);
 
   let svgRef: SVGSVGElement | undefined;
 
-  // Initialize the viewBox to the whole image whenever the image changes.
-  const fitImage = () => {
-    const im = image();
-    if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height });
-  };
-  // Re-fit only when the image ID *string* changes, not on every object-reference
-  // change (which happens on annotation mutations). createMemo notifies by value (===).
+  const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
   const imageId = createMemo(() => image()?.imageId);
   createEffect(on(imageId, () => { if (image()) fitImage(); }));
 
+  // Max brush size = image diagonal; default = 10% of tile diagonal (set once on canvas load)
+  const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
+  createEffect(on(canvas, (c) => {
+    if (!c || brushSize() !== 0) return;
+    const tile = c.images.flatMap((im) => im.tiles)[0];
+    setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
+  }));
+
   // ── persistence ──
-  const commit = async (kind: string, points: number[][], passNo?: number) => {
+  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => {
     const im = image(); const c = canvas();
     if (!im || !c) return;
     try {
       const ann = await projectsApi.createAnnotation(c.projectId, {
         imageId: im.imageId, annotator: annotator(), kind, points, passNo,
         label: selClass(), viewport: clampRect(vb(), im.width, im.height),
+        strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
       });
       pushAnnotation(ann);
     } catch (ex) {
-      // most common: "must intersect at least one tile"
       alert(ex instanceof Error ? ex.message : 'Save failed');
     }
   };
 
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
-    commit: (kind, points, passNo) => void commit(kind, points, passNo),
+    brushSize, setBrushSize, maxBrushSize,
+    commit: (kind, points, passNo, strokeWidth) => void commit(kind, points, passNo, strokeWidth),
   });
 
-  const onKey = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') interaction.finishDraft();
     if (e.key === 'Escape') setDraft([]);
+    if (e.key === 'b' || e.key === 'B') { setTool('brush'); setDraft([]); }
+    if (e.key === 'h' || e.key === 'H') { setTool('pan'); setDraft([]); }
+    if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
+    interaction.handleKeyDown(e);
   };
-  onMount(() => window.addEventListener('keydown', onKey));
-  onCleanup(() => window.removeEventListener('keydown', onKey));
+  const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
+  onMount(() => { window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); });
+  onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
 
   const pushAnnotation = (ann: CanvasAnnotation) => {
     setCanvas((c) => c && ({
@@ -75,8 +83,7 @@ const CanvasScreen: Component = () => {
   };
 
   const deleteSelected = async () => {
-    const id = selAnn();
-    if (!id) return;
+    const id = selAnn(); if (!id) return;
     await projectsApi.deleteAnnotation(id);
     setSelAnn(null);
     setCanvas((c) => c && ({
@@ -97,8 +104,6 @@ const CanvasScreen: Component = () => {
     }));
   };
 
-  // Class picker options come from the batch payload (project.classes), falling back
-  // to a sensible default set plus the current selection if the project has none.
   const classOptions = (): string[] => {
     const fromProject = canvas()?.classes ?? [];
     const base = fromProject.length > 0 ? fromProject : ['lesion', 'midrib', 'uncertain'];
@@ -110,34 +115,16 @@ const CanvasScreen: Component = () => {
       <Show when={!annotator()}>
         <div class={styles.banner}>{t('canvas.noAnnotator')}</div>
       </Show>
-      <div class={styles.toolbar} data-testid="canvas-toolbar">
-        <button class={styles.back} onClick={() => nav(-1)}>{t('canvas.back')}</button>
-        <span class={styles.who}>{t('canvas.as')} <strong>{annotator()}</strong></span>
-        <span class={styles.sep} />
-        <For each={['pan', 'brush'] as Tool[]}>
-          {(tl) => (
-            <button class={tool() === tl ? styles.toolActive : styles.tool}
-              onClick={() => { setTool(tl); setDraft([]); }}>{tl}</button>
-          )}
-        </For>
-        <span class={styles.sep} />
-        <label class={styles.classPick}>{t('canvas.class')}
-          <select onChange={(e) => setSelClass(e.currentTarget.value)} value={selClass()}>
-            <For each={classOptions()}>{(c) => <option value={c}>{c}</option>}</For>
-          </select>
-        </label>
-        <button class={styles.tool} onClick={fitImage}>{t('canvas.fit')}</button>
-        <Show when={selAnn()}>
-          <button class={styles.danger} onClick={() => void deleteSelected()}>{t('canvas.deleteShape')}</button>
-        </Show>
-        <Show when={(canvas()?.images.length ?? 0) > 1}>
-          <span class={styles.sep} />
-          <button class={styles.tool} disabled={imgIdx() === 0} onClick={() => setImgIdx((i) => i - 1)}>{t('canvas.imgPrev')}</button>
-          <span class={styles.who}>{imgIdx() + 1}/{canvas()!.images.length}</span>
-          <button class={styles.tool} disabled={imgIdx() >= (canvas()!.images.length - 1)}
-            onClick={() => setImgIdx((i) => i + 1)}>{t('canvas.imgNext')}</button>
-        </Show>
-      </div>
+      <CanvasToolbar
+        tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
+        annotator={annotator() ?? ''}
+        brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
+        selClass={selClass} setSelClass={setSelClass} classOptions={classOptions}
+        selAnn={selAnn} imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
+        onBack={() => nav(-1)} onFit={fitImage}
+        onDelete={() => void deleteSelected()}
+        onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
+      />
 
       <Show when={image()} fallback={<div class={styles.stage}>{t('common.loading')}</div>}>
         {(im) => (
@@ -149,12 +136,13 @@ const CanvasScreen: Component = () => {
               onPointerDown={interaction.onPointerDown}
               onPointerMove={interaction.onPointerMove}
               onPointerUp={interaction.onPointerUp}
-              classList={{ [styles.panning]: tool() === 'pan' }}
+              classList={{
+                [styles.panning]: tool() === 'pan',
+                [styles.spacePanning]: interaction.isSpaceDown() && tool() !== 'pan',
+              }}
             >
               <image href={imageUrls.overview(im().imageId)} x="0" y="0"
                 width={im().width} height={im().height} />
-
-              {/* tiles */}
               <For each={im().tiles}>
                 {(tile) => (
                   <g>
@@ -170,21 +158,13 @@ const CanvasScreen: Component = () => {
                   </g>
                 )}
               </For>
-
-              {/* committed annotations */}
               <For each={im().annotations}>
                 {(a) => <AnnotationShape ann={a} selected={selAnn() === a.id}
                   onSelect={() => setSelAnn(a.id)} />}
               </For>
-
-              {/* draft */}
-              <Show when={draft().length > 0}>
-                <polyline points={draft().map((p) => p.join(',')).join(' ')}
-                  fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-width="2"
-                  vector-effect="non-scaling-stroke" />
-                <For each={draft()}>
-                  {(p) => <circle cx={p[0]} cy={p[1]} r="3" fill="#2563eb" vector-effect="non-scaling-stroke" />}
-                </For>
+              {/* Live brush draft rendered via perfect-freehand */}
+              <Show when={draft().length > 0 && tool() === 'brush'}>
+                <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.7)" />
               </Show>
             </svg>
           </div>

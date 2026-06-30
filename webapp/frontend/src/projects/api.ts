@@ -82,6 +82,7 @@ export type CanvasAnnotation = {
   viewport: Rect | null;
   annotator: string;
   imageId: string;
+  strokeWidth: number | null;
 };
 
 export type CanvasImage = {
@@ -161,6 +162,7 @@ export const projectsApi = {
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
+    strokeWidth?: number;
   }) => jfetch<CanvasAnnotation & { tileIds: string[] }>(
     `/api/projects/${projectId}/annotations`, jbody('POST', body)),
   updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>

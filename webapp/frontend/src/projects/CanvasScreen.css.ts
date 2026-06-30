@@ -118,8 +118,25 @@ export const panning = style({
   cursor: 'grab',
 });
 
+export const spacePanning = style({
+  cursor: 'move',
+});
+
 export const check = style({
   cursor: 'pointer',
+});
+
+export const sizeLabel = style({
+  fontSize: '0.82rem',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.3rem',
+});
+
+export const sizeSlider = style({
+  width: '72px',
+  cursor: 'pointer',
+  accentColor: vars.color.accent,
 });
 
 export const help = style({

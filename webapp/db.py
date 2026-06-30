@@ -290,6 +290,7 @@ def auto_create_schema() -> None:
     migrate_project_image_source_path()
     migrate_project_tiling_confirmed()
     migrate_backfill_project_creator_annotator()
+    migrate_annotation_stroke_width()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -398,6 +399,18 @@ def migrate_backfill_project_creator_annotator() -> None:
                 (str(_uuid.uuid4()), r['project_id'], r['created_by_user_id'], r['username']),
             )
         if rows:
+            con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_annotation_stroke_width() -> None:
+    """Add nullable stroke_width REAL column to annotation table (Phase 1 brush rework)."""
+    con = get_db()
+    try:
+        cols = {r['name'] for r in con.execute('PRAGMA table_info(annotation)').fetchall()}
+        if 'stroke_width' not in cols:
+            con.execute('ALTER TABLE annotation ADD COLUMN stroke_width REAL')
             con.commit()
     finally:
         close_db(con)
