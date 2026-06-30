@@ -225,22 +225,35 @@ def _tiles_intersecting(con, project_image_id: str, kind: str, points: list,
     return hit
 
 
-def _mark_tiles_dirty(con, tile_ids: list[str], annotator: str) -> None:
-    """Completed annotator_tiles for these tiles flip to 'dirty' (re-annotation needed).
+def _mark_tiles_dirty(con, tile_ids: list[str], annotator: str) -> list[dict]:
+    """Completed annotator_tiles for these tiles flip to 'dirty' (BUGS #16: editing a
+    completed tile marks it incomplete again — any create/delete/restore that touches one
+    of this annotator's completed tiles re-opens it).
+
+    Returns the affected rows as [{'tileId', 'annotatorTileId', 'state'}, ...] so callers can
+    include them in the response and the FE can patch its local tile state without reloading.
 
     SEAM: the plan says a dirty tile is *pulled into the current batch*. v1 marks it dirty
     in place; cross-batch pull-forward is a follow-up (see ANNOTATOR_STATUS.md).
     """
     if not tile_ids:
-        return
+        return []
     qmarks = ','.join('?' * len(tile_ids))
+    rows = con.execute(
+        f'''SELECT at.id at_id, bt.tile_id FROM annotator_tile at
+            JOIN batch_tile bt ON bt.id = at.batch_tile_id
+            WHERE at.annotator = ? AND at.state = 'completed' AND bt.tile_id IN ({qmarks})''',
+        (annotator, *tile_ids),
+    ).fetchall()
+    if not rows:
+        return []
+    at_ids = [r['at_id'] for r in rows]
+    qmarks2 = ','.join('?' * len(at_ids))
     con.execute(
-        f'''UPDATE annotator_tile SET state = 'dirty', updated_at = ?
-            WHERE annotator = ? AND state = 'completed' AND batch_tile_id IN (
-              SELECT bt.id FROM batch_tile bt WHERE bt.tile_id IN ({qmarks})
-            )''',
-        (_now(), annotator, *tile_ids),
+        f'''UPDATE annotator_tile SET state = 'dirty', updated_at = ? WHERE id IN ({qmarks2})''',
+        (_now(), *at_ids),
     )
+    return [{'tileId': r['tile_id'], 'annotatorTileId': r['at_id'], 'state': 'dirty'} for r in rows]
 
 
 # ── membership helpers ────────────────────────────────────────────────────────
@@ -1056,11 +1069,14 @@ def create_annotation(project_id: str):
                 'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
                 (aid, tid),
             )
+        # BUGS #16: drawing into a tile this annotator already marked completed re-opens it.
+        tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
         con.commit()
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone()
         out = _annotation_out(row)
         out['tileIds'] = tile_ids
         out['lesions'] = _lesions_for_image(con, image_id, annotator)
+        out['tileStates'] = tile_states
         return jsonify(out), 201
     finally:
         _db.close_db(con)
@@ -1123,9 +1139,10 @@ def delete_annotation(annotation_id: str):
             'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
         ).fetchall()]
         con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (_now(), annotation_id))
-        _mark_tiles_dirty(con, tiles, row['annotator'])
+        tile_states = _mark_tiles_dirty(con, tiles, row['annotator'])
         con.commit()
-        return jsonify({'ok': True, 'lesions': _lesions_for_image(con, row['project_image_id'], row['annotator'])})
+        return jsonify({'ok': True, 'lesions': _lesions_for_image(con, row['project_image_id'], row['annotator']),
+                        'tileStates': tile_states})
     finally:
         _db.close_db(con)
 
@@ -1140,7 +1157,7 @@ def mutate_annotations(project_id: str):
     Body: { 'op': 'delete'|'restore', 'ids': [annId, ...] }
     All ids must belong to the same project_image_id and annotator (enforced by the
     eraser/undo design; a mismatch here is a client bug, not a valid request).
-    Returns: { 'ok': True, 'ids': [...], 'lesions': [...] }
+    Returns: { 'ok': True, 'ids': [...], 'lesions': [...], 'tileStates': [...] }
     """
     body = request.json or {}
     op = body.get('op')
@@ -1169,21 +1186,34 @@ def mutate_annotations(project_id: str):
         if image_id is None:
             return jsonify({'error': 'no valid ids'}), 400
         now = _now()
+        # BUGS #16: either direction (erase or undo/redo-restore) re-opens a completed tile
+        # it touches for this annotator. Dedupe by tileId across ids in case several member
+        # strokes of one lesion land in the same tile.
+        dirtied: dict[str, dict] = {}
         if op == 'delete':
             for ann_id in ids:
                 tiles = [r['tile_id'] for r in con.execute(
                     'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
                 ).fetchall()]
                 con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
-                _mark_tiles_dirty(con, tiles, annotator)
+                for d in _mark_tiles_dirty(con, tiles, annotator):
+                    dirtied[d['tileId']] = d
         else:  # restore
             con.execute(
                 f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
                 ids,
             )
+            qmarks = ','.join('?' * len(ids))
+            tiles = [r['tile_id'] for r in con.execute(
+                f'SELECT DISTINCT tile_id FROM annotation_tile WHERE annotation_id IN ({qmarks})',
+                ids,
+            ).fetchall()]
+            for d in _mark_tiles_dirty(con, tiles, annotator):
+                dirtied[d['tileId']] = d
         con.commit()
         return jsonify({'ok': True, 'ids': ids,
-                        'lesions': _lesions_for_image(con, image_id, annotator)})
+                        'lesions': _lesions_for_image(con, image_id, annotator),
+                        'tileStates': list(dirtied.values())})
     finally:
         _db.close_db(con)
 
