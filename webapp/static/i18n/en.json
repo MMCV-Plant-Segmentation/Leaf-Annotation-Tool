@@ -1,5 +1,5 @@
 {
-  "app.title": "Lesion Annotation Trainer",
+  "app.title": "Annotation Tool",
 
   "common.loading": "Loading…",
   "common.saving": "Saving…",
@@ -234,7 +234,6 @@
   "canvas.as": "as",
   "canvas.class": "class",
   "canvas.fit": "fit",
-  "canvas.deleteShape": "delete shape",
   "canvas.finish": "finish (⏎)",
   "canvas.imgPrev": "‹ img",
   "canvas.imgNext": "img ›",

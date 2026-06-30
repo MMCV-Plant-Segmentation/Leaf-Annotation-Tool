@@ -1,8 +1,8 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion } from './api';
+import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion, type TileStateUpdate } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath, strokeOutline } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath, strokeOutline, mergeTileStates } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { CanvasToolbar } from './CanvasToolbar';
@@ -24,15 +24,18 @@ const CanvasScreen: Component = () => {
   const [tool, setTool] = createSignal<Tool>('pan');
   const [draft, setDraft] = createSignal<number[][]>([]);
   const [selClass, setSelClass] = createSignal('lesion');
-  const [selAnn, setSelAnn] = createSignal<string | null>(null); // holds selected lesion key
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
+  // BUGS #20: the lesion/annotation overlay must not paint before the <image> has loaded
+  // (else it briefly floats over a blank/late image). Reset only on image src change —
+  // never on pan/zoom — so there's no flicker while panning/zooming an already-loaded image.
+  const [imgLoaded, setImgLoaded] = createSignal(false);
 
   let svgRef: SVGSVGElement | undefined;
 
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
   const imageId = createMemo(() => image()?.imageId);
-  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); }));
+  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); setImgLoaded(false); }));
 
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
@@ -45,6 +48,10 @@ const CanvasScreen: Component = () => {
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
 
   const applyLesions = (ls: CanvasLesion[]) => updateImg((im) => ({ ...im, lesions: ls }));
+
+  // BUGS #16: a draw that lands in an already-completed tile re-opens it server-side.
+  const applyTileStates = (updates: TileStateUpdate[]) =>
+    updateImg((im) => ({ ...im, tiles: mergeTileStates(im.tiles, updates) }));
 
   const history = createCanvasHistory(
     () => canvas()?.projectId ?? '',
@@ -69,6 +76,7 @@ const CanvasScreen: Component = () => {
       });
       pushAnnotation(ann);
       applyLesions(ann.lesions ?? []);
+      applyTileStates(ann.tileStates ?? []);
       history.push({ kind: 'draw', ann });
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : 'Save failed');
@@ -96,16 +104,6 @@ const CanvasScreen: Component = () => {
 
   const pushAnnotation = (ann: CanvasAnnotation) => {
     updateImg((im) => ({ ...im, annotations: [...im.annotations, ann] }));
-  };
-
-  // Delete the selected lesion (all its member strokes).
-  const deleteSelected = async () => {
-    const key = selAnn(); const c = canvas(); const im = image(); if (!key || !c || !im) return;
-    const lesion = im.lesions.find((l) => l.key === key);
-    if (!lesion) return;
-    const r = await projectsApi.mutateAnnotations(c.projectId, 'delete', lesion.memberIds);
-    setSelAnn(null);
-    updateImg((im2) => ({ ...im2, annotations: im2.annotations.filter((a) => !lesion.memberIds.includes(a.id)), lesions: r.lesions }));
   };
 
   // Erase all member strokes of a lesion (eraser tool).
@@ -141,9 +139,8 @@ const CanvasScreen: Component = () => {
         annotator={annotator() ?? ''}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
         selClass={selClass} setSelClass={setSelClass} classOptions={classOptions}
-        selAnn={selAnn} imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
+        imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
         onBack={() => nav(-1)} onFit={fitImage}
-        onDelete={() => void deleteSelected()}
         onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
         onUndo={() => void history.undo()} onRedo={() => void history.redo()}
         canUndo={history.canUndo} canRedo={history.canRedo}
@@ -167,19 +164,20 @@ const CanvasScreen: Component = () => {
               }}
             >
               <image href={imageUrls.overview(im().imageId)} x="0" y="0"
-                width={im().width} height={im().height} />
+                width={im().width} height={im().height}
+                onLoad={() => setImgLoaded(true)} />
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={(tile) => void toggleTile(tile)} />
-              <For each={im().lesions}>
-                {(l) => <LesionShape lesion={l} selected={selAnn() === l.key}
-                  onSelect={() => setSelAnn(l.key)}
-                  onErase={tool() === 'eraser' ? () => void eraseLesion(l) : undefined} />}
-              </For>
-              <For each={im().annotations.filter((a) => a.kind !== 'stroke')}>
-                {(a) => <AnnotationShape ann={a} selected={selAnn() === a.id}
-                  onSelect={() => setSelAnn(a.id)}
-                  onErase={tool() === 'eraser' ? () => void history.erase([a]) : undefined} />}
-              </For>
+              <Show when={imgLoaded()}>
+                <For each={im().lesions}>
+                  {(l) => <LesionShape lesion={l}
+                    onErase={tool() === 'eraser' ? () => void eraseLesion(l) : undefined} />}
+                </For>
+                <For each={im().annotations.filter((a) => a.kind !== 'stroke')}>
+                  {(a) => <AnnotationShape ann={a}
+                    onErase={tool() === 'eraser' ? () => void history.erase([a]) : undefined} />}
+                </For>
+              </Show>
               <Show when={draft().length > 0 && tool() === 'brush'}>
                 <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.35)" />
               </Show>
