@@ -11,6 +11,19 @@ test('unauthenticated GET / redirects to /login', async ({ browser }) => {
   await ctx.close();
 });
 
+test('logged-out /invite/<token> stays on the invite page, not /login (BUGS #11)', async ({ browser }) => {
+  const ctx  = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const page = await ctx.newPage();
+  // Regression: the legacy app.js 401-interceptor + /api/images autoload used to
+  // hard-redirect invitees to /login. An invalid token still exercises that path —
+  // the SPA InviteScreen must render (invalid state) and the URL must STAY on /invite.
+  await page.goto('/invite/not-a-real-token');
+  await expect(page.getByText('Invalid invite')).toBeVisible({ timeout: 5000 });
+  await expect(page).toHaveURL(/\/invite\//);
+  await expect(page).not.toHaveURL(/\/login/);
+  await ctx.close();
+});
+
 test('/login renders sign-in form', async ({ browser }) => {
   const ctx  = await browser.newContext({ storageState: { cookies: [], origins: [] } });
   const page = await ctx.newPage();

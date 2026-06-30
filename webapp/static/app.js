@@ -66,13 +66,23 @@ const doneScreen     = document.getElementById('done-screen');
 const setupScreen    = document.getElementById('setup-screen');
 const appDiv         = document.getElementById('app');
 
+/* ── Public SPA routes the legacy vanilla app must keep its hands off ────────
+   /invite and /login are owned by the Solid SPA and are reached while logged OUT
+   by design. The legacy 401-redirect + /api/images autoload below must NOT run on
+   them, or a 401 from the legacy autoload hard-redirects an invitee to /login and
+   kills the invite flow (BUGS #11). */
+const _isPublicSpaPath = () => {
+  const p = window.location.pathname;
+  return p.startsWith('/login') || p.startsWith('/invite');
+};
+
 /* ── 401 interceptor: redirect to /login on any unauthenticated API call ───── */
 const _origFetch = window.fetch.bind(window);
 window.fetch = function(url, opts) {
   return _origFetch(url, opts).then(res => {
     if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/')
         && url !== '/api/login'
-        && !window.location.pathname.startsWith('/login')) {
+        && !_isPublicSpaPath()) {
       window.location.href = '/login';
     }
     return res;
@@ -108,6 +118,10 @@ function enterComparisonMode() {
     });
   });
 
-  // Load pairs for vanilla screens (auth is enforced server-side; 401 → redirect above)
-  availablePairs = await fetch('/api/images').then(r => r.json());
+  // Load pairs for vanilla screens (auth is enforced server-side; 401 → redirect above).
+  // Skip on public SPA routes (/invite, /login): no auth there, and the 401 used to
+  // bounce invitees to /login (BUGS #11).
+  if (!_isPublicSpaPath()) {
+    availablePairs = await fetch('/api/images').then(r => r.json());
+  }
 })();
