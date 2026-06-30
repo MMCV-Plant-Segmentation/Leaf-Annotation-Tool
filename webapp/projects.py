@@ -215,10 +215,13 @@ def create_project():
              _byline(), session.get('user_id'), _now()),
         )
         # Auto-add creator as an annotator so the project is immediately visible to them.
-        try:
-            _add_annotator(con, pid, session.get('user_id'), _byline())
-        except _db.sqlite3.IntegrityError:
-            pass  # already on roster — idempotent
+        # Admin is excluded: admin already sees every project via the membership bypass
+        # (see _member_or_403), so keep the roster to real annotators only.
+        if session.get('username') != 'admin':
+            try:
+                _add_annotator(con, pid, session.get('user_id'), _byline())
+            except _db.sqlite3.IntegrityError:
+                pass  # already on roster — idempotent
         con.commit()
         return jsonify(_project_out(_project(con, pid))), 201
     finally:
