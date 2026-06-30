@@ -126,6 +126,10 @@ export const check = style({
   cursor: 'pointer',
 });
 
+export const erasing = style({
+  cursor: 'cell',
+});
+
 export const sizeLabel = style({
   fontSize: '0.82rem',
   display: 'flex',

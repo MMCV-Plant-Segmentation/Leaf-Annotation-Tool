@@ -22,6 +22,10 @@ type Props = {
   onDelete: () => void;
   onImgPrev: () => void;
   onImgNext: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: Accessor<boolean>;
+  canRedo: Accessor<boolean>;
 };
 
 // Toolbar strip extracted from CanvasScreen to keep parent under 200 lines.
@@ -30,12 +34,12 @@ export const CanvasToolbar: Component<Props> = (props) => (
     <button class={styles.back} onClick={props.onBack}>{t('canvas.back')}</button>
     <span class={styles.who}>{t('canvas.as')} <strong>{props.annotator}</strong></span>
     <span class={styles.sep} />
-    <For each={(['pan', 'brush'] as Tool[])}>
+    <For each={(['pan', 'brush', 'eraser'] as Tool[])}>
       {(tl) => (
         <button class={props.tool() === tl ? styles.toolActive : styles.tool}
           onClick={() => props.setTool(tl)}
-          title={tl === 'pan' ? 'Pan (H)' : 'Brush (B)'}>
-          {tl === 'brush' ? 'B brush' : 'H pan'}
+          title={tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (click stroke to erase lesion)' : 'Pan'}>
+          {tl === 'brush' ? 'brush' : tl === 'eraser' ? '✕ eraser' : 'pan'}
         </button>
       )}
     </For>
@@ -48,6 +52,11 @@ export const CanvasToolbar: Component<Props> = (props) => (
         <span data-testid="brush-size-value">{`${props.brushSize()}px`}</span>
       </label>
     </Show>
+    <span class={styles.sep} />
+    <button class={styles.tool} disabled={!props.canUndo()} onClick={props.onUndo}
+      data-testid="undo-btn" title="Undo (Ctrl+Z)">{t('canvas.undo')}</button>
+    <button class={styles.tool} disabled={!props.canRedo()} onClick={props.onRedo}
+      data-testid="redo-btn" title="Redo (Ctrl+Shift+Z / Ctrl+Y)">{t('canvas.redo')}</button>
     <span class={styles.sep} />
     <label class={styles.classPick}>{t('canvas.class')}
       <select onChange={(e) => props.setSelClass(e.currentTarget.value)} value={props.selClass()}>

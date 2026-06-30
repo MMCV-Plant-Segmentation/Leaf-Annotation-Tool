@@ -2,7 +2,7 @@ import { type Component, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
 import type { CanvasAnnotation, Rect } from './api';
 
-export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush';
+export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser';
 export type ViewBox = { x: number; y: number; w: number; h: number };
 
 export const TILE_COLORS: Record<string, string> = {
@@ -34,10 +34,10 @@ export function buildStrokePath(points: number[][], size: number, last = true): 
 
 // One committed annotation rendered as the appropriate SVG primitive.
 export const AnnotationShape: Component<{
-  ann: CanvasAnnotation; selected: boolean; onSelect: () => void;
+  ann: CanvasAnnotation; selected: boolean; onSelect: () => void; onErase?: () => void;
 }> = (props) => {
   const stroke = () => (props.selected ? '#dc2626' : '#2563eb');
-  const onDown = (e: PointerEvent) => { e.stopPropagation(); props.onSelect(); };
+  const onDown = (e: PointerEvent) => { e.stopPropagation(); if (props.onErase) props.onErase(); else props.onSelect(); };
   return (
     <Show when={props.ann.kind === 'stroke'} fallback={
       <Show when={props.ann.kind === 'point'} fallback={

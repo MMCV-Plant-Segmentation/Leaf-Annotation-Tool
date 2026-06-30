@@ -97,29 +97,21 @@ async function makeInteraction(opts: { maxBrushSize?: number; tool?: string } = 
   return { cx, brushSize: () => _brushSize, vb: () => _vb, draft: () => _draft, committed };
 }
 
-// ── [ / ] keys + size clamping ────────────────────────────────────────────────
+// ── [ / ] keys removed (Phase-2); size still adjustable via scroll/slider ────
 
 test.describe('createCanvasInteraction', () => {
-  test('[ key decreases brush size', async () => {
+  test('[ key no longer changes brush size (keybind removed)', async () => {
     const { cx, brushSize } = await makeInteraction();
     const before = brushSize();
     cx.handleKeyDown(kbEvent('[') as KeyboardEvent);
-    expect(brushSize()).toBeLessThan(before);
+    expect(brushSize()).toBe(before);
   });
 
-  test('] key increases brush size', async () => {
+  test('] key no longer changes brush size (keybind removed)', async () => {
     const { cx, brushSize } = await makeInteraction();
     const before = brushSize();
     cx.handleKeyDown(kbEvent(']') as KeyboardEvent);
-    expect(brushSize()).toBeGreaterThan(before);
-  });
-
-  test('size is clamped to [1, max]', async () => {
-    const { cx, brushSize } = await makeInteraction({ maxBrushSize: 22 });
-    for (let i = 0; i < 50; i++) cx.handleKeyDown(kbEvent(']') as KeyboardEvent);
-    expect(brushSize()).toBeLessThanOrEqual(22);
-    for (let i = 0; i < 200; i++) cx.handleKeyDown(kbEvent('[') as KeyboardEvent);
-    expect(brushSize()).toBeGreaterThanOrEqual(1);
+    expect(brushSize()).toBe(before);
   });
 
   test('single click commits a stroke (click-makes-circle: no min-point guard)', async () => {

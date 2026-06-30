@@ -85,12 +85,16 @@ export type CanvasAnnotation = {
   strokeWidth: number | null;
 };
 
+/** A connected component of one annotator's strokes sharing the same label. */
+export type CanvasLesion = { key: string; label: string; memberIds: string[] };
+
 export type CanvasImage = {
   imageId: string;
   width: number;
   height: number;
   tiles: CanvasTile[];
   annotations: CanvasAnnotation[];
+  lesions: CanvasLesion[];
 };
 
 export type BatchCanvas = {
@@ -163,12 +167,15 @@ export const projectsApi = {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
     strokeWidth?: number;
-  }) => jfetch<CanvasAnnotation & { tileIds: string[] }>(
+  }) => jfetch<CanvasAnnotation & { tileIds: string[]; lesions: CanvasLesion[] }>(
     `/api/projects/${projectId}/annotations`, jbody('POST', body)),
   updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>
     jfetch<CanvasAnnotation>(`/api/annotations/${annotationId}`, jbody('PATCH', body)),
   deleteAnnotation: (annotationId: string) =>
-    jfetch<{ ok: boolean }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
+    jfetch<{ ok: boolean; lesions: CanvasLesion[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
+  mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
+    jfetch<{ ok: boolean; ids: string[]; lesions: CanvasLesion[] }>(
+      `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
 
   setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
     jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),

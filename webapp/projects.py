@@ -23,6 +23,7 @@ from flask import Blueprint, Response, jsonify, request, send_file, session, str
 from shapely.geometry import LineString, Point
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
+from shapely.ops import unary_union
 
 from . import db as _db
 from . import imaging, tiling
@@ -88,6 +89,85 @@ def _shape_geom(kind: str, points: list):
         except Exception:
             return LineString(pts)
     return LineString(pts) if len(pts) >= 2 else Point(pts[0])
+
+
+def _stroke_polygon(points, stroke_width):
+    """Build a shapely polygon for a brush stroke's footprint.
+
+    Returns None when there are no usable points. A zero/None width defaults to 1 so
+    a stroke always has area.
+    """
+    width = max(float(stroke_width or 0) or 1, 1)
+    pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
+    if not pts:
+        return None
+    if len(pts) == 1:
+        return Point(pts[0]).buffer(width / 2)
+    return LineString(pts).buffer(width / 2, cap_style='round', join_style='round')
+
+
+def _lesions_for_image(con, image_id: str, annotator: str) -> list[dict]:
+    """Derive lesion groupings (connected components) for one annotator's strokes.
+
+    A lesion = a connected component of the geometric union of strokes sharing a label.
+    Returns [{'key': str, 'label': str, 'memberIds': [annId, ...]}, ...].
+    Non-stroke kinds are excluded. Geometry is not in the payload.
+    """
+    rows = con.execute(
+        '''SELECT id, label, points_json, stroke_width FROM annotation
+           WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL
+             AND kind = 'stroke' ''',
+        (image_id, annotator),
+    ).fetchall()
+
+    # Group strokes by label
+    by_label: dict[str, list] = {}
+    for r in rows:
+        lbl = r['label'] or ''
+        by_label.setdefault(lbl, []).append(r)
+
+    lesions = []
+    for lbl, strokes in by_label.items():
+        polys = [(s['id'], _stroke_polygon(json.loads(s['points_json']), s['stroke_width']))
+                 for s in strokes]
+
+        valid = [(ann_id, p) for ann_id, p in polys if p is not None]
+        invalid_ids = [ann_id for ann_id, p in polys if p is None]
+
+        # Degenerate strokes (no geometry) each become their own lesion
+        for ann_id in invalid_ids:
+            lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+
+        if not valid:
+            continue
+
+        union = unary_union([p for _, p in valid])
+
+        # Walk connected components
+        if union.is_empty:
+            for ann_id, _ in valid:
+                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+            continue
+
+        components = list(union.geoms) if union.geom_type == 'MultiPolygon' else [union]
+        component_members: list[list[str]] = [[] for _ in components]
+
+        for ann_id, poly in valid:
+            placed = False
+            for i, comp in enumerate(components):
+                if poly.intersects(comp):
+                    component_members[i].append(ann_id)
+                    placed = True
+                    break
+            if not placed:
+                # Shouldn't happen (stroke is part of union) but handle defensively
+                lesions.append({'key': ann_id, 'label': lbl, 'memberIds': [ann_id]})
+
+        for members in component_members:
+            if members:
+                lesions.append({'key': min(members), 'label': lbl, 'memberIds': members})
+
+    return lesions
 
 
 def _tiles_intersecting(con, project_image_id: str, kind: str, points: list) -> list[str]:
@@ -839,6 +919,7 @@ def get_batch(batch_id: str):
             if annotator:
                 entry['annotations'] = _visible_annotations(con, image_id, annotator,
                                                             [t['tileId'] for t in payload['tiles']])
+                entry['lesions'] = _lesions_for_image(con, image_id, annotator)
             images.append(entry)
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
@@ -935,6 +1016,7 @@ def create_annotation(project_id: str):
         row = con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone()
         out = _annotation_out(row)
         out['tileIds'] = tile_ids
+        out['lesions'] = _lesions_for_image(con, image_id, annotator)
         return jsonify(out), 201
     finally:
         _db.close_db(con)
@@ -997,7 +1079,65 @@ def delete_annotation(annotation_id: str):
         con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (_now(), annotation_id))
         _mark_tiles_dirty(con, tiles, row['annotator'])
         con.commit()
-        return jsonify({'ok': True})
+        return jsonify({'ok': True, 'lesions': _lesions_for_image(con, row['project_image_id'], row['annotator'])})
+    finally:
+        _db.close_db(con)
+
+
+# ── bulk mutate (eraser + undo/redo) ─────────────────────────────────────────
+
+@projects_bp.post('/api/projects/<project_id>/annotations/mutate')
+@login_required
+def mutate_annotations(project_id: str):
+    """Bulk delete or restore annotations (for eraser tool + undo/redo).
+
+    Body: { 'op': 'delete'|'restore', 'ids': [annId, ...] }
+    All ids must belong to the same project_image_id and annotator (enforced by the
+    eraser/undo design; a mismatch here is a client bug, not a valid request).
+    Returns: { 'ok': True, 'ids': [...], 'lesions': [...] }
+    """
+    body = request.json or {}
+    op = body.get('op')
+    ids = body.get('ids') or []
+    if op not in ('delete', 'restore') or not ids:
+        return jsonify({'error': 'op (delete|restore) and ids required'}), 400
+    con = _db.get_db()
+    try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        image_id = None
+        annotator = None
+        for ann_id in ids:
+            row = con.execute('SELECT * FROM annotation WHERE id = ?', (ann_id,)).fetchone()
+            if not row:
+                return jsonify({'error': f'annotation {ann_id} not found'}), 404
+            if row['project_id'] != project_id:
+                return jsonify({'error': 'forbidden'}), 403
+            e = _owner_or_403(row['annotator'])
+            if e:
+                return e
+            if image_id is None:
+                image_id = row['project_image_id']
+                annotator = row['annotator']
+        if image_id is None:
+            return jsonify({'error': 'no valid ids'}), 400
+        now = _now()
+        if op == 'delete':
+            for ann_id in ids:
+                tiles = [r['tile_id'] for r in con.execute(
+                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
+                ).fetchall()]
+                con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
+                _mark_tiles_dirty(con, tiles, annotator)
+        else:  # restore
+            con.execute(
+                f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
+                ids,
+            )
+        con.commit()
+        return jsonify({'ok': True, 'ids': ids,
+                        'lesions': _lesions_for_image(con, image_id, annotator)})
     finally:
         _db.close_db(con)
 
