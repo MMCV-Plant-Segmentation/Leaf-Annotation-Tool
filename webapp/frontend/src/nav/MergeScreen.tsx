@@ -40,6 +40,7 @@ const MergeScreen: Component = () => {
   };
 
   onMount(async () => {
+    w.__bootLegacy?.();
     const data: PairSummary[] = await fetch('/api/images').then(r => r.json());
     setPairs(data);
     setLoading(false);
