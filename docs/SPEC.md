@@ -679,12 +679,15 @@ SolidJS SVG surface, full-width. Annotates the logged-in user's tiles in a batch
 chooser). View is an SVG `viewBox` signal (`vb`); the fit is keyed to image **identity** so drawing
 never resets zoom.
 - **Tools:** Pan + Brush + Eraser (toolbar-selected — **no tool hotkeys**). Brush uses
-  **perfect-freehand** → smoothed, variable-width filled outline; a single click = a filled circle.
-  Stroke is stored as a point list; the outline is derived at render. Per-stroke width persists via
-  `annotation.stroke_width`. Rendering is per-stroke (overlapping strokes already look fused) — merge
-  is a server-side *grouping*, not a re-render.
+  **perfect-freehand** for the *live draft* (smoothed, variable-width); a single click = a filled
+  circle. Stroke is stored as a point list + `stroke_width`. **Committed** strokes render as **fused
+  lesion polygons:** the server returns each lesion's simplified union geometry (`rings`) and the FE
+  draws one filled (~0.35 opacity) + outlined `<path>` per lesion (`fill-rule=evenodd`). So overlapping
+  strokes show as one shape with a single outline and self-intersections fill — no opacity stacking.
+- **Coordinate mapping:** pointer↔image uses `svg.getScreenCTM().inverse()` (handles the
+  `xMidYMid meet` letterboxing); a brush preview circle follows the cursor in brush mode.
 - **Brush size:** toolbar slider, range `[1px, image diagonal]`, default 10% of the tile diagonal;
-  also (in brush mode) the scroll wheel.
+  the scroll wheel (in brush mode) adjusts size **multiplicatively** (fine control at small sizes).
 - **Eraser:** clicking a stroke deletes its **whole lesion** (every stroke in that connected
   component) in one undoable action, via the bulk `mutate` endpoint.
 - **Undo/redo:** client-only action stack (`canvasHistory.ts`; not persisted across reload) on
