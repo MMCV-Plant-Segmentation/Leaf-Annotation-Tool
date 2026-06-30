@@ -211,7 +211,7 @@
   "detail.tile.surviveCount": "{count} tiles survive at this background.",
   "detail.batches": "Batches",
   "detail.batch.lockedNoTiling": "Configure tiling first.",
-  "detail.batch.sizeLabel": "Size",
+  "detail.batch.sizeLabel": "Tiles per batch",
   "detail.batch.create": "Create batch",
   "detail.batch.openAs": "open as",
   "detail.batch.none": "No batches yet.",
@@ -224,6 +224,10 @@
   "detail.progress.vertices": "Vertices",
   "detail.progress.tileCount": "{done} / {total}",
   "detail.tile.sub": "{px}px tiles · threshold {threshold}",
+
+  "project.notFound": "Project not found.",
+  "project.backToList": "← Back to projects",
+  "tiling.unsavedWarn": "You have unsaved tiling changes. Leave anyway?",
 
   "canvas.noAnnotator": "No annotator selected — open this batch from the project page.",
   "canvas.back": "← Back",

@@ -3,13 +3,14 @@
  * streaming progress, plus a de-emphasized server-path import for dev/admin use,
  * and a clamped lazy-loading preview of the imported images.
  */
-import { type Component, createResource, createSignal, Show } from 'solid-js';
+import { type Component, createResource, createSignal, ErrorBoundary, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, streamImport, streamUpload, type ImportEvent } from './api';
 import { currentUser } from '../auth';
 import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
+import ProjectNotFound from './ProjectNotFound';
 import * as styles from './ProjectImagesScreen.css';
 
 const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.tif,.tiff';
@@ -28,13 +29,10 @@ const ProjectImagesScreen: Component = () => {
   const [summary, setSummary] = createSignal('');
   const [boxId, setBoxId] = createSignal<string | null>(null);
 
-  // Upload-specific state
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
   const [dragging, setDragging] = createSignal(false);
   const [byteLoaded, setByteLoaded] = createSignal(0);
   const [byteTotal, setByteTotal] = createSignal(0);
-
-  // Path-import state (dev convenience)
   const [path, setPath] = createSignal('');
 
   let fileInputRef!: HTMLInputElement;
@@ -108,8 +106,9 @@ const ProjectImagesScreen: Component = () => {
   }));
 
   return (
-    <Show when={project()} fallback={<div class={styles.wrap}>{t('common.loading')}</div>}>
-      {(p) => (
+    <ErrorBoundary fallback={<ProjectNotFound />}>
+      <Show when={project()} fallback={<div class={styles.wrap}>{t('common.loading')}</div>}>
+        {(p) => (
         <div class={styles.wrap} data-screen="project">
           <div class={styles.header}>
             <button class={styles.back} onClick={() => nav(`/projects/${id()}`)}>
@@ -185,8 +184,9 @@ const ProjectImagesScreen: Component = () => {
             onClose={() => setBoxId(null)}
           />
         </div>
-      )}
-    </Show>
+        )}
+      </Show>
+    </ErrorBoundary>
   );
 };
 

@@ -97,10 +97,14 @@ export const locked = style({
 
 export const saveBtn = style({
   padding: '0.4rem 0.8rem',
-  border: `1px solid ${vars.color.border}`,
+  border: 'none',
   borderRadius: '6px',
-  background: vars.color.surface,
-  color: vars.color.text,
+  background: vars.color.accent,
+  color: vars.color.accentText,
+  fontWeight: 600,
   cursor: 'pointer',
-  selectors: { '&:disabled': { opacity: 0.5, cursor: 'default' } },
+  selectors: {
+    '&:hover:not(:disabled)': { opacity: 0.85 },
+    '&:disabled': { opacity: 0.5, cursor: 'default' },
+  },
 });
