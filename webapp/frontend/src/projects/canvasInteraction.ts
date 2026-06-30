@@ -21,9 +21,11 @@ export interface CanvasInteraction {
   onPointerDown: (e: PointerEvent) => void;
   onPointerMove: (e: PointerEvent) => void;
   onPointerUp: (e: PointerEvent) => void;
+  onPointerLeave: () => void;
   handleKeyDown: (e: KeyboardEvent) => void;
   handleKeyUp: (e: KeyboardEvent) => void;
   isSpaceDown: Accessor<boolean>;
+  hoverImg: Accessor<[number, number] | null>;
   finishDraft: () => void;
 }
 
@@ -32,6 +34,7 @@ export interface CanvasInteraction {
 export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInteraction {
   // Space-bar pan state (reactive so SVG cursor can respond)
   const [spaceDown, setSpaceDown] = createSignal(false);
+  const [hoverImg, setHoverImg] = createSignal<[number, number] | null>(null);
   let spacePanRef: { x: number; y: number; vb: ViewBox } | null = null;
 
   // Mid-stroke pan lock (B §D: all pan disabled while pointer is down drawing)
@@ -44,12 +47,10 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   const touches = new Map<number, TouchPt>();
   let pinchStart: { dist: number; midImgX: number; midImgY: number; vb: ViewBox } | null = null;
 
-  // pointer client px → image-pixel coords (float for smooth draft)
-  const toImage = (clientX: number, clientY: number): [number, number] => {
-    const rect = o.getSvg()!.getBoundingClientRect();
-    const v = o.vb();
-    return [v.x + ((clientX - rect.left) / rect.width) * v.w,
-            v.y + ((clientY - rect.top) / rect.height) * v.h];
+  const toImage = (clientX: number, clientY: number): [number, number] => { // client px → image px via CTM
+    const ctm = o.getSvg()!.getScreenCTM();
+    if (!ctm) return [clientX, clientY];
+    return [(clientX - ctm.e) / ctm.a, (clientY - ctm.f) / ctm.d];
   };
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
@@ -60,9 +61,9 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   };
 
   const panBy = (dClientX: number, dClientY: number) => {
-    const rect = o.getSvg()!.getBoundingClientRect();
-    const v = o.vb();
-    o.setVb({ ...v, x: v.x - (dClientX / rect.width) * v.w, y: v.y - (dClientY / rect.height) * v.h });
+    const ctm = o.getSvg()!.getScreenCTM();
+    if (!ctm) return;
+    o.setVb((v) => ({ ...v, x: v.x - dClientX / ctm.a, y: v.y - dClientY / ctm.d }));
   };
 
   const onWheel = (e: WheelEvent) => {
@@ -83,8 +84,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }
-    // Shift+scroll → pan horizontal; else pan vertical (§C)
-    if (e.shiftKey) { panBy(e.deltaY, 0); } else { panBy(0, e.deltaY); }
+    // Shift+scroll → pan horizontal; else pan vertical (§C). Negative = natural scroll direction.
+    if (e.shiftKey) { panBy(-e.deltaY, 0); } else { panBy(0, -e.deltaY); }
   };
 
   const onPointerDown = (e: PointerEvent) => {
@@ -120,7 +121,10 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);
   };
 
+  const onPointerLeave = () => { setHoverImg(null); };
+
   const onPointerMove = (e: PointerEvent) => {
+    setHoverImg(toImage(e.clientX, e.clientY));
     if (touches.has(e.pointerId)) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
       touches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY, imgX: ix, imgY: iy });
@@ -134,9 +138,9 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       const sv = pinchStart.vb;
       const nw = sv.w / scale, nh = sv.h / scale;
       const rect = o.getSvg()!.getBoundingClientRect();
-      const midFracX = ((pts[0].clientX + pts[1].clientX) / 2 - rect.left) / rect.width;
-      const midFracY = ((pts[0].clientY + pts[1].clientY) / 2 - rect.top) / rect.height;
-      o.setVb({ x: pinchStart.midImgX - midFracX * nw, y: pinchStart.midImgY - midFracY * nh, w: nw, h: nh });
+      const smX = (pts[0].clientX + pts[1].clientX) / 2, smY = (pts[0].clientY + pts[1].clientY) / 2;
+      const ns = Math.min(rect.width / nw, rect.height / nh);
+      o.setVb({ x: pinchStart.midImgX - (smX - rect.left - (rect.width - nw*ns)/2) / ns, y: pinchStart.midImgY - (smY - rect.top - (rect.height - nh*ns)/2) / ns, w: nw, h: nh });
       return;
     }
 
@@ -191,5 +195,5 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     o.setDraft([]);
   };
 
-  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, finishDraft };
+  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
 }

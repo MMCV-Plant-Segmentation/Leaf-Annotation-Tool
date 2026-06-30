@@ -28,7 +28,12 @@ function whlEvent(deltaY: number, extra: Record<string, unknown> = {}) {
   return { deltaY, clientX: 400, clientY: 300, ctrlKey: false, metaKey: false, shiftKey: false, preventDefault: () => {}, ...extra };
 }
 function fakeSvg() {
-  return { getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }) } as unknown as SVGSVGElement;
+  // Simulate a letterboxed SVG: scale=1, 100px y-offset (image is 800×400 in 800×600 element).
+  // CTM: a=d=1, e=0, f=100. toImage(x,y) = (x, y-100).
+  return {
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    getScreenCTM: () => ({ a: 1, d: 1, e: 0, f: 100 }),
+  } as unknown as SVGSVGElement;
 }
 
 // ── buildStrokePath (canvasShapes) ─────────────────────────────────────────────
@@ -153,6 +158,60 @@ test.describe('createCanvasInteraction', () => {
     expect(cx.isSpaceDown()).toBe(true);
     cx.handleKeyUp(kbEvent(' ') as KeyboardEvent);
     expect(cx.isSpaceDown()).toBe(false);
+  });
+
+  // ── #7 — CTM-based coordinate mapping (letterbox) ──────────────────────────
+  test('toImage maps screen coords to image coords accounting for letterbox y-offset', async () => {
+    const { cx } = await makeInteraction();
+    // fakeSvg CTM: a=d=1, e=0, f=100 → toImage(x,y) = (x, y-100)
+    // Screen y=100 corresponds to image y=0 (top edge of letterboxed image)
+    const [x0, y0] = cx.toImage(400, 100);
+    expect(x0).toBeCloseTo(400);
+    expect(y0).toBeCloseTo(0);
+    // Screen y=300 → image y=200 (vertical centre)
+    const [x1, y1] = cx.toImage(400, 300);
+    expect(x1).toBeCloseTo(400);
+    expect(y1).toBeCloseTo(200);
+  });
+
+  // ── #8 — Wheel-pan direction ─────────────────────────────────────────────
+  test('wheel down (deltaY > 0) increases v.y — pan not inverted', async () => {
+    const { cx, vb } = await makeInteraction({ tool: 'pan' });
+    const yBefore = vb().y;
+    cx.onWheel(whlEvent(100) as WheelEvent);
+    expect(vb().y).toBeGreaterThan(yBefore);
+  });
+
+  test('wheel up (deltaY < 0) decreases v.y', async () => {
+    const { cx, vb } = await makeInteraction({ tool: 'pan' });
+    vb();  // initialise reactive read
+    cx.onWheel(whlEvent(-100) as WheelEvent);
+    expect(vb().y).toBeLessThan(0);
+  });
+
+  // ── #9 — Brush preview hoverImg ─────────────────────────────────────────
+  test('hoverImg is null initially', async () => {
+    const { cx } = await makeInteraction({ tool: 'brush' });
+    expect(cx.hoverImg()).toBeNull();
+  });
+
+  test('after onPointerMove, hoverImg is non-null with 2 elements', async () => {
+    const { cx } = await makeInteraction({ tool: 'brush' });
+    cx.onPointerMove(ptrEvent(400, 300, 1) as unknown as PointerEvent);
+    const h = cx.hoverImg();
+    expect(h).not.toBeNull();
+    expect(h).toHaveLength(2);
+    // Should reflect CTM-corrected coords: toImage(400,300) = (400, 200)
+    expect(h![0]).toBeCloseTo(400);
+    expect(h![1]).toBeCloseTo(200);
+  });
+
+  test('onPointerLeave clears hoverImg', async () => {
+    const { cx } = await makeInteraction({ tool: 'brush' });
+    cx.onPointerMove(ptrEvent(400, 300, 1) as unknown as PointerEvent);
+    expect(cx.hoverImg()).not.toBeNull();
+    cx.onPointerLeave();
+    expect(cx.hoverImg()).toBeNull();
   });
 });
 
