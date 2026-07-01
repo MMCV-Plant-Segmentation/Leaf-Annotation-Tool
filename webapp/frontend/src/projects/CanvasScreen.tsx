@@ -5,18 +5,19 @@ import { t } from '../i18n/catalog';
 import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath, strokeOutline, mergeTileStates } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
+import { createAnnotatorSelect } from './annotatorSelect';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
-import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
 
 const CanvasScreen: Component = () => {
   const params = useParams();
   const nav = useNavigate();
   const batchId = () => params.batchId;
-  const annotator = () => currentUser()?.username ?? '';
+  // BUGS #15: non-admin annotates as self; admin gets a read-only roster picker (see annotatorSelect.ts).
+  const { annotator, isAdmin, roster, select: selectAnnotator } = createAnnotatorSelect(() => params.id, batchId, () => image()?.imageId);
   const [canvas, { mutate: setCanvas }] = createResource(
-    () => { const bid = batchId(); const u = currentUser(); return (bid && u) ? `${bid}|${u.username}` : undefined; },
+    () => { const bid = batchId(); const ann = annotator(); return (bid && ann) ? `${bid}|${ann}` : undefined; },
     (key: string) => { const s = key.indexOf('|'); return projectsApi.batchCanvas(key.slice(0, s), key.slice(s + 1)); }
   );
 
@@ -137,7 +138,7 @@ const CanvasScreen: Component = () => {
       </Show>
       <CanvasToolbar
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
-        annotator={annotator() ?? ''}
+        annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
         selClass={selClass} setSelClass={setSelClass} classOptions={classOptions}
         imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
@@ -168,7 +169,7 @@ const CanvasScreen: Component = () => {
                 width={im().width} height={im().height}
                 onLoad={() => setImgLoaded(true)} />
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
-                onToggle={(tile) => void toggleTile(tile)} />
+                onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
                 <For each={im().lesions}>
                   {(l) => <LesionShape lesion={l}
