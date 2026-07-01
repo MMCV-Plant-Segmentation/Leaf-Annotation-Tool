@@ -28,10 +28,12 @@ web app alone, with no backup.
      run the `backup` profile (step 4). No default — leave unset to run without backup.
    - `PORT` — host port (defaults to `5000`).
 
-2. **Build the images:**
+2. **Build the images.** Set `GIT_SHA`/`BUILD_TIME` so the running build's identity shows up
+   in the app footer + admin Settings panel (`GET /api/version`); omitting them is safe (falls
+   back to `unknown`/`dev`):
 
    ```sh
-   docker buildx bake
+   GIT_SHA=$(git rev-parse --short HEAD) BUILD_TIME=$(date -u +%FT%TZ) docker buildx bake
    ```
 
 3. **(Restoring a wiped/fresh deployment only)** lay down the DB + files from backup *before* starting:

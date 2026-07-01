@@ -6,6 +6,18 @@ variable "PORT" {
   default = "5000"
 }
 
+# Build-time version identity (docs/plans/Plan — Version everything (stack-wide).md).
+# Overridable via matching-named env vars, e.g.:
+#   GIT_SHA=$(git rev-parse --short HEAD) BUILD_TIME=$(date -u +%FT%TZ) docker buildx bake
+# Left unset (default "") the image falls back to "unknown"/"dev" at runtime.
+variable "GIT_SHA" {
+  default = ""
+}
+
+variable "BUILD_TIME" {
+  default = ""
+}
+
 group "default" {
   targets = ["app", "lsyncd"]
 }
@@ -28,6 +40,8 @@ target "app" {
   args = {
     UV_VERSION = UV_VERSION
     PORT       = PORT
+    GIT_SHA    = GIT_SHA
+    BUILD_TIME = BUILD_TIME
   }
   tags = ["leaf-annotation:latest"]
 }

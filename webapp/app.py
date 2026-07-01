@@ -39,6 +39,7 @@ from .auth import auth_bp, login_required
 from .config import AppConfig, default_data_dir
 from .projects import projects_bp
 from .seed import resolve_port, seed_data
+from .version import get_version
 
 BASE     = Path(__file__).parent.parent
 STATIC   = Path(__file__).parent / 'static'
@@ -463,6 +464,16 @@ def api_i18n(locale: str):
     if catalog is None:
         catalog = {}
     return jsonify(catalog)
+
+
+@app.get('/api/version')
+@login_required
+def api_version():
+    con = _db.get_db()
+    try:
+        return jsonify(get_version(con))
+    finally:
+        _db.close_db(con)
 
 
 @app.get('/api/images')
