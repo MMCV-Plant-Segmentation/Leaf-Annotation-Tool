@@ -238,6 +238,7 @@
   "canvas.imgPrev": "‹ img",
   "canvas.imgNext": "img ›",
   "canvas.help": "Wheel = zoom · pan tool = drag · polygon/line = click vertices then ⏎ · point = click · brush = drag. Tiles: dashed grey = to do, green = done (click the corner ✓), orange = dirty.",
+  "canvas.viewport": "viewport: x {x} · y {y} · w {w} · h {h}",
   "canvas.undo": "↩ undo",
   "canvas.redo": "↪ redo"
 }

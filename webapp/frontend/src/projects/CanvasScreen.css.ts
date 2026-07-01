@@ -132,8 +132,3 @@ export const sizeSlider = style({
   cursor: 'pointer',
   accentColor: vars.color.accent,
 });
-
-export const help = style({
-  fontSize: '0.76rem',
-  color: vars.color.textMuted,
-});
