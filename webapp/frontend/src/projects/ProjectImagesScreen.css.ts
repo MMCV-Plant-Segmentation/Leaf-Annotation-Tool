@@ -55,6 +55,16 @@ export const fileListMore = style({
   color: vars.color.textMuted,
 });
 
+export const fileListItemDone = style([fileListItem, {
+  color: vars.color.textMuted,
+}]);
+
+export const alreadyBadge = style({
+  color: vars.status.pass,
+  fontWeight: 600,
+  marginRight: '0.35rem',
+});
+
 export const uploadBtn = style({
   padding: '0.4rem 1rem',
   border: `1px solid ${vars.color.border}`,

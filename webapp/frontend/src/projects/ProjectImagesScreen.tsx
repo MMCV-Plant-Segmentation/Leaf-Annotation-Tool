@@ -5,7 +5,8 @@
  */
 import { type Component, createResource, createSignal, ErrorBoundary, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, streamImport, streamUpload, type ImportEvent } from './api';
+import { projectsApi, imageUrls, streamImport, type ImportEvent } from './api';
+import { uploadWithPreflight } from './preflightHash';
 import { currentUser } from '../auth';
 import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
@@ -31,6 +32,7 @@ const ProjectImagesScreen: Component = () => {
   const [boxId, setBoxId] = createSignal<string | null>(null);
 
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
+  const [alreadyPresent, setAlreadyPresent] = createSignal<Set<File>>(new Set());
   const [dragging, setDragging] = createSignal(false);
   const [byteLoaded, setByteLoaded] = createSignal(0);
   const [byteTotal, setByteTotal] = createSignal(0);
@@ -49,19 +51,22 @@ const ProjectImagesScreen: Component = () => {
     else if (ev.type === 'progress') { setByteLoaded(ev.loaded); setByteTotal(ev.total); }
     else if (ev.type === 'file') { setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
     else if (ev.type === 'done') {
+      const p = alreadyPresent().size;
       setSummary(t('detail.images.importDone', {
-        imported: ev.imported, skipped: ev.skipped, errors: ev.errors.length,
-      }));
+        imported: ev.imported, skipped: ev.skipped + p, errors: ev.errors.length,
+      }) + (p > 0 ? ' ' + t('detail.images.presentNote', { present: p }) : ''));
     }
   };
 
   const doUpload = async () => {
     const files = selectedFiles();
     if (!files.length || busy()) return;
-    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0); setByteLoaded(0); setByteTotal(0);
+    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
+    setByteLoaded(0); setByteTotal(0); setAlreadyPresent(new Set<File>());
     try {
-      await streamUpload(id(), files, onEvent);
-      setSelectedFiles([]);
+      await uploadWithPreflight(id(), files, onEvent,
+        (found) => setAlreadyPresent(new Set(found)));
+      setSelectedFiles([]); setAlreadyPresent(new Set<File>());
       if (fileInputRef) fileInputRef.value = '';
       void refetch();
     } catch (e) {
@@ -132,7 +137,7 @@ const ProjectImagesScreen: Component = () => {
             >
               <Show when={selectedFiles().length > 0}
                 fallback={<span>{t('detail.images.dropHint')}</span>}>
-                <SelectedFilesList files={selectedFiles()} />
+                <SelectedFilesList files={selectedFiles()} importedFiles={alreadyPresent()} />
               </Show>
             </div>
             <button disabled={busy() || selectedFiles().length === 0}
