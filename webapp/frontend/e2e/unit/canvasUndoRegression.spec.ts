@@ -20,7 +20,8 @@
 import { test, expect } from '@playwright/test';
 
 function ann(id: string, label = 'lesion') {
-  return { id, kind: 'stroke', passNo: 1, points: [[0, 0]], label, viewport: null, annotator: 'alice', imageId: 'img1', strokeWidth: 10 };
+  return { id, kind: 'stroke', passNo: 1, points: [], rings: [[[0, 0], [1, 0], [1, 1]]],
+    label, viewport: null, annotator: 'alice', imageId: 'img1' };
 }
 
 const _origFetch = globalThis.fetch;
@@ -34,16 +35,16 @@ test('undo after a merged-lesion erase only ever touches its own ids — an unre
   const a = ann('a'); // merges with b below
   const b = ann('b');
 
-  type ImType = { annotations: { id: string }[]; lesions: unknown[] };
+  type ImType = { annotations: { id: string }[] };
   let _anns = [x, a, b];
-  const [img, setImg] = createSignal<ImType>({ annotations: _anns, lesions: [] });
+  const [img, setImg] = createSignal<ImType>({ annotations: _anns });
   const updateImg = (fn: (im: ImType) => ImType) => { const next = fn(img()); _anns = next.annotations; setImg(next); };
 
   const calls: { op: string; ids: string[] }[] = [];
   (globalThis as Record<string, unknown>).fetch = async (_url: string, init?: RequestInit) => {
     const body = JSON.parse(init!.body as string) as { op: string; ids: string[] };
     calls.push(body);
-    return { ok: true, status: 200, json: async () => ({ ok: true, ids: body.ids, lesions: [] }) } as Response;
+    return { ok: true, status: 200, json: async () => ({ ok: true, ids: body.ids, tileStates: [] }) } as Response;
   };
 
   const history = createCanvasHistory(() => 'proj1', updateImg);

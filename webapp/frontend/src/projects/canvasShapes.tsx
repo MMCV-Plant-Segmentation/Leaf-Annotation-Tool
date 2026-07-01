@@ -1,6 +1,6 @@
 import { type Component, For, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
-import type { CanvasAnnotation, CanvasLesion, CanvasTile, Rect, TileStateUpdate } from './api';
+import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
 export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser';
 export type ViewBox = { x: number; y: number; w: number; h: number };
@@ -47,16 +47,6 @@ export function ringsToPath(rings: number[][][]): string {
   }).join(' ');
 }
 
-/** Render a lesion as one fused polygon (union geometry from server). Read-only — deletion
- * is the eraser BRUSH (drag over strokes), not a click affordance (see BUGS #17). */
-export const LesionShape: Component<{ lesion: CanvasLesion }> = (props) => (
-  <Show when={props.lesion.rings && props.lesion.rings.length > 0}>
-    <path d={ringsToPath(props.lesion.rings!)} fill-rule="evenodd"
-      fill="#2563eb" fill-opacity="0.35"
-      stroke="#2563eb" stroke-width="1.5" vector-effect="non-scaling-stroke" />
-  </Show>
-);
-
 /** Tile grid with state colours, click-to-toggle badge, and completed ✓.
  * `onToggle` omitted (BUGS #15 admin read-only view) → the badge still shows state
  * but is not interactive. */
@@ -84,8 +74,12 @@ export const CanvasTiles: Component<{
   </For>
 );
 
-// One committed annotation rendered as the appropriate SVG primitive. Read-only — deletion
-// is the eraser BRUSH (drag over strokes), not a click affordance (see BUGS #17).
+// One persisted annotation rendered as the appropriate SVG primitive. Read-only —
+// deletion is the eraser BRUSH (drag over a mask), not a click affordance (see BUGS #17).
+// kind='stroke' is a fused MASK: it renders straight from the server-stored `rings`
+// (drop_holes(union(...)) of every bridged stroke) — no client-side re-derivation, no
+// separate lesion-union overlay. point/line/polygon never fuse, so they still render
+// from their own `points`, unchanged from before.
 export const AnnotationShape: Component<{ ann: CanvasAnnotation }> = (props) => {
   const stroke = '#2563eb';
   return (
@@ -105,8 +99,11 @@ export const AnnotationShape: Component<{ ann: CanvasAnnotation }> = (props) => 
           fill={stroke} vector-effect="non-scaling-stroke" />
       </Show>
     }>
-      <path d={buildStrokePath(props.ann.points, props.ann.strokeWidth ?? 10)}
-        fill={stroke} fill-opacity="0.75" />
+      <Show when={props.ann.rings.length > 0}>
+        <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
+          fill={stroke} fill-opacity="0.55" stroke={stroke} stroke-width="1.5"
+          vector-effect="non-scaling-stroke" />
+      </Show>
     </Show>
   );
 };
