@@ -106,7 +106,7 @@ assert jdump(client.patch(f'/api/annotator-tiles/{at_id}', json={'state':'comple
 prog = {p['annotator']:p for p in jdump(client.get(f'/api/projects/{pid}'))['progress']}
 print('progress alice:', prog['alice'])
 assert prog['alice']['tilesCompleted']==1
-assert prog['alice']['lesionCount']==1
+assert prog['alice']['annotationCount']==1
 assert prog['alice']['vertexCount']==4
 
 # 9) edit annotation -> tile goes dirty
