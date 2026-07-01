@@ -57,9 +57,11 @@ export const LesionShape: Component<{ lesion: CanvasLesion }> = (props) => (
   </Show>
 );
 
-/** Tile grid with state colours, click-to-toggle badge, and completed ✓. */
+/** Tile grid with state colours, click-to-toggle badge, and completed ✓.
+ * `onToggle` omitted (BUGS #15 admin read-only view) → the badge still shows state
+ * but is not interactive. */
 export const CanvasTiles: Component<{
-  tiles: CanvasTile[]; checkClass: string; onToggle: (tile: CanvasTile) => void;
+  tiles: CanvasTile[]; checkClass: string; onToggle?: (tile: CanvasTile) => void;
 }> = (props) => (
   <For each={props.tiles}>
     {(tile) => (
@@ -72,7 +74,7 @@ export const CanvasTiles: Component<{
           cx={tile.x + tile.w} cy={tile.y} r="8"
           fill={tile.state === 'completed' ? '#16a34a' : '#fff'}
           stroke="#16a34a" stroke-width="1.5" vector-effect="non-scaling-stroke"
-          onPointerDown={(e) => { e.stopPropagation(); props.onToggle(tile); }} />
+          onPointerDown={props.onToggle ? (e) => { e.stopPropagation(); props.onToggle!(tile); } : undefined} />
         <Show when={tile.state === 'completed'}>
           <text x={tile.x + tile.w} y={tile.y} text-anchor="middle" dominant-baseline="middle"
             font-size="10" fill="white" pointer-events="none">✓</text>

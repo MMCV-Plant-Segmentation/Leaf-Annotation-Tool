@@ -17,7 +17,7 @@
  * /tmp/leaf-e2e-fixture). The seed creates a "nested-images" dir for the recursive import test.
  */
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Browser } from '@playwright/test';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -266,11 +266,12 @@ test('re-uploading same files skips them (dedup)', async ({ page }) => {
 
 // ── Canvas quick-fixes: Fix 1 (toolbar), Fix 2 (zoom), Fix 3 (width) ─────────
 
-/** Full project setup → navigate to the canvas screen as admin. */
+/** Full project setup → navigate to the canvas screen as admin (read-only viewer;
+ * BUGS #15). Still useful for tests that only care about layout, not paint tools. */
 async function setupCanvas(page: Page): Promise<void> {
   const pid = await createProject(page, `CanvasFix ${Date.now()}`);
 
-  // Add admin to roster so the canvas can be opened as someone
+  // Add admin to roster so the canvas has someone to view.
   await page.goto(`/projects/${pid}`);
   await page.fill('[data-testid="roster-search"]', 'admin');
   await page.getByRole('option', { name: 'admin' }).click();
@@ -290,11 +291,51 @@ async function setupCanvas(page: Page): Promise<void> {
   await expect(page.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
 }
 
-test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @full', async ({ page }, testInfo) => {
-  if (testInfo.project.name !== 'full') return;
-  await setupCanvas(page);
+/** Full project setup as admin, then hand off to a fresh REAL (non-admin) annotator
+ * for the actual canvas interaction (BUGS #15: admin's canvas access is now a
+ * read-only viewer — paint-tool tests need a genuine annotator identity instead). */
+async function setupCanvasAsAnnotator(page: Page, browser: Browser): Promise<Page> {
+  const pid = await createProject(page, `CanvasFix ${Date.now()}`);
 
-  const toolbar = page.getByTestId('canvas-toolbar');
+  const username = `canvasfix-${Date.now()}`;
+  const createResp = await page.request.post('/api/users', { data: { username } });
+  const user = await createResp.json() as { id: number; invite: { token: string } };
+  await page.request.post(`/api/projects/${pid}/annotators`, { data: { user_id: user.id } });
+
+  await importImages(page, pid);
+  await confirmTiling(page, pid);
+
+  await page.goto(`/projects/${pid}/batches`);
+  await page.getByRole('button', { name: /create batch/i }).click();
+  await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
+  await page.getByRole('button', { name: /open canvas/i }).first().click();
+  await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}/, { timeout: 5000 });
+  const canvasUrl = page.url();
+
+  const pw = 'TestPass99!';
+  const anonCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const anonPage = await anonCtx.newPage();
+  const acceptResp = await anonPage.request.post(`/api/invite/${user.invite.token}`, { data: { password: pw, confirm: pw } });
+  expect(acceptResp.ok()).toBeTruthy();
+  await anonCtx.close();
+
+  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const p2 = await ctx.newPage();
+  await p2.goto('/login');
+  await p2.fill('#login-username', username);
+  await p2.fill('#login-password', pw);
+  await p2.click('button[type=submit]');
+  await expect(p2.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
+  await p2.goto(canvasUrl);
+  await expect(p2.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+  return p2;
+}
+
+test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @full', async ({ page, browser }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  const p = await setupCanvasAsAnnotator(page, browser);
+
+  const toolbar = p.getByTestId('canvas-toolbar');
   await expect(toolbar.getByRole('button', { name: 'pan' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'brush' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'polygon' })).toHaveCount(0);
@@ -304,31 +345,31 @@ test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @ful
   await expect(toolbar.getByRole('button', { name: /finish/i })).toHaveCount(0);
 });
 
-test('brush stroke does not reset the zoom @full', async ({ page }, testInfo) => {
+test('brush stroke does not reset the zoom @full', async ({ page, browser }, testInfo) => {
   if (testInfo.project.name !== 'full') return;
-  await setupCanvas(page);
+  const p = await setupCanvasAsAnnotator(page, browser);
 
   // Wait for the SVG canvas (the image must be loaded — it's the only svg on this screen)
-  const canvasSvg = page.locator('svg').first();
+  const canvasSvg = p.locator('svg').first();
   await expect(canvasSvg).toBeVisible({ timeout: 10000 });
 
   // Zoom in so the viewBox differs from the fit-image default
   await canvasSvg.hover();
-  await page.mouse.wheel(0, -400);  // zoom in
+  await p.mouse.wheel(0, -400);  // zoom in
   const viewBoxZoomed = await canvasSvg.getAttribute('viewBox');
 
   // Draw a brush stroke; dismiss any "must intersect a tile" alert
-  await page.getByRole('button', { name: 'brush' }).click();
-  page.on('dialog', (d) => void d.dismiss());
+  await p.getByRole('button', { name: 'brush' }).click();
+  p.on('dialog', (d) => void d.dismiss());
   const box = await canvasSvg.boundingBox();
   const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
   const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
-  await page.mouse.move(cx - 15, cy - 15);
-  await page.mouse.down();
+  await p.mouse.move(cx - 15, cy - 15);
+  await p.mouse.down();
   for (let i = 1; i <= 5; i++) {
-    await page.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);
+    await p.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);
   }
-  await page.mouse.up();
+  await p.mouse.up();
 
   // ViewBox must still match the zoomed value — not reset to fit-image
   const viewBoxAfter = await canvasSvg.getAttribute('viewBox');
@@ -347,16 +388,16 @@ test('canvas wrap fills the viewport width @full', async ({ page }, testInfo) =>
   expect(wrapWidth).toBeGreaterThanOrEqual(viewportWidth - 20);
 });
 
-test('tile mark-complete button persists state across reload @full', async ({ page }, testInfo) => {
+test('tile mark-complete button persists state across reload @full', async ({ page, browser }, testInfo) => {
   if (testInfo.project.name !== 'full') return;
-  await setupCanvas(page);
+  const p = await setupCanvasAsAnnotator(page, browser);
 
   // Wait for the SVG canvas to load (tile circles render after the image loads).
-  const canvasSvg = page.locator('svg').first();
+  const canvasSvg = p.locator('svg').first();
   await expect(canvasSvg).toBeVisible({ timeout: 10000 });
 
   // There should be at least one tile complete button.
-  const completeBtn = page.locator('[data-testid="tile-complete"]').first();
+  const completeBtn = p.locator('[data-testid="tile-complete"]').first();
   await expect(completeBtn).toBeVisible({ timeout: 5000 });
 
   // Initially the tile is not completed (fill is white).
@@ -369,6 +410,6 @@ test('tile mark-complete button persists state across reload @full', async ({ pa
   await expect(completeBtn).toHaveAttribute('fill', '#16a34a', { timeout: 3000 });
 
   // Reload and verify the completed state persisted in the backend.
-  await page.reload();
-  await expect(page.locator('[data-testid="tile-complete"]').first()).toHaveAttribute('fill', '#16a34a', { timeout: 10000 });
+  await p.reload();
+  await expect(p.locator('[data-testid="tile-complete"]').first()).toHaveAttribute('fill', '#16a34a', { timeout: 10000 });
 });
