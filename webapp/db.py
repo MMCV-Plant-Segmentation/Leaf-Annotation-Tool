@@ -4,7 +4,9 @@ Thin SQLite helper for app.db.
 - WAL mode for concurrent reads.
 - Connection-per-request via get_db() / close_db().
 - Row factory returns plain dicts.
-- auto_create_schema() is called once on startup.
+- auto_create_schema() is called once on startup — builds/upgrades the schema via
+  Alembic (see alembic/versions/0001_baseline.py and docs/plans/Plan — Adopt Alembic
+  (baseline + forward migrations).md).
 - migrate_manifest() imports manifest.json rows into annotation_set idempotently.
 """
 
@@ -18,11 +20,12 @@ from .config import AppConfig, default_data_dir
 
 BASE    = Path(__file__).parent.parent
 
-# Bumped whenever a migration changes the DB shape in a way worth recording — the seam
-# a future migration-squash/Alembic adoption builds on. Not yet wired to individual
-# migrations (see docs/plans/Plan — Version everything (stack-wide).md); establishing
-# the `meta` table + this constant is the prerequisite, not that work itself.
-SCHEMA_VERSION = 1
+# The Alembic revision ID for `alembic/versions/0001_baseline.py` — the squash of every
+# migrate_*() below into one clean starting point (see docs/plans/Plan — Adopt Alembic
+# (baseline + forward migrations).md). Used by auto_create_schema() to stamp an existing
+# (pre-Alembic) DB onto this revision without re-running its DDL, and is the single
+# source of truth webapp/version.py reads back as `schemaVersion` — no separate constant.
+BASELINE_REVISION = '0001_baseline'
 
 # ── Config (module singleton — one process, one config; see webapp/config.py) ────────────
 
@@ -87,236 +90,64 @@ def close_db(con: sqlite3.Connection) -> None:
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
+# The DDL that used to live here now lives ONLY in alembic/versions/0001_baseline.py
+# (the hand-written baseline revision) — see auto_create_schema() below. It ran a
+# `CREATE TABLE IF NOT EXISTS` executescript() + a hand-ordered migrate_*() list; both
+# are superseded by Alembic upgrade/stamp.
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE NOT NULL,
-  password_hash TEXT,
-  created_at REAL NOT NULL DEFAULT (unixepoch())
-);
 
-CREATE TABLE IF NOT EXISTS invite_codes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token TEXT UNIQUE NOT NULL,
-  expires REAL NOT NULL,
-  created_at REAL NOT NULL DEFAULT (unixepoch())
-);
+def _alembic_config():
+    """Build an Alembic Config pointed at this repo's alembic/ dir. The DB URL itself is
+    NOT set here — alembic/env.py resolves it from the active AppConfig (db.get_config()),
+    same as every other module in this file."""
+    from alembic.config import Config as AlembicConfig  # deferred: only needed at boot
 
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY, value TEXT, updated_at REAL NOT NULL DEFAULT (unixepoch())
-);
-
-CREATE TABLE IF NOT EXISTS annotation_set (
-  id           TEXT PRIMARY KEY,
-  display_name TEXT NOT NULL,
-  image_hash   TEXT NOT NULL,
-  image_ext    TEXT NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('raw','merged','reannotated')),
-  provenance   TEXT,
-  created_by   TEXT,
-  created_at   TEXT NOT NULL,
-  terminal     INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_annotation_set_image_hash
-  ON annotation_set (image_hash);
-
-CREATE TABLE IF NOT EXISTS merge (
-  id          TEXT PRIMARY KEY,
-  set_id      TEXT REFERENCES annotation_set(id),
-  image_hash  TEXT NOT NULL,
-  doc         TEXT NOT NULL,
-  created_by  TEXT,
-  updated_at  TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_merge_set_id
-  ON merge (set_id);
-
-CREATE TABLE IF NOT EXISTS reannot_session (
-  id            TEXT PRIMARY KEY,
-  merge_id      TEXT NOT NULL REFERENCES merge(id),
-  image_hash    TEXT NOT NULL,
-  status        TEXT NOT NULL DEFAULT 'active'
-                  CHECK (status IN ('active','complete')),
-  planned_order TEXT NOT NULL,
-  active_pile   TEXT,
-  result_set_id TEXT REFERENCES annotation_set(id),
-  created_by    TEXT,
-  created_at    TEXT NOT NULL,
-  completed_at  TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_reannot_session_merge_id
-  ON reannot_session (merge_id);
-
-CREATE TABLE IF NOT EXISTS reannot_pile (
-  id             TEXT PRIMARY KEY,
-  session_id     TEXT NOT NULL REFERENCES reannot_session(id),
-  source_pile_id TEXT,
-  order_index    INTEGER NOT NULL,
-  bbox           TEXT NOT NULL,
-  status         TEXT NOT NULL DEFAULT 'pending'
-                   CHECK (status IN ('pending','done')),
-  resolved_count INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_reannot_pile_session_id
-  ON reannot_pile (session_id);
-
-CREATE TABLE IF NOT EXISTS reannot_generation (
-  id         TEXT PRIMARY KEY,
-  pile_id    TEXT NOT NULL REFERENCES reannot_pile(id),
-  gen_index  INTEGER NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_reannot_generation_pile_id
-  ON reannot_generation (pile_id);
-
-CREATE TABLE IF NOT EXISTS reannot_polygon (
-  id            TEXT PRIMARY KEY,
-  generation_id TEXT NOT NULL REFERENCES reannot_generation(id),
-  participant   TEXT NOT NULL,
-  points        TEXT NOT NULL,
-  bbox          TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_reannot_polygon_generation_id
-  ON reannot_polygon (generation_id);
-
--- ── Annotator pipeline (projects → tiles → batches) ──────────────────────────
--- See docs/Annotator Plan.md. `annotation.kind` is intentionally FREE TEXT (no CHECK)
--- so new primitives (stroke, point, …) are added without a migration.
-
-CREATE TABLE IF NOT EXISTS project (
-  id               TEXT PRIMARY KEY,
-  name             TEXT NOT NULL,
-  tile_size_px     INTEGER NOT NULL DEFAULT 128,
-  black_threshold  INTEGER NOT NULL DEFAULT 0,       -- Minimum Luminance Threshold (MLT)
-  classes_json     TEXT NOT NULL DEFAULT '[]',      -- v1: flat per-project class list
-  tiling_confirmed INTEGER NOT NULL DEFAULT 0,      -- 1 once user saves tiling settings
-  created_by       TEXT,
-  created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  created_at       TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS project_annotator (
-  id         TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  byline     TEXT NOT NULL,   -- cached username; used for annotation attribution
-  UNIQUE (project_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS project_image (
-  id          TEXT PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  image_hash  TEXT NOT NULL,
-  image_ext   TEXT NOT NULL,
-  source_name TEXT,           -- legacy filename (kept for display)
-  source_path TEXT,           -- full server path at import time (provenance)
-  width       INTEGER,
-  height      INTEGER,
-  origin_y    INTEGER NOT NULL DEFAULT 0,
-  leaf_x INTEGER, leaf_y INTEGER, leaf_w INTEGER, leaf_h INTEGER,
-  created_at  TEXT NOT NULL,
-  UNIQUE (project_id, image_hash)
-);
-
-CREATE INDEX IF NOT EXISTS idx_project_image_project ON project_image (project_id);
-
--- Full tile bbox is stored at batch-creation time (NOT derived) so historical tiles keep
--- their coordinates even if project params change later.
-CREATE TABLE IF NOT EXISTS tile (
-  id               TEXT PRIMARY KEY,
-  project_image_id TEXT NOT NULL REFERENCES project_image(id) ON DELETE CASCADE,
-  x INTEGER NOT NULL, y INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
-  UNIQUE (project_image_id, x, y)
-);
-
-CREATE TABLE IF NOT EXISTS batch (
-  id         TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  seq        INTEGER NOT NULL,                       -- 1-based ordinal within the project
-  size       INTEGER NOT NULL DEFAULT 5,
-  status     TEXT NOT NULL DEFAULT 'annotation_in_progress',
-  created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_batch_project ON batch (project_id);
-
--- Tile GEOMETRY is shared across annotators in a batch (so their results are comparable).
-CREATE TABLE IF NOT EXISTS batch_tile (
-  id       TEXT PRIMARY KEY,
-  batch_id TEXT NOT NULL REFERENCES batch(id) ON DELETE CASCADE,
-  tile_id  TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
-  UNIQUE (batch_id, tile_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_batch_tile_batch ON batch_tile (batch_id);
-
--- Per-annotator PRIVATE progress row (holds no shapes). Annotators are blind until merge.
-CREATE TABLE IF NOT EXISTS annotator_tile (
-  id            TEXT PRIMARY KEY,
-  batch_tile_id TEXT NOT NULL REFERENCES batch_tile(id) ON DELETE CASCADE,
-  annotator     TEXT NOT NULL,
-  state         TEXT NOT NULL DEFAULT 'assigned',    -- assigned | completed | dirty
-  updated_at    TEXT,
-  UNIQUE (batch_tile_id, annotator)
-);
-
-CREATE INDEX IF NOT EXISTS idx_annotator_tile_bt ON annotator_tile (batch_tile_id);
-
--- One drawn shape per row (so soft-delete is per-shape). labelme JSON is a derived export.
-CREATE TABLE IF NOT EXISTS annotation (
-  id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
-  project_image_id TEXT REFERENCES project_image(id) ON DELETE CASCADE,  -- coord space of points
-  annotator     TEXT NOT NULL,
-  kind          TEXT NOT NULL,                        -- polygon | line | point | stroke | …
-  pass_no       INTEGER,                              -- 1 rough-area pass, 2 precise-polygon pass
-  points_json   TEXT NOT NULL,
-  label         TEXT,
-  viewport_json TEXT,
-  hsv_hist_json TEXT,
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL,
-  deleted_at    TEXT                                  -- soft delete only
-);
-
-CREATE INDEX IF NOT EXISTS idx_annotation_project ON annotation (project_id, annotator);
-
--- Materialized "which tiles each annotation intersects" — drives shapes-in-tile + dirty-propagation.
-CREATE TABLE IF NOT EXISTS annotation_tile (
-  annotation_id TEXT NOT NULL REFERENCES annotation(id) ON DELETE CASCADE,
-  tile_id       TEXT NOT NULL REFERENCES tile(id) ON DELETE CASCADE,
-  PRIMARY KEY (annotation_id, tile_id)
-);
-"""
+    cfg = AlembicConfig(str(BASE / 'alembic.ini'))
+    cfg.set_main_option('script_location', str(BASE / 'alembic'))
+    return cfg
 
 
 def auto_create_schema() -> None:
-    """Create all tables if they don't exist. Safe to call on every startup."""
+    """Create/upgrade the schema via Alembic. Safe to call on every startup.
+
+    - Fresh DB (no tables at all) -> `alembic upgrade head` builds the baseline (+ any
+      later revisions) from nothing.
+    - Pre-Alembic DB (tables already exist — today's prod/dev shape — but no
+      `alembic_version`) -> `alembic stamp <baseline>` records "already here" WITHOUT
+      re-running any DDL (data-preserving), then `upgrade head` picks up anything AFTER
+      the baseline.
+    - Already-versioned DB -> `upgrade head` is a no-op unless new revisions landed.
+
+    A failed upgrade/stamp raises (not caught here) — this must never serve a
+    half-migrated DB. The old hand-rolled migrate_*() call list this replaced is now
+    baked into alembic/versions/0001_baseline.py; the function bodies stay below only as
+    that revision's source-of-truth (and for the standalone tests that still exercise
+    them directly) — they are no longer part of the startup path.
+    """
+    from alembic import command
+
     _db_path().parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(_db_path()))
+    try:
+        tables = {
+            r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+
+    alembic_cfg = _alembic_config()
+    if tables and 'alembic_version' not in tables:
+        command.stamp(alembic_cfg, BASELINE_REVISION)
+    command.upgrade(alembic_cfg, 'head')
+
     con = get_db()
     try:
         con.execute('PRAGMA journal_mode=WAL')  # persistent; set once here, not per-connection
-        con.executescript(_DDL)
         con.commit()
     finally:
         close_db(con)
-    # Additive / destructive migrations (idempotent; order matters).
-    migrate_add_user_fk()
-    migrate_project_annotator_user_fk()
-    migrate_project_image_source_path()
-    migrate_project_tiling_confirmed()
-    migrate_backfill_project_creator_annotator()
-    migrate_annotation_stroke_width()
-    migrate_annotation_outline()
-    migrate_meta()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -455,21 +286,19 @@ def migrate_annotation_outline() -> None:
 
 
 def migrate_meta() -> None:
-    """Create the `meta` key/value table and record schema_version + app_version.
+    """Create the `meta` key/value table (if needed) and record app_version.
 
-    Runs on every startup; the upsert is idempotent so repeated calls just refresh
-    the values (app_version in particular should track whatever build is running).
+    Runs on every startup (called from app.py's _startup(), after auto_create_schema());
+    the upsert is idempotent so repeated calls just refresh app_version to whatever build
+    is currently running. schema_version is NOT written here anymore — the Alembic
+    revision (alembic_version.version_num) is the single source of truth for schema
+    identity now; see webapp/version.py's get_version() and db.BASELINE_REVISION.
     """
     from .version import app_version  # local import: version.py has no dependency on db.py
 
     con = get_db()
     try:
         con.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
-        con.execute(
-            'INSERT INTO meta (key, value) VALUES (?, ?) '
-            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-            ('schema_version', str(SCHEMA_VERSION)),
-        )
         con.execute(
             'INSERT INTO meta (key, value) VALUES (?, ?) '
             'ON CONFLICT(key) DO UPDATE SET value = excluded.value',

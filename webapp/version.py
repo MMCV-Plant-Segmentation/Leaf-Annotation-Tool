@@ -8,9 +8,10 @@ Resolution order (robust-over-cheap — authoritative source first, graceful fal
   - gitSha     ← env GIT_SHA (baked at image build) → else runtime
     `git rev-parse --short HEAD` (dev checkout, cached at module load) → else "unknown".
   - builtAt    ← env BUILD_TIME (baked at image build) → else "dev".
-  - schemaVersion ← read from the DB `meta` table via a connection the caller passes in
-    (see db.py's migrate_meta / SCHEMA_VERSION); None if no connection is given or the
-    row doesn't exist yet.
+  - schemaVersion ← the current Alembic revision, read from `alembic_version.version_num`
+    via a connection the caller passes in (see db.py's BASELINE_REVISION / db.py's
+    auto_create_schema(), which stamps/upgrades that table); None if no connection is
+    given or the table doesn't exist yet.
 
 Pure function, no Flask/app-context dependency: get_version() only touches env vars,
 a cached pyproject read, a cached `git` shell-out, and (optionally) a passed-in
@@ -77,29 +78,25 @@ def _built_at() -> str:
     return os.environ.get('BUILD_TIME') or 'dev'
 
 
-def _schema_version(con: sqlite3.Connection | None) -> int | None:
+def _schema_version(con: sqlite3.Connection | None) -> str | None:
     if con is None:
         return None
     try:
-        row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        row = con.execute('SELECT version_num FROM alembic_version').fetchone()
     except Exception:
         return None
     if row is None:
         return None
-    value = row['value'] if isinstance(row, dict) else row[0]
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    return row['version_num'] if isinstance(row, dict) else row[0]
 
 
 def get_version(con: sqlite3.Connection | None = None) -> dict:
     """Return {appVersion, gitSha, builtAt, schemaVersion}.
 
-    `con`, if given, is used to read the `schema_version` row from the `meta` table
-    (see db.py's migrate_meta); schemaVersion is None if no connection is passed or
-    the row isn't there yet. No app-context dependency — callers pass any open
-    sqlite3.Connection (e.g. from db.get_db()).
+    `con`, if given, is used to read `alembic_version.version_num` (the current schema
+    revision); schemaVersion is None if no connection is passed or the table isn't
+    there yet. No app-context dependency — callers pass any open sqlite3.Connection
+    (e.g. from db.get_db()).
     """
     return {
         'appVersion': app_version(),
