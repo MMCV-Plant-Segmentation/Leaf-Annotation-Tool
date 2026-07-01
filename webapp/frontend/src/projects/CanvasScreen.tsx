@@ -6,6 +6,7 @@ import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, cla
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { CanvasToolbar } from './CanvasToolbar';
+import { CanvasHints } from './CanvasHints';
 import { currentUser } from '../auth';
 import * as styles from './CanvasScreen.css';
 
@@ -189,7 +190,7 @@ const CanvasScreen: Component = () => {
         )}
       </Show>
 
-      <div class={styles.help}>{t('canvas.help')}</div>
+      <CanvasHints vb={vb} />
     </div>
   );
 };
