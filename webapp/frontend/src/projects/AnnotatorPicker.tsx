@@ -10,7 +10,7 @@ type Props = {
 };
 
 // Admin-only read-only-viewer picker (BUGS #15): choose which project annotator's
-// annotations/lesions/tile-completion to view. One at a time — no multi-overlay
+// annotations/tile-completion to view. One at a time — no multi-overlay
 // (that's the separate, out-of-scope consensus feature).
 export const AnnotatorPicker: Component<Props> = (props) => (
   <label class={styles.classPick} data-testid="annotator-picker">

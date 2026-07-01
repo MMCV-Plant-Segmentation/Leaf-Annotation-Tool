@@ -29,6 +29,18 @@ os.environ['SECRET_KEY'] = 'test-secret'
 from webapp import db, app as appmod
 from webapp import version as versionmod
 
+# The actual head Alembic revision — resolved dynamically (not db.BASELINE_REVISION,
+# which stays pinned at '0001_baseline') so this test doesn't need hand-editing every
+# time a new forward migration lands (see webapp/tests/test_alembic.py's HEAD_REVISION).
+from alembic.config import Config as _AlembicConfig  # noqa: E402
+from alembic.script import ScriptDirectory as _ScriptDirectory  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+_REPO = _Path(__file__).resolve().parents[2]
+_acfg = _AlembicConfig(str(_REPO / 'alembic.ini'))
+_acfg.set_main_option('script_location', str(_REPO / 'alembic'))
+HEAD_REVISION = _ScriptDirectory.from_config(_acfg).get_current_head()
+
 db.auto_create_schema()
 db.migrate_meta()
 _c = db.get_db()
@@ -103,8 +115,8 @@ assert r.status_code == 200, f'expected 200, got {r.status_code}'
 body = jdump(r)
 for key in ('appVersion', 'gitSha', 'builtAt', 'schemaVersion'):
     assert key in body, f'missing key {key!r} in {body}'
-assert body['schemaVersion'] == db.BASELINE_REVISION, \
-    f'expected schemaVersion={db.BASELINE_REVISION!r} (the head Alembic revision), got {body["schemaVersion"]!r}'
+assert body['schemaVersion'] == HEAD_REVISION, \
+    f'expected schemaVersion={HEAD_REVISION!r} (the head Alembic revision), got {body["schemaVersion"]!r}'
 print(f'  ✓  GET /api/version → {body}')
 
 

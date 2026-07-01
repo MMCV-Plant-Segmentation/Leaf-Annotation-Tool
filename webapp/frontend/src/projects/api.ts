@@ -44,7 +44,7 @@ export type Progress = {
   annotator: string;
   tilesCompleted: number;
   tilesTotal: number;
-  lesionCount: number;
+  annotationCount: number;
   vertexCount: number;
 };
 
@@ -66,64 +66,16 @@ export type TilePreview = {
   tiles: Rect[];
 };
 
-export type CanvasTile = Rect & {
-  tileId: string;
-  batchTileId: string;
-  annotatorTileId: string | null;
-  state: 'assigned' | 'completed' | 'dirty' | null;
-};
+import { jbody, jfetch } from './httpJson';
 
-/** A tile flipped server-side as a side effect of an annotation mutation (BUGS #16:
- * editing a completed tile re-opens it) — enough for the FE to patch its local state. */
-export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
-
-export type CanvasAnnotation = {
-  id: string;
-  kind: string;
-  passNo: number | null;
-  points: number[][];
-  label: string | null;
-  viewport: Rect | null;
-  annotator: string;
-  imageId: string;
-  strokeWidth: number | null;
-};
-
-/** A connected component of one annotator's strokes sharing the same label. */
-export type CanvasLesion = {
-  key: string; label: string; memberIds: string[];
-  /** Polygon rings from server union geometry: [[x,y],...] per ring (exterior first, then holes). */
-  rings?: number[][][];
-};
-
-export type CanvasImage = {
-  imageId: string;
-  width: number;
-  height: number;
-  tiles: CanvasTile[];
-  annotations: CanvasAnnotation[];
-  lesions: CanvasLesion[];
-};
-
-export type BatchCanvas = {
-  id: string;
-  projectId: string;
-  seq: number;
-  status: string;
-  classes: string[];
-  images: CanvasImage[];
-};
-
-async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, init);
-  const data = (await r.json().catch(() => null)) as T & { error?: string };
-  if (!r.ok) throw new Error((data && (data as { error?: string }).error) || `HTTP ${r.status}`);
-  return data;
-}
-
-function jbody(method: string, body: unknown): RequestInit {
-  return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-}
+// Canvas annotation types + their API methods live in their own module (keeps this file
+// ≤200 lines) — re-exported here so every existing `projectsApi.foo(...)` / `import type
+// {...} from './api'` call site keeps working unchanged.
+export type {
+  CanvasTile, TileStateUpdate, CanvasAnnotation, CanvasImage, BatchCanvas,
+  ConsumedGroup, CreateAnnotationResult,
+} from './canvasApi';
+import { canvasApi } from './canvasApi';
 
 // Streaming import lives in its own module to keep this file ≤200 lines; re-export so
 // callers (and the unit tests) keep a single import surface.
@@ -168,28 +120,7 @@ export const projectsApi = {
   createBatch: (id: string, size: number) =>
     jfetch<Batch & { rosterSize: number }>(`/api/projects/${id}/batches`, jbody('POST', { size })),
 
-  batchCanvas: (batchId: string, annotator: string) =>
-    jfetch<BatchCanvas>(`/api/batches/${batchId}?annotator=${encodeURIComponent(annotator)}`),
-
-  createAnnotation: (projectId: string, body: {
-    imageId: string; annotator: string; kind: string; points: number[][];
-    passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number; outline?: number[][];
-  }) => jfetch<CanvasAnnotation & { tileIds: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
-    `/api/projects/${projectId}/annotations`, jbody('POST', body)),
-  updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>
-    jfetch<CanvasAnnotation>(`/api/annotations/${annotationId}`, jbody('PATCH', body)),
-  deleteAnnotation: (annotationId: string) =>
-    jfetch<{ ok: boolean; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
-  mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
-    jfetch<{ ok: boolean; ids: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
-      `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
-  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number; outline?: number[][] }) =>
-    jfetch<{ deletedIds: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
-      `/api/projects/${projectId}/annotations/erase-stroke`, jbody('POST', body)),
-
-  setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
-    jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
+  ...canvasApi,
 };
 
 export const imageUrls = {

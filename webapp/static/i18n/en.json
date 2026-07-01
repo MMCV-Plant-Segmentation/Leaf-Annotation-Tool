@@ -240,7 +240,7 @@
   "detail.progress": "Progress (current batch)",
   "detail.progress.annotator": "Annotator",
   "detail.progress.tilesDone": "Tiles done",
-  "detail.progress.lesions": "Lesions",
+  "detail.progress.annotations": "Annotations",
   "detail.progress.vertices": "Vertices",
   "detail.progress.tileCount": "{done} / {total}",
   "detail.tile.sub": "{px}px tiles · threshold {threshold}",
