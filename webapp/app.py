@@ -36,15 +36,35 @@ from werkzeug.security import generate_password_hash
 
 from . import db as _db
 from .auth import auth_bp, login_required
+from .config import AppConfig, default_data_dir
 from .projects import projects_bp
+from .seed import resolve_port, seed_data
 
 BASE     = Path(__file__).parent.parent
-DATA_DIR = _db.DATA_DIR            # single source of truth (db.py); LOCAL XDG dir by default
-IMG_DIR  = DATA_DIR / 'images'
-JSON_DIR = DATA_DIR / 'jsons'
-MANIFEST = DATA_DIR / 'manifest.json'
 STATIC   = Path(__file__).parent / 'static'
 LEGACY_DATA_DIR = BASE / 'data'    # old on-NFS location; used only for the one-time migration
+
+
+def _data_dir() -> Path:
+    """Active data dir, resolved lazily (NOT at import time) from the AppConfig. Single
+    source of truth is db.py's configured AppConfig — see webapp/config.py."""
+    return _db.get_config().data_dir
+
+
+def _img_dir() -> Path:
+    return _data_dir() / 'images'
+
+
+def _json_dir() -> Path:
+    return _data_dir() / 'jsons'
+
+
+def _manifest_path() -> Path:
+    return _data_dir() / 'manifest.json'
+
+
+def _i18n_dir() -> Path:
+    return _data_dir() / 'i18n'
 
 # Reserved ID for the auto-migrated legacy hardcoded pair
 LEGACY_ID    = 'legacy'
@@ -156,14 +176,14 @@ def _hash_bytes(data: bytes) -> str:
 def _get_image(image_hash: str, image_ext: str) -> Image.Image:
     key = f'{image_hash}.{image_ext}'
     if key not in _img_cache:
-        img = Image.open(IMG_DIR / key)
+        img = Image.open(_img_dir() / key)
         img.load()  # force full pixel decode; avoids lazy-seek issues with TIFF
         _img_cache[key] = img
     return _img_cache[key]
 
 
 def _load_shapes(pair_id: str) -> list:
-    raw = json.loads((JSON_DIR / f'{pair_id}.json').read_text())
+    raw = json.loads((_json_dir() / f'{pair_id}.json').read_text())
     return [s for s in raw['shapes']
             if s['label'] != 'fused_exterior' and s.get('shape_type') == 'polygon']
 
@@ -237,16 +257,15 @@ def _load_env() -> None:
     load_dotenv(BASE / '.env')
 
 
-def _configure_app() -> None:
-    secret = os.environ.get('SECRET_KEY')
-    if not secret:
-        raise RuntimeError('SECRET_KEY env var is required')
-    app.secret_key = secret
+def _configure_app(cfg: AppConfig) -> None:
+    if not cfg.secret_key:
+        raise RuntimeError('AppConfig.secret_key is required (SECRET_KEY env var)')
+    app.secret_key = cfg.secret_key
 
 
-def _sync_admin() -> None:
-    """Upsert the admin user from ADMIN_PASSWORD env var."""
-    password = os.environ.get('ADMIN_PASSWORD')
+def _sync_admin(cfg: AppConfig) -> None:
+    """Upsert the admin user from cfg.admin_password."""
+    password = cfg.admin_password
     con = _db.get_db()
     try:
         row = con.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
@@ -263,48 +282,65 @@ def _sync_admin() -> None:
         _db.close_db(con)
 
 
-def _startup() -> None:
+def create_app(cfg: AppConfig) -> Flask:
+    """The single wiring path all three servers (dev main(), wsgi:app, gate) go through:
+    configure db from cfg, then run _startup(cfg). Returns the module-level `app` — Flask
+    routes are bound to it via decorators at import time (they can't be re-registered onto
+    a fresh instance per call), so create_app() configures/initializes that one process-
+    lifetime Flask object rather than instantiating a new one. What *is* fully explicit now
+    is the config: no import-time env reads anywhere in the data-dir/db path.
+    """
+    _db.configure(cfg)
+    _startup(cfg)
+    return app
+
+
+def _startup(cfg: AppConfig) -> None:
     """Init schema, auth config, and legacy data migrations.
 
     Restore-from-backup is NOT here — it's an explicit orchestration step
-    (`docker compose run --rm restore`) before the app boots.
+    (`docker compose run --rm restore`, or seed_data(cfg) for the native path).
+
+    Only ever called from create_app(cfg) — all three server entries (main(), wsgi:app,
+    scripts/gate.py's run_ephemeral()) build an explicit AppConfig before reaching here.
     """
     _load_env()
-    _configure_app()
-    _migrate_data_to_local()
+    _configure_app(cfg)
+    _migrate_data_to_local(cfg)
     _db.auto_create_schema()
     _db.migrate_add_user_fk()
-    _sync_admin()
-    _db.migrate_manifest(MANIFEST)
+    _sync_admin(cfg)
+    _db.migrate_manifest(_manifest_path())
     _auto_migrate_legacy()
     _seed_i18n()
     _warn_if_bundle_stale()
 
 
-def _migrate_data_to_local() -> None:
+def _migrate_data_to_local(cfg: AppConfig) -> None:
     """One-time: copy the data dir from the legacy on-NFS location to the local
-    DATA_DIR so the live SQLite store lives on local disk (NFS file locking stalls
+    data dir so the live SQLite store lives on local disk (NFS file locking stalls
     concurrent requests — see db.py). COPIES, never moves: the NFS copy is left in
     place as an interim static fallback until the out-of-band backup
     (litestream/lsyncd) is wired up. No-op once the local store exists, or when
-    HT_DATA_DIR explicitly points back at the legacy dir.
+    cfg.data_dir explicitly points back at the legacy dir.
     """
-    if DATA_DIR == LEGACY_DATA_DIR:
+    data_dir = cfg.data_dir
+    if data_dir == LEGACY_DATA_DIR:
         return
-    if (DATA_DIR / 'app.db').exists():
+    if (data_dir / 'app.db').exists():
         return
     if not (LEGACY_DATA_DIR / 'app.db').exists():
         return
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print(f'[migrate] copying data {LEGACY_DATA_DIR} -> {DATA_DIR} (one-time, NFS -> local)')
+    data_dir.mkdir(parents=True, exist_ok=True)
+    print(f'[migrate] copying data {LEGACY_DATA_DIR} -> {data_dir} (one-time, NFS -> local)')
     for name in ('app.db', 'manifest.json'):
         src = LEGACY_DATA_DIR / name
         if src.exists():
-            shutil.copy2(src, DATA_DIR / name)
+            shutil.copy2(src, data_dir / name)
     for sub in ('images', 'jsons'):
         src = LEGACY_DATA_DIR / sub
         if src.is_dir():
-            shutil.copytree(src, DATA_DIR / sub, dirs_exist_ok=True)
+            shutil.copytree(src, data_dir / sub, dirs_exist_ok=True)
     print('[migrate] done')
 
 
@@ -318,15 +354,16 @@ def _auto_migrate_legacy() -> None:
         return  # already in DB (either via migrate_manifest or a previous run)
     if not LEGACY_IMAGE.exists() or not LEGACY_JSON.exists():
         return
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
-    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    img_dir, json_dir = _img_dir(), _json_dir()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    json_dir.mkdir(parents=True, exist_ok=True)
     img_bytes = LEGACY_IMAGE.read_bytes()
     img_hash  = _hash_bytes(img_bytes)
     img_ext   = LEGACY_IMAGE.suffix.lstrip('.')
-    dst_img   = IMG_DIR / f'{img_hash}.{img_ext}'
+    dst_img   = img_dir / f'{img_hash}.{img_ext}'
     if not dst_img.exists():
         dst_img.write_bytes(img_bytes)
-    dst_json = JSON_DIR / f'{LEGACY_ID}.json'
+    dst_json = json_dir / f'{LEGACY_ID}.json'
     if not dst_json.exists():
         dst_json.write_bytes(LEGACY_JSON.read_bytes())
     _insert_set({
@@ -358,13 +395,12 @@ def catch_all(path: str):
 
 
 # ── i18n catalog ──────────────────────────────────────────────────────────────
-# The message catalog lives in the data volume ($DATA_DIR/i18n/<locale>.json) so
+# The message catalog lives in the data volume (<data_dir>/i18n/<locale>.json) so
 # strings can be edited + reloaded with no rebuild. The bundled copy under
 # static/i18n/ is the default, seeded into the volume on first boot. Missing
 # locale → fall back to the bundled default, then to English. The pseudo-locale
 # is synthesized client-side from `en` (see src/i18n), so it is not served here.
 
-I18N_DIR        = DATA_DIR / 'i18n'
 BUNDLED_I18N    = STATIC / 'i18n'
 I18N_FALLBACK   = 'en'
 
@@ -381,9 +417,10 @@ def _seed_i18n() -> None:
     """
     if not BUNDLED_I18N.is_dir():
         return
-    I18N_DIR.mkdir(parents=True, exist_ok=True)
+    i18n_dir = _i18n_dir()
+    i18n_dir.mkdir(parents=True, exist_ok=True)
     for src in BUNDLED_I18N.glob('*.json'):
-        dst = I18N_DIR / src.name
+        dst = i18n_dir / src.name
         if not dst.exists():
             shutil.copy2(src, dst)
             continue
@@ -404,7 +441,7 @@ def _seed_i18n() -> None:
 def _read_catalog(locale: str) -> dict | None:
     """Read a locale catalog: editable volume copy wins, else bundled default."""
     name = f'{locale}.json'
-    for base in (I18N_DIR, BUNDLED_I18N):
+    for base in (_i18n_dir(), BUNDLED_I18N):
         path = base / name
         if path.is_file():
             try:
@@ -485,17 +522,18 @@ def api_upload():
     img_hash  = _hash_bytes(img_bytes)
     img_ext   = Path(img_file.filename or 'img.tif').suffix.lstrip('.') or 'tif'
 
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
-    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    img_dir, json_dir = _img_dir(), _json_dir()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    json_dir.mkdir(parents=True, exist_ok=True)
 
-    dst_img = IMG_DIR / f'{img_hash}.{img_ext}'
+    dst_img = img_dir / f'{img_hash}.{img_ext}'
     if not dst_img.exists():
         dst_img.write_bytes(img_bytes)
     _img_cache.pop(f'{img_hash}.{img_ext}', None)
 
     pair_id    = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
-    (JSON_DIR / f'{pair_id}.json').write_bytes(json_file.read())
+    (json_dir / f'{pair_id}.json').write_bytes(json_file.read())
 
     _insert_set({
         'id':                pair_id,
@@ -613,14 +651,15 @@ def api_replace_pair(pair_id: str):
         img_bytes = img_file.read()
         new_hash  = _hash_bytes(img_bytes)
         new_ext   = Path(img_file.filename or 'img.tif').suffix.lstrip('.') or 'tif'
-        IMG_DIR.mkdir(parents=True, exist_ok=True)
-        dst = IMG_DIR / f'{new_hash}.{new_ext}'
+        img_dir = _img_dir()
+        img_dir.mkdir(parents=True, exist_ok=True)
+        dst = img_dir / f'{new_hash}.{new_ext}'
         if not dst.exists():
             dst.write_bytes(img_bytes)
         _img_cache.pop(f'{new_hash}.{new_ext}', None)
         old_h, old_ext = meta['image_hash'], meta['image_ext']
         if old_h != new_hash and not _hash_in_use(old_h, exclude_id=pair_id):
-            old_path = IMG_DIR / f'{old_h}.{old_ext}'
+            old_path = img_dir / f'{old_h}.{old_ext}'
             if old_path.exists():
                 old_path.unlink()
             _img_cache.pop(f'{old_h}.{old_ext}', None)
@@ -635,8 +674,9 @@ def api_replace_pair(pair_id: str):
             _db.close_db(con)
 
     if 'json' in request.files:
-        JSON_DIR.mkdir(parents=True, exist_ok=True)
-        (JSON_DIR / f'{pair_id}.json').write_bytes(request.files['json'].read())
+        json_dir = _json_dir()
+        json_dir.mkdir(parents=True, exist_ok=True)
+        (json_dir / f'{pair_id}.json').write_bytes(request.files['json'].read())
 
     meta = _get_set(pair_id)
     result = {
@@ -663,13 +703,13 @@ def api_delete_pair(pair_id: str):
     meta = _get_set(pair_id)
     if not meta:
         return jsonify({'error': 'pair not found'}), 404
-    json_path = JSON_DIR / f'{pair_id}.json'
+    json_path = _json_dir() / f'{pair_id}.json'
     if json_path.exists():
         json_path.unlink()
     h, ext = meta['image_hash'], meta['image_ext']
     _delete_set(pair_id)
     if not _hash_in_use(h):
-        img_path = IMG_DIR / f'{h}.{ext}'
+        img_path = _img_dir() / f'{h}.{ext}'
         if img_path.exists():
             img_path.unlink()
         _img_cache.pop(f'{h}.{ext}', None)
@@ -1083,28 +1123,79 @@ def api_analyze_set(set_id: str):
     })
 
 
+def run_ephemeral(cfg: AppConfig) -> None:
+    """The ephemeral launcher: seed → create_app → bind → run, the same non-forking way
+    scripts/gate.py has always needed. Used by the gate (and any other harness that wants
+    a concurrency-safe, sandbox-safe test instance — pass a per-run temp data_dir).
+
+    CRITICAL: use_reloader=False + a single process. The Werkzeug reloader forks a child
+    process; the sandbox harness reaps forked children with SIGSTKFLT (exit 144), so a
+    forking server never comes back up cleanly under it. debug=False keeps the reloader
+    off even if this ever changes upstream — do not flip either without re-checking that.
+    """
+    seed_data(cfg)
+    create_app(cfg)
+    port = resolve_port(cfg)
+    app.run(debug=False, use_reloader=False, host=cfg.host, port=port, threaded=True)
+
+
 def main() -> None:
-    """Dev entry point (`uv run leaf-annotation [--port N] [--host H]`): init then dev server.
+    """Dev entry point (`uv run leaf-annotation [flags]`): resolve config → seed DB →
+    create_app → bind port per policy → dev server.
 
     threaded=True lets the streaming import endpoint serve its long-lived response without
     blocking other requests (e.g. the thumbnails the page fetches while importing). Safe
     because get_db is connection-per-request, WAL is on, and busy_timeout queues writers.
     Production (Granian) is unaffected — this is the dev server only.
 
-    Port/host come from --port/--host (or $HT_PORT/$HT_HOST), defaulting to 127.0.0.1:5000.
-    We deliberately do NOT read the generic $PORT (that's the Docker/.env port) so a plain
-    `uv run leaf-annotation` always lands on 5000 — the Playwright webServer relies on that.
+    Every knob is its own explicit flag (pure flags, no --profile presets — see
+    docs/plans/Task — Entrypoint + environment consolidation (build).md, D2). Port/host
+    default from $HT_PORT/$HT_HOST, data-dir from $HT_DATA_DIR — same env fallbacks as
+    before, so a plain `uv run leaf-annotation` keeps landing on 127.0.0.1:5000 with no
+    flags. We deliberately do NOT read the generic $PORT (that's the Docker/.env port).
     Run a second instance for testing with: `uv run leaf-annotation --port 5001`.
     """
     parser = argparse.ArgumentParser(
         prog='leaf-annotation', description='Run the leaf-annotation dev server.')
+    parser.add_argument(
+        '--data-dir', type=Path,
+        default=Path(os.environ['HT_DATA_DIR']) if os.environ.get('HT_DATA_DIR') else default_data_dir(),
+        help='Data dir for app.db/images/jsons/i18n (default $HT_DATA_DIR, else the NFS-safe XDG default).')
     parser.add_argument('--port', type=int, default=int(os.environ.get('HT_PORT', '5000')),
                         help='TCP port to bind (default 5000, or $HT_PORT).')
     parser.add_argument('--host', default=os.environ.get('HT_HOST', '127.0.0.1'),
                         help='Host/interface to bind (default 127.0.0.1, or $HT_HOST).')
+    port_policy = parser.add_mutually_exclusive_group()
+    port_policy.add_argument('--strict-port', dest='port_policy', action='store_const', const='strict',
+                              help='Fail if --port is already taken (default).')
+    port_policy.add_argument('--auto-port', dest='port_policy', action='store_const', const='auto',
+                              help='Fall back to a free port if --port is taken.')
+    parser.set_defaults(port_policy='strict')
+    parser.add_argument('--seed', choices=['existing', 'clean', 'restore'], default='existing',
+                        help="DB seeding: 'existing' (default; never touch), 'clean' (wipe to "
+                             "empty), 'restore' (populate from the host backup).")
+    parser.add_argument('--restore-from', type=Path, default=None,
+                        help='Litestream replica dir for --seed restore (default: the standard host backup).')
     args = parser.parse_args()
-    _startup()
-    app.run(debug=True, host=args.host, port=args.port, threaded=True)
+    _load_env()
+    cfg = AppConfig(
+        data_dir=args.data_dir,
+        host=args.host,
+        port=args.port,
+        port_policy=args.port_policy,
+        db_seed=args.seed,
+        restore_source=args.restore_from,
+        secret_key=os.environ.get('SECRET_KEY'),
+        admin_password=os.environ.get('ADMIN_PASSWORD'),
+    )
+    try:
+        seed_data(cfg)
+    except RuntimeError as exc:
+        print(f'\n\033[31mERROR: {exc}\033[0m\n', file=sys.stderr)
+        raise SystemExit(1)
+    create_app(cfg)
+    port = resolve_port(cfg)
+    app.run(debug=True, host=cfg.host, port=port, threaded=True)
 
 
 if __name__ == '__main__':

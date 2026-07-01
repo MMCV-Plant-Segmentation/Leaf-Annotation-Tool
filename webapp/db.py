@@ -14,24 +14,42 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .config import AppConfig, default_data_dir
+
 BASE    = Path(__file__).parent.parent
 
+# ── Config (module singleton — one process, one config; see webapp/config.py) ────────────
 
-def _default_data_dir() -> Path:
-    """Default data location: a LOCAL XDG dir.
+_cfg: AppConfig | None = None
 
-    The SQLite DB must NOT live on a network filesystem (NFS/SMB/FUSE): POSIX
-    advisory file locking there is unreliable, so concurrent requests stall ~30s
-    contending for locks (see docs/). Keep the live store on local disk and back
-    it up to network/cloud storage out-of-band (litestream/lsyncd).
+
+def configure(cfg: AppConfig) -> None:
+    """Set the active config. Call once, before any get_db()/auto_create_schema()."""
+    global _cfg
+    _cfg = cfg
+
+
+def _env_default_config() -> AppConfig:
+    """Fallback used only if configure() was never called — reproduces the pre-refactor
+    behavior (HT_DATA_DIR env override, else the NFS-safe XDG default) so any caller that
+    still imports webapp.db without going through create_app() keeps working unchanged.
     """
-    xdg = os.environ.get('XDG_DATA_HOME')
-    root = Path(xdg) if xdg else Path.home() / '.local' / 'share'
-    return root / 'leaf-annotation'
+    data_dir = Path(os.environ['HT_DATA_DIR']) if os.environ.get('HT_DATA_DIR') else default_data_dir()
+    return AppConfig(data_dir=data_dir)
 
 
-DATA_DIR = Path(os.environ['HT_DATA_DIR']) if os.environ.get('HT_DATA_DIR') else _default_data_dir()
-DB_PATH  = DATA_DIR / 'app.db'
+def get_config() -> AppConfig:
+    """The active config — resolved lazily (NOT at import time), defaulting to
+    _env_default_config() if configure() was never called."""
+    global _cfg
+    if _cfg is None:
+        _cfg = _env_default_config()
+    return _cfg
+
+
+def _db_path() -> Path:
+    return get_config().data_dir / 'app.db'
+
 
 # ── Row factory ───────────────────────────────────────────────────────────────
 
@@ -48,7 +66,7 @@ def get_db() -> sqlite3.Connection:
     auto_create_schema(), NOT per connection. Re-asserting it on every connection
     takes a database lock and needlessly serializes concurrent requests.
     """
-    con = sqlite3.connect(str(DB_PATH))
+    con = sqlite3.connect(str(_db_path()))
     con.row_factory = _dict_factory
     con.execute('PRAGMA foreign_keys=ON')
     # Wait up to 5s for a write lock instead of failing immediately. WAL means reads never
@@ -276,7 +294,7 @@ CREATE TABLE IF NOT EXISTS annotation_tile (
 
 def auto_create_schema() -> None:
     """Create all tables if they don't exist. Safe to call on every startup."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _db_path().parent.mkdir(parents=True, exist_ok=True)
     con = get_db()
     try:
         con.execute('PRAGMA journal_mode=WAL')  # persistent; set once here, not per-connection
