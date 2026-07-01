@@ -23,6 +23,11 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY webapp/*.py webapp/
 COPY webapp/static/ webapp/static/
 
+# Alembic migrations — read from disk by path at boot (webapp/db.py's auto_create_schema()),
+# NOT part of the installed Python package, so they need an explicit copy here too.
+COPY alembic.ini ./
+COPY alembic/ alembic/
+
 # Bundle from frontend build (populated via bake context; overrides any static/dist
 # that might have slipped through)
 COPY --from=frontend-build /app/webapp/static/dist ./webapp/static/dist

@@ -308,8 +308,8 @@ def _startup(cfg: AppConfig) -> None:
     _load_env()
     _configure_app(cfg)
     _migrate_data_to_local(cfg)
-    _db.auto_create_schema()
-    _db.migrate_add_user_fk()
+    _db.auto_create_schema()   # Alembic upgrade/stamp — see webapp/db.py
+    _db.migrate_meta()         # app_version bookkeeping only now (not schema-mutating)
     _sync_admin(cfg)
     _db.migrate_manifest(_manifest_path())
     _auto_migrate_legacy()
