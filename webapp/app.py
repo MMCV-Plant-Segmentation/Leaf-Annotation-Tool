@@ -35,10 +35,11 @@ from shapely.ops import unary_union
 from werkzeug.security import generate_password_hash
 
 from . import db as _db
-from .auth import auth_bp, login_required
+from .auth import admin_required, auth_bp, login_required
 from .config import AppConfig, default_data_dir
 from .projects import projects_bp
 from .seed import resolve_port, seed_data
+from .sync_status import fetch_sync_status
 from .version import get_version
 
 BASE     = Path(__file__).parent.parent
@@ -474,6 +475,12 @@ def api_version():
         return jsonify(get_version(con))
     finally:
         _db.close_db(con)
+
+
+@app.get('/api/sync-status')
+@admin_required
+def api_sync_status():
+    return jsonify(fetch_sync_status())
 
 
 @app.get('/api/images')
