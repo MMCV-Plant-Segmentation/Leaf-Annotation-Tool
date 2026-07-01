@@ -26,6 +26,35 @@ export const dropZoneOver = style({
   background: vars.color.surfaceRaised,
 });
 
+export const fileListHeader = style({
+  fontWeight: 600,
+  marginBottom: '0.3rem',
+});
+
+export const fileList = style({
+  margin: '0 auto',
+  maxWidth: '360px',
+  maxHeight: '140px',
+  overflowY: 'auto',
+  textAlign: 'left',
+  fontSize: '0.8rem',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: '6px',
+  padding: '0.3rem 0.5rem',
+  background: vars.color.surface,
+});
+
+export const fileListItem = style({
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+});
+
+export const fileListMore = style({
+  fontStyle: 'italic',
+  color: vars.color.textMuted,
+});
+
 export const uploadBtn = style({
   padding: '0.4rem 1rem',
   border: `1px solid ${vars.color.border}`,
