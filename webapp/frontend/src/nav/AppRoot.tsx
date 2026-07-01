@@ -4,6 +4,7 @@ import type { RouteSectionProps } from '@solidjs/router';
 import { currentUser, fetchMe, logout } from '../auth';
 import { darkThemeClass, lightThemeClass, THEME_STORAGE_KEY } from '../theme/index';
 import { t } from '../i18n/catalog';
+import VersionFooter from './VersionFooter';
 import * as styles from './AppRoot.css';
 
 const w = window as any;
@@ -75,6 +76,9 @@ const AppRoot: Component<RouteSectionProps> = (props) => {
         </div>
       </Show>
       {props.children as any}
+      <Show when={currentUser() && !isPublic()}>
+        <VersionFooter />
+      </Show>
     </>
   );
 };

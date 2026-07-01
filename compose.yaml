@@ -3,6 +3,12 @@ services:
   # Restoring a fresh/wiped deployment is the explicit one-shot `restore` service below.
   app:
     image: leaf-annotation:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GIT_SHA: "${GIT_SHA:-}"
+        BUILD_TIME: "${BUILD_TIME:-}"
     env_file: .env
     environment:
       HT_DATA_DIR: /data

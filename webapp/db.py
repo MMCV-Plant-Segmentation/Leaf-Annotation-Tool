@@ -18,6 +18,12 @@ from .config import AppConfig, default_data_dir
 
 BASE    = Path(__file__).parent.parent
 
+# Bumped whenever a migration changes the DB shape in a way worth recording — the seam
+# a future migration-squash/Alembic adoption builds on. Not yet wired to individual
+# migrations (see docs/plans/Plan — Version everything (stack-wide).md); establishing
+# the `meta` table + this constant is the prerequisite, not that work itself.
+SCHEMA_VERSION = 1
+
 # ── Config (module singleton — one process, one config; see webapp/config.py) ────────────
 
 _cfg: AppConfig | None = None
@@ -310,6 +316,7 @@ def auto_create_schema() -> None:
     migrate_backfill_project_creator_annotator()
     migrate_annotation_stroke_width()
     migrate_annotation_outline()
+    migrate_meta()
 
 
 # ── Migrations ────────────────────────────────────────────────────────────────
@@ -443,6 +450,32 @@ def migrate_annotation_outline() -> None:
         if 'outline_json' not in cols:
             con.execute('ALTER TABLE annotation ADD COLUMN outline_json TEXT')
             con.commit()
+    finally:
+        close_db(con)
+
+
+def migrate_meta() -> None:
+    """Create the `meta` key/value table and record schema_version + app_version.
+
+    Runs on every startup; the upsert is idempotent so repeated calls just refresh
+    the values (app_version in particular should track whatever build is running).
+    """
+    from .version import app_version  # local import: version.py has no dependency on db.py
+
+    con = get_db()
+    try:
+        con.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
+        con.execute(
+            'INSERT INTO meta (key, value) VALUES (?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            ('schema_version', str(SCHEMA_VERSION)),
+        )
+        con.execute(
+            'INSERT INTO meta (key, value) VALUES (?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            ('app_version', app_version()),
+        )
+        con.commit()
     finally:
         close_db(con)
 

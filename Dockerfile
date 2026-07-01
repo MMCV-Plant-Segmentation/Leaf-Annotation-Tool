@@ -33,6 +33,15 @@ RUN uv sync --frozen --no-dev
 ENV HT_DATA_DIR=/data
 ENV PORT=5000
 
+# Build-time version identity (docs/plans/Plan — Version everything (stack-wide).md).
+# The prod image has no `.git`, so the SHA/timestamp are baked in at `docker build` time;
+# absent build args fall back to "unknown"/"dev" (see webapp/version.py) — never breaks a
+# plain `docker build` with no --build-arg.
+ARG GIT_SHA=""
+ARG BUILD_TIME=""
+ENV GIT_SHA=$GIT_SHA
+ENV BUILD_TIME=$BUILD_TIME
+
 EXPOSE 5000
 
 CMD ["sh", "-c", "exec uv run granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]

@@ -19,6 +19,7 @@
   "common.piles": "{n} piles",
 
   "nav.admin": "Admin",
+  "nav.versionFooter": "v{version} · {sha}",
   "nav.logout": "Log out",
 
   "theme.switchDark": "Switch to dark theme",
@@ -146,6 +147,11 @@
   "admin.settings.saveFailed": "Save failed",
   "admin.settings.saving": "Saving…",
   "admin.settings.saving": "Saving…",
+  "admin.version.title": "Version",
+  "admin.version.appVersion": "App version",
+  "admin.version.gitSha": "Git SHA",
+  "admin.version.builtAt": "Built at",
+  "admin.version.schemaVersion": "DB schema version",
 
   "projects.title": "Projects",
   "projects.form.name": "Name",

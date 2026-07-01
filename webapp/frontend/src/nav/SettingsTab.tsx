@@ -1,5 +1,6 @@
 import { type Component, createResource, createSignal, Show } from 'solid-js';
 import { t } from '../i18n/catalog';
+import VersionCard from './VersionCard';
 import * as styles from './AdminScreen.css';
 import * as settingsStyles from './SettingsTab.css';
 
@@ -49,33 +50,36 @@ const SettingsTab: Component = () => {
   };
 
   return (
-    <Show when={settings()} fallback={<div>{t('common.loading')}</div>} keyed>
-      {(s) => {
-        initBackupDir();
-        void s;
-        return (
-          <form class={styles.section} onSubmit={save}>
-            <h3 class={styles.sectionTitle}>{t('admin.tab.settings')}</h3>
+    <>
+      <Show when={settings()} fallback={<div>{t('common.loading')}</div>} keyed>
+        {(s) => {
+          initBackupDir();
+          void s;
+          return (
+            <form class={styles.section} onSubmit={save}>
+              <h3 class={styles.sectionTitle}>{t('admin.tab.settings')}</h3>
 
-            <div class={settingsStyles.settingsField}>
-              <label for="setting-backup-dir">{t('admin.settings.backupDirLabel')}</label>
-              <input
-                id="setting-backup-dir"
-                type="text"
-                value={backupDir()}
-                onInput={(e) => setBackupDir(e.currentTarget.value)}
-                placeholder={t('admin.settings.backupDirPlaceholder')}
-              />
-            </div>
+              <div class={settingsStyles.settingsField}>
+                <label for="setting-backup-dir">{t('admin.settings.backupDirLabel')}</label>
+                <input
+                  id="setting-backup-dir"
+                  type="text"
+                  value={backupDir()}
+                  onInput={(e) => setBackupDir(e.currentTarget.value)}
+                  placeholder={t('admin.settings.backupDirPlaceholder')}
+                />
+              </div>
 
-            <button class={settingsStyles.settingsSave} type="submit" disabled={busy()}>
-              {busy() ? t('admin.settings.saving') : t('common.save')}
-            </button>
-            <div class={settingsStyles.settingsMsg}>{msg()}</div>
-          </form>
-        );
-      }}
-    </Show>
+              <button class={settingsStyles.settingsSave} type="submit" disabled={busy()}>
+                {busy() ? t('admin.settings.saving') : t('common.save')}
+              </button>
+              <div class={settingsStyles.settingsMsg}>{msg()}</div>
+            </form>
+          );
+        }}
+      </Show>
+      <VersionCard />
+    </>
   );
 };
 
