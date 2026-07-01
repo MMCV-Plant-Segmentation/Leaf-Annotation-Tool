@@ -188,6 +188,8 @@
   "detail.images.import": "Import",
   "detail.images.importing": "Importing…",
   "detail.images.importDone": "Imported {imported}, skipped {skipped}, {errors} errors.",
+  "detail.images.presentNote": "({present} already present, not re-sent)",
+  "detail.images.alreadyImported": "already imported",
   "detail.images.uploadingN": "Uploading {current} of {total}",
   "detail.images.progress": "{done} / {total} ({errors} errors)",
   "detail.images.none": "No images yet — upload images or import a server path above.",

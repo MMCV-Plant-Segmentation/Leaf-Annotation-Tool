@@ -769,6 +769,44 @@ def upload_images(project_id: str):
     return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
 
 
+@projects_bp.post('/api/projects/<project_id>/images/probe')
+@login_required
+def probe_images(project_id: str):
+    """Pre-flight dedup probe: given candidate content hashes, return the subset this
+    project already has. Read-only — no bytes, no writes. Lets the browser skip
+    re-uploading files already present; the upload path keeps its own dedup as backstop.
+
+    Body {"hashes": [...]}  →  {"have": [...]}. Hashes are imaging.hash_bytes() values
+    (sha256(bytes).hexdigest()[:24]); the client reproduces the scheme byte-for-byte.
+    """
+    hashes = (request.json or {}).get('hashes')
+    if not isinstance(hashes, list):
+        return jsonify({'error': 'hashes must be a list'}), 400
+    con = _db.get_db()
+    try:
+        if not _project(con, project_id):
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        # De-dupe the candidates and query in chunks so a huge folder can't blow past
+        # SQLite's bound-variable limit. Hits the UNIQUE(project_id, image_hash) index.
+        wanted = list({str(h) for h in hashes if h})
+        have: list[str] = []
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i:i + 500]
+            placeholders = ','.join('?' * len(chunk))
+            rows = con.execute(
+                f'SELECT image_hash FROM project_image '
+                f'WHERE project_id = ? AND image_hash IN ({placeholders})',
+                (project_id, *chunk),
+            ).fetchall()
+            have.extend(r['image_hash'] for r in rows)
+        return jsonify({'have': have})
+    finally:
+        _db.close_db(con)
+
+
 @projects_bp.delete('/api/projects/<project_id>/images/<image_id>')
 @login_required
 def delete_image(project_id: str, image_id: str):
