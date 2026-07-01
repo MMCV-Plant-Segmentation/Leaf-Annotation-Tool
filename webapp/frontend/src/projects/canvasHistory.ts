@@ -64,13 +64,30 @@ export function createCanvasHistory(
 
   /**
    * Erase a set of annotations: calls mutate(delete), updates the view, and pushes the
-   * action. Used by the eraser tool so undo can restore the whole lesion.
+   * action. Retained for the erase/undo/redo symmetry tests; the brush eraser uses
+   * `applyErase` below since its own request already deleted server-side.
    */
   const erase = async (anns: CanvasAnnotation[]) => {
     if (!anns.length) return;
     const ids = anns.map((a) => a.id);
     const r = await projectsApi.mutateAnnotations(getProjectId(), 'delete', ids);
     applyDelta(updateImg, r.lesions, [], ids, r.tileStates);
+    push({ kind: 'erase', anns });
+  };
+
+  /**
+   * Apply an eraser-brush drag that the server has ALREADY soft-deleted (one request
+   * covers the whole drag, however many strokes it swept over). Updates the view and
+   * pushes ONE `erase` action carrying every deleted annotation, so a single Ctrl+Z
+   * restores all of them.
+   */
+  const applyErase = (
+    anns: CanvasAnnotation[],
+    lesions: CanvasLesion[],
+    tileStates: TileStateUpdate[] = [],
+  ) => {
+    if (!anns.length) return;
+    applyDelta(updateImg, lesions, [], anns.map((a) => a.id), tileStates);
     push({ kind: 'erase', anns });
   };
 
@@ -106,5 +123,5 @@ export function createCanvasHistory(
 
   const reset = () => { setStack([]); setCursor(0); };
 
-  return { push, erase, undo, redo, canUndo, canRedo, reset };
+  return { push, erase, applyErase, undo, redo, canUndo, canRedo, reset };
 }

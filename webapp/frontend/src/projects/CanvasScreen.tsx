@@ -1,10 +1,11 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasAnnotation, type CanvasImage, type CanvasLesion, type TileStateUpdate } from './api';
+import { projectsApi, imageUrls, type CanvasImage } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, clampRect, buildStrokePath, strokeOutline, mergeTileStates } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, buildStrokePath } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
+import { createCanvasPersistence } from './canvasPersistence';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
 import { currentUser } from '../auth';
@@ -48,41 +49,14 @@ const CanvasScreen: Component = () => {
   const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
 
-  const applyLesions = (ls: CanvasLesion[]) => updateImg((im) => ({ ...im, lesions: ls }));
-
-  // BUGS #16: a draw that lands in an already-completed tile re-opens it server-side.
-  const applyTileStates = (updates: TileStateUpdate[]) =>
-    updateImg((im) => ({ ...im, tiles: mergeTileStates(im.tiles, updates) }));
-
   const history = createCanvasHistory(
     () => canvas()?.projectId ?? '',
     updateImg,
   );
 
-  // ── persistence ──
-  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => {
-    const im = image(); const c = canvas();
-    if (!im || !c) return;
-    try {
-      // Compute the perfect-freehand outline polygon for stroke commits so the server
-      // stores and uses it for lesion geometry (fills loops, matches rendered shape).
-      const outline = (kind === 'stroke' && strokeWidth != null)
-        ? strokeOutline(points, strokeWidth)
-        : undefined;
-      const ann = await projectsApi.createAnnotation(c.projectId, {
-        imageId: im.imageId, annotator: annotator(), kind, points, passNo,
-        label: selClass(), viewport: clampRect(vb(), im.width, im.height),
-        strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
-        outline,
-      });
-      pushAnnotation(ann);
-      applyLesions(ann.lesions ?? []);
-      applyTileStates(ann.tileStates ?? []);
-      history.push({ kind: 'draw', ann });
-    } catch (ex) {
-      alert(ex instanceof Error ? ex.message : 'Save failed');
-    }
-  };
+  const { commit } = createCanvasPersistence({
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass, vb, updateImg, history,
+  });
 
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
@@ -102,16 +76,6 @@ const CanvasScreen: Component = () => {
   const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
   onMount(() => { window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); });
   onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
-
-  const pushAnnotation = (ann: CanvasAnnotation) => {
-    updateImg((im) => ({ ...im, annotations: [...im.annotations, ann] }));
-  };
-
-  // Erase all member strokes of a lesion (eraser tool).
-  const eraseLesion = async (lesion: CanvasLesion) => {
-    const im = image(); if (!im) return;
-    await history.erase(im.annotations.filter((a) => lesion.memberIds.includes(a.id)));
-  };
 
   const toggleTile = async (tile: import('./api').CanvasTile) => {
     if (!tile.annotatorTileId) return;
@@ -170,20 +134,19 @@ const CanvasScreen: Component = () => {
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={(tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
-                <For each={im().lesions}>
-                  {(l) => <LesionShape lesion={l}
-                    onErase={tool() === 'eraser' ? () => void eraseLesion(l) : undefined} />}
-                </For>
+                <For each={im().lesions}>{(l) => <LesionShape lesion={l} />}</For>
                 <For each={im().annotations.filter((a) => a.kind !== 'stroke')}>
-                  {(a) => <AnnotationShape ann={a}
-                    onErase={tool() === 'eraser' ? () => void history.erase([a]) : undefined} />}
+                  {(a) => <AnnotationShape ann={a} />}
                 </For>
               </Show>
-              <Show when={draft().length > 0 && tool() === 'brush'}>
-                <path d={buildStrokePath(draft(), brushSize(), false)} fill="rgba(37,99,235,0.35)" />
+              <Show when={draft().length > 0 && (tool() === 'brush' || tool() === 'eraser')}>
+                <path d={buildStrokePath(draft(), brushSize(), false)}
+                  fill={tool() === 'eraser' ? 'rgba(220,38,38,0.35)' : 'rgba(37,99,235,0.35)'} />
               </Show>
-              <Show when={tool() === 'brush' && interaction.hoverImg()}>
-                {(c) => <circle cx={c()[0]} cy={c()[1]} r={brushSize() / 2} fill="none" stroke="rgba(37,99,235,0.85)" stroke-width="1.5" vector-effect="non-scaling-stroke" pointer-events="none" />}
+              <Show when={(tool() === 'brush' || tool() === 'eraser') && interaction.hoverImg()}>
+                {(c) => <circle cx={c()[0]} cy={c()[1]} r={brushSize() / 2} fill="none"
+                  stroke={tool() === 'eraser' ? 'rgba(220,38,38,0.85)' : 'rgba(37,99,235,0.85)'}
+                  stroke-width="1.5" vector-effect="non-scaling-stroke" pointer-events="none" />}
               </Show>
             </svg>
           </div>

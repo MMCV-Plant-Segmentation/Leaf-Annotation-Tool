@@ -80,8 +80,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
     if (strokeInProgress) return;  // §D: pan + size-scroll locked mid-stroke
-    if (o.tool() === 'brush' && !e.shiftKey) {
-      // Brush mode plain scroll → adjust size (§B)
+    if ((o.tool() === 'brush' || o.tool() === 'eraser') && !e.shiftKey) {
+      // Brush/eraser mode plain scroll → adjust size (§B); eraser shares the brush's size control
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }
@@ -117,13 +117,12 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
     const tl = o.tool();
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
-    if (tl === 'brush') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
+    if (tl === 'brush' || tl === 'eraser') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
     // polygon/line: add a vertex (legacy tools, not shown in toolbar)
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);
   };
 
   const onPointerLeave = () => { setHoverImg(null); };
-
   const onPointerMove = (e: PointerEvent) => {
     setHoverImg(toImage(e.clientX, e.clientY));
     if (touches.has(e.pointerId)) {
@@ -158,7 +157,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       lastPanClient = { x: e.clientX, y: e.clientY };
       return;
     }
-    if (o.tool() === 'brush' && strokeInProgress) {
+    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
       o.setDraft((d) => [...d, [ix, iy]]);
     }
@@ -168,10 +167,11 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     touches.delete(e.pointerId);
     if (touches.size < 2) pinchStart = null;
 
-    if (o.tool() === 'brush' && strokeInProgress) {
-      // Commit; single-click (1 point) still works — buildStrokePath renders it as a circle
+    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
+      // Commit (1-point click still works). Eraser is the same gesture, kind 'erase' —
+      // CanvasScreen's commit() routes that to the delete-by-intersection endpoint.
       const pts = o.draft().map(([x, y]) => [Math.round(x), Math.round(y)]);
-      o.commit('stroke', pts, 1, o.brushSize());
+      o.commit(o.tool() === 'eraser' ? 'erase' : 'stroke', pts, 1, o.brushSize());
       o.setDraft([]);
       strokeInProgress = false;
     }

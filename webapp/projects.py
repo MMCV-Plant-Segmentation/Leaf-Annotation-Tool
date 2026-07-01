@@ -1218,6 +1218,79 @@ def mutate_annotations(project_id: str):
         _db.close_db(con)
 
 
+@projects_bp.post('/api/projects/<project_id>/annotations/erase-stroke')
+@login_required
+def erase_stroke(project_id: str):
+    """Brush eraser: soft-delete every LIVE stroke of this image+annotator whose painted
+    footprint intersects the swept eraser brush polygon.
+
+    This is area-intersection delete-whole-stroke, NOT area-subtraction — erasing over
+    part of a fused lesion removes only the member strokes the eraser actually touched,
+    so the lesion re-forms from the survivors. Geometry stays server-authoritative: the
+    eraser polygon is built with the same `_stroke_polygon` helper used for paint strokes.
+
+    Body: { imageId, annotator, points, strokeWidth, outline? } — same shape as a paint
+    stroke commit (points + brush size, optionally the perfect-freehand outline).
+    Returns: { deletedIds: [...], lesions: [...], tileStates: [...] }
+    """
+    body = request.json or {}
+    image_id = body.get('imageId')
+    points = body.get('points') or []
+    stroke_width = body.get('strokeWidth')
+    outline = body.get('outline')
+    # Annotate-as-yourself, same admin bypass as create_annotation.
+    if session.get('username') == 'admin':
+        annotator = (body.get('annotator') or '').strip()
+    else:
+        annotator = session.get('username') or ''
+    if not (image_id and points and annotator):
+        return jsonify({'error': 'imageId, points, annotator required'}), 400
+    con = _db.get_db()
+    try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        eraser_geom = _stroke_polygon(points, stroke_width, outline=outline)
+        if eraser_geom is None:
+            return jsonify({'deletedIds': [],
+                            'lesions': _lesions_for_image(con, image_id, annotator),
+                            'tileStates': []})
+        rows = con.execute(
+            '''SELECT id, points_json, stroke_width, outline_json FROM annotation
+               WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL
+                 AND kind = 'stroke' ''',
+            (image_id, annotator),
+        ).fetchall()
+        deleted_ids = []
+        for r in rows:
+            poly = _stroke_polygon(
+                json.loads(r['points_json']), r['stroke_width'],
+                outline=json.loads(r['outline_json']) if r['outline_json'] else None,
+            )
+            if poly is not None and not poly.is_empty and poly.intersects(eraser_geom):
+                deleted_ids.append(r['id'])
+        dirtied: dict[str, dict] = {}
+        if deleted_ids:
+            now = _now()
+            qmarks = ','.join('?' * len(deleted_ids))
+            con.execute(
+                f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
+                (now, *deleted_ids),
+            )
+            for ann_id in deleted_ids:
+                tiles = [t['tile_id'] for t in con.execute(
+                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
+                ).fetchall()]
+                for d in _mark_tiles_dirty(con, tiles, annotator):
+                    dirtied[d['tileId']] = d
+            con.commit()
+        return jsonify({'deletedIds': deleted_ids,
+                        'lesions': _lesions_for_image(con, image_id, annotator),
+                        'tileStates': list(dirtied.values())})
+    finally:
+        _db.close_db(con)
+
+
 # ── tile completion toggle ────────────────────────────────────────────────────
 
 @projects_bp.patch('/api/annotator-tiles/<at_id>')
