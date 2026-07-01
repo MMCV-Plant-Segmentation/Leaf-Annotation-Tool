@@ -2,7 +2,7 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasImage } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, LesionShape, CanvasTiles, buildStrokePath } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, buildStrokePath } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
@@ -29,7 +29,7 @@ const CanvasScreen: Component = () => {
   const [selClass, setSelClass] = createSignal('lesion');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
-  // BUGS #20: the lesion/annotation overlay must not paint before the <image> has loaded
+  // BUGS #20: the annotation overlay must not paint before the <image> has loaded
   // (else it briefly floats over a blank/late image). Reset only on image src change —
   // never on pan/zoom — so there's no flicker while panning/zooming an already-loaded image.
   const [imgLoaded, setImgLoaded] = createSignal(false);
@@ -135,10 +135,7 @@ const CanvasScreen: Component = () => {
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
-                <For each={im().lesions}>{(l) => <LesionShape lesion={l} />}</For>
-                <For each={im().annotations.filter((a) => a.kind !== 'stroke')}>
-                  {(a) => <AnnotationShape ann={a} />}
-                </For>
+                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} />}</For>
               </Show>
               <Show when={draft().length > 0 && (tool() === 'brush' || tool() === 'eraser')}>
                 <path d={buildStrokePath(draft(), brushSize(), false)}

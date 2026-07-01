@@ -14,7 +14,7 @@ const ProjectProgressTable: Component<{ progress: Progress[] }> = (props) => (
           <tr>
             <th>{t('detail.progress.annotator')}</th>
             <th>{t('detail.progress.tilesDone')}</th>
-            <th>{t('detail.progress.lesions')}</th>
+            <th>{t('detail.progress.annotations')}</th>
             <th>{t('detail.progress.vertices')}</th>
           </tr>
         </thead>
@@ -24,7 +24,7 @@ const ProjectProgressTable: Component<{ progress: Progress[] }> = (props) => (
               <tr>
                 <td>{pr.annotator}</td>
                 <td>{t('detail.progress.tileCount', { done: pr.tilesCompleted, total: pr.tilesTotal })}</td>
-                <td>{pr.lesionCount}</td>
+                <td>{pr.annotationCount}</td>
                 <td>{pr.vertexCount}</td>
               </tr>
             )}
