@@ -1,3 +1,9 @@
+# addr enables litestream's built-in Prometheus metrics endpoint (last-sync counters,
+# WAL/replica gauges) so the backup-status sidecar can scrape it over the compose
+# network — see docs/plans/Plan — Admin sync-status panel.md (DECISION: sidecar, 2026-07-01).
+# No new mount: this is a plain HTTP port on the litestream container.
+addr: :9090
+
 dbs:
   - path: /data/app.db
     replicas:
