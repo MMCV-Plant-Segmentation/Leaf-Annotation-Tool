@@ -2,7 +2,7 @@
 //
 // Non-admin: always the logged-in user (unchanged legacy behaviour — no picker).
 // Admin: a READ-ONLY pick from the project's roster (the backend already blinds
-// annotations/lesions/tile-state to the requested `annotator` query param, so no
+// annotations/tile-state to the requested `annotator` query param, so no
 // new endpoint is needed). Default = the first roster annotator with any
 // annotations on the current image, else the first in the roster; the pick then
 // persists as the admin navigates images (see createEffect guard below).

@@ -15,7 +15,8 @@
 import { test, expect } from '@playwright/test';
 
 function ann(id: string) {
-  return { id, kind: 'stroke', passNo: 1, points: [[0, 0]], label: 'lesion', viewport: null, annotator: 'alice', imageId: 'img1', strokeWidth: 10 };
+  return { id, kind: 'stroke', passNo: 1, points: [], rings: [[[0, 0], [1, 0], [1, 1]]],
+    label: 'lesion', viewport: null, annotator: 'alice', imageId: 'img1' };
 }
 
 function ptrEvent(clientX: number, clientY: number, pointerId: number) {
@@ -97,8 +98,8 @@ async function makeHistory(initialAnns: ReturnType<typeof ann>[]) {
   const { createCanvasHistory } = await import('../../src/projects/canvasHistory');
 
   let _anns = [...initialAnns];
-  type ImType = { annotations: typeof _anns; lesions: unknown[] };
-  const [img, setImg] = createSignal<ImType>({ annotations: _anns, lesions: [] });
+  type ImType = { annotations: typeof _anns };
+  const [img, setImg] = createSignal<ImType>({ annotations: _anns });
   const updateImg = (fn: (im: ImType) => ImType) => {
     const next = fn(img());
     _anns = next.annotations;
@@ -109,7 +110,7 @@ async function makeHistory(initialAnns: ReturnType<typeof ann>[]) {
   (globalThis as Record<string, unknown>).fetch = async (_url: string, init?: RequestInit) => {
     const body = JSON.parse(init!.body as string) as { op: string; ids: string[] };
     calls.push(body);
-    return { ok: true, status: 200, json: async () => ({ ok: true, ids: body.ids, lesions: [] }) } as Response;
+    return { ok: true, status: 200, json: async () => ({ ok: true, ids: body.ids, tileStates: [] }) } as Response;
   };
 
   const history = createCanvasHistory(() => 'proj1', updateImg);
@@ -121,7 +122,7 @@ test.describe('canvasHistory.applyErase (brush eraser)', () => {
     const a = ann('a'); const b = ann('b'); const c = ann('c');
     const { history, calls, ids } = await makeHistory([a, b, c]);
 
-    history.applyErase([a, b], [], []);
+    history.applyErase([a, b], []);
 
     expect(calls).toHaveLength(0);
     expect(ids()).toEqual(['c']);
@@ -132,7 +133,7 @@ test.describe('canvasHistory.applyErase (brush eraser)', () => {
     const { history } = await makeHistory([a, b, c]);
     expect(history.canUndo()).toBe(false);
 
-    history.applyErase([a, b, c], [], []);
+    history.applyErase([a, b, c], []);
 
     expect(history.canUndo()).toBe(true);
     expect(history.canRedo()).toBe(false);
@@ -143,7 +144,7 @@ test.describe('canvasHistory.applyErase (brush eraser)', () => {
     const { history, calls, ids } = await makeHistory([a, b, c]);
 
     // One drag swept 3 strokes; the server already deleted them (calls is empty so far).
-    history.applyErase([a, b, c], [], []);
+    history.applyErase([a, b, c], []);
     expect(ids()).toEqual([]);
     expect(calls).toHaveLength(0);
 
@@ -161,7 +162,7 @@ test.describe('canvasHistory.applyErase (brush eraser)', () => {
     const a = ann('a');
     const { history, calls, ids } = await makeHistory([a]);
 
-    history.applyErase([], [], []);
+    history.applyErase([], []);
 
     expect(calls).toHaveLength(0);
     expect(ids()).toEqual(['a']);
