@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import hashlib
 import io
+from pathlib import Path
 
 from PIL import Image
 
 from . import db as _db
 
-IMG_DIR = _db.DATA_DIR / 'images'
-
 _img_cache: dict[str, Image.Image] = {}
+
+
+def _img_dir() -> Path:
+    """Resolved lazily (NOT at import time) from the active AppConfig."""
+    return _db.get_config().data_dir / 'images'
 
 
 def hash_bytes(data: bytes) -> str:
@@ -27,8 +31,9 @@ def hash_bytes(data: bytes) -> str:
 def store_image(data: bytes, ext: str) -> str:
     """Write image bytes into the content-addressed store; return the hash. Idempotent."""
     h = hash_bytes(data)
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
-    dst = IMG_DIR / f'{h}.{ext}'
+    img_dir = _img_dir()
+    img_dir.mkdir(parents=True, exist_ok=True)
+    dst = img_dir / f'{h}.{ext}'
     if not dst.exists():
         dst.write_bytes(data)
     _img_cache.pop(f'{h}.{ext}', None)
@@ -38,7 +43,7 @@ def store_image(data: bytes, ext: str) -> str:
 def get_image(image_hash: str, image_ext: str) -> Image.Image:
     key = f'{image_hash}.{image_ext}'
     if key not in _img_cache:
-        _img_cache[key] = Image.open(IMG_DIR / key)
+        _img_cache[key] = Image.open(_img_dir() / key)
     return _img_cache[key]
 
 
