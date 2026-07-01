@@ -180,6 +180,7 @@
   "detail.images": "Images ({count})",
   "detail.images.dropHint": "Drag leaf images here or click to browse (PNG, JPG, TIFF). Already-imported files are skipped automatically.",
   "detail.images.filesSelected": "{n} file(s) selected — click Upload to import",
+  "detail.images.filesMore": "+ {n} more",
   "detail.images.upload": "Upload",
   "detail.images.uploading": "Uploading…",
   "detail.images.serverPathSection": "Import from server path (dev/admin only)",

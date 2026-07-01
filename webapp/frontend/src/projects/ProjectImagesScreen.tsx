@@ -11,6 +11,7 @@ import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
 import ProjectNotFound from './ProjectNotFound';
+import SelectedFilesList from './SelectedFilesList';
 import * as styles from './ProjectImagesScreen.css';
 
 const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.tif,.tiff';
@@ -131,7 +132,7 @@ const ProjectImagesScreen: Component = () => {
             >
               <Show when={selectedFiles().length > 0}
                 fallback={<span>{t('detail.images.dropHint')}</span>}>
-                <span>{t('detail.images.filesSelected', { n: selectedFiles().length })}</span>
+                <SelectedFilesList files={selectedFiles()} />
               </Show>
             </div>
             <button disabled={busy() || selectedFiles().length === 0}
