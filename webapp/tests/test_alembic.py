@@ -27,6 +27,16 @@ from webapp import db  # noqa: E402  (env vars must be set first)
 
 REPO = Path(__file__).resolve().parents[2]
 
+# The actual head revision (grows with each new forward migration — resolved dynamically
+# so this test doesn't need hand-editing every time one lands). db.BASELINE_REVISION stays
+# the fixed '0001_baseline' id used only for the stamp-a-legacy-DB assertions below.
+from alembic.config import Config as _AlembicConfig  # noqa: E402
+from alembic.script import ScriptDirectory as _ScriptDirectory  # noqa: E402
+
+_acfg = _AlembicConfig(str(REPO / 'alembic.ini'))
+_acfg.set_main_option('script_location', str(REPO / 'alembic'))
+HEAD_REVISION = _ScriptDirectory.from_config(_acfg).get_current_head()
+
 # Load the baseline revision module directly (NOT through Alembic) so we can build a
 # "pre-Alembic" DB using the exact same CREATE TABLE statements, without touching
 # alembic_version — i.e. reproduce today's real schema shape from scratch.
@@ -105,7 +115,7 @@ expected_tables = {
     'annotation', 'annotation_tile', 'meta',
 }
 assert expected_tables <= tables, f'missing tables: {expected_tables - tables}'
-assert av['version_num'] == db.BASELINE_REVISION
+assert av['version_num'] == HEAD_REVISION
 print(f'  ✓  fresh DB has all {len(expected_tables)} expected tables, stamped at head')
 
 from webapp import app as appmod  # noqa: E402  (import after schema exists)
@@ -159,7 +169,7 @@ try:
     projects = con.execute('SELECT id, name FROM project').fetchall()
 finally:
     db.close_db(con)
-assert av['version_num'] == db.BASELINE_REVISION
+assert av['version_num'] == HEAD_REVISION
 assert users == [{'id': 1, 'username': 'admin'}], users
 assert projects == [{'id': 'p1', 'name': 'Legacy Project'}], projects
 print('  ✓  pre-existing rows (users, project) survive the stamp byte-for-byte')
@@ -184,7 +194,7 @@ try:
     users2 = con.execute('SELECT id, username FROM users').fetchall()
 finally:
     db.close_db(con)
-assert av_rows == [{'version_num': db.BASELINE_REVISION}], av_rows
+assert av_rows == [{'version_num': HEAD_REVISION}], av_rows
 assert users2 == [{'id': 1, 'username': 'admin'}], 'repeated boot must not touch data'
 print('  ✓  repeated boot: no re-stamp, single alembic_version row, data unchanged')
 
