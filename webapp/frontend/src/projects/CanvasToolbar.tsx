@@ -36,12 +36,12 @@ export const CanvasToolbar: Component<Props> = (props) => (
       {(tl) => (
         <button class={props.tool() === tl ? styles.toolActive : styles.tool}
           onClick={() => props.setTool(tl)}
-          title={tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (click stroke to erase lesion)' : 'Pan'}>
+          title={tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (drag over strokes to delete them)' : 'Pan'}>
           {tl === 'brush' ? 'brush' : tl === 'eraser' ? '✕ eraser' : 'pan'}
         </button>
       )}
     </For>
-    <Show when={props.tool() === 'brush'}>
+    <Show when={props.tool() === 'brush' || props.tool() === 'eraser'}>
       <label class={styles.sizeLabel}>
         {'Size'}
         <input class={styles.sizeSlider} type="range" min={1} max={props.maxBrushSize()}

@@ -184,6 +184,9 @@ export const projectsApi = {
   mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
     jfetch<{ ok: boolean; ids: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
+  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number; outline?: number[][] }) =>
+    jfetch<{ deletedIds: string[]; lesions: CanvasLesion[]; tileStates: TileStateUpdate[] }>(
+      `/api/projects/${projectId}/annotations/erase-stroke`, jbody('POST', body)),
 
   setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
     jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
