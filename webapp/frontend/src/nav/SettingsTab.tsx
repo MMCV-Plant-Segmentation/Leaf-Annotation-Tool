@@ -1,5 +1,6 @@
 import { type Component, createResource, createSignal, Show } from 'solid-js';
 import { t } from '../i18n/catalog';
+import SyncStatusCard from './SyncStatusCard';
 import VersionCard from './VersionCard';
 import * as styles from './AdminScreen.css';
 import * as settingsStyles from './SettingsTab.css';
@@ -58,6 +59,8 @@ const SettingsTab: Component = () => {
           return (
             <form class={styles.section} onSubmit={save}>
               <h3 class={styles.sectionTitle}>{t('admin.tab.settings')}</h3>
+
+              <SyncStatusCard backupDir={backupDir} />
 
               <div class={settingsStyles.settingsField}>
                 <label for="setting-backup-dir">{t('admin.settings.backupDirLabel')}</label>

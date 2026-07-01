@@ -25,6 +25,9 @@ services:
     image: litestream/litestream:0.3.13
     profiles: ["backup"]
     command: ["replicate", "-config", "/etc/litestream.yml"]
+    # :9090 serves litestream's own Prometheus metrics (ops/litestream.yml's `addr`) — scraped
+    # by backup-status below, over the compose network only. Not published to the host.
+    expose: ["9090"]
     volumes:
       - leaf-data:/data
       - ./ops/litestream.yml:/etc/litestream.yml:ro
@@ -38,6 +41,26 @@ services:
       - leaf-data:/data:ro
       - ./ops/lsyncd.conf.lua:/etc/lsyncd.conf.lua:ro
       - ${BACKUP_DIR:?BACKUP_DIR must be set to use the backup/restore profiles}/files:/backup/files
+      # Shares ONLY lsyncd's own status file (not the backup data) with backup-status.
+      - lsyncd-status:/var/run/lsyncd
+    restart: unless-stopped
+
+  # Tiny stdlib HTTP status sidecar: parses litestream's metrics + lsyncd's status file (never
+  # the backup data itself) and serves GET /status for the main app to proxy. Keeps the app
+  # fully decoupled from backup — see docs/plans/Plan — Admin sync-status panel.md (DECISION:
+  # sidecar, 2026-07-01). No ${BACKUP_DIR} mount here either.
+  backup-status:
+    image: leaf-backup-status:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.backup-status
+    profiles: ["backup"]
+    environment:
+      LITESTREAM_METRICS_URL: http://litestream:9090/metrics
+      LSYNCD_STATUS_FILE: /var/run/lsyncd/status
+      PORT: "8098"
+    volumes:
+      - lsyncd-status:/var/run/lsyncd:ro
     restart: unless-stopped
 
   # Explicit, one-shot restore for a fresh/wiped deployment — run BEFORE `up`:
@@ -70,3 +93,6 @@ volumes:
   leaf-data:
     # Named volume — guaranteed local Docker-managed disk.
     # Never bind-mount /deltos here: SQLite must not live on NFS.
+  lsyncd-status:
+    # Tiny shared volume: ONLY lsyncd's self-reported status file, read-only on the
+    # backup-status side. Never the backup data (${BACKUP_DIR}/files) itself.

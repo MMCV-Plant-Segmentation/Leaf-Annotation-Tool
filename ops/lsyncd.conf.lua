@@ -5,7 +5,13 @@
 
 settings {
     logfile    = "/var/log/lsyncd.log",
-    statusFile = "/var/run/lsyncd.status",
+    -- Written under /var/run/lsyncd/ (a dedicated subdir, not bare /var/run) so it can be
+    -- shared read-only to the backup-status sidecar via one small volume (compose.yaml's
+    -- `lsyncd-status` volume) without exposing anything else in /var/run. lsyncd rewrites
+    -- this file on its own heartbeat (statusInterval, default 10s) regardless of activity,
+    -- so its header timestamp is a live "lsyncd is alive as of T" signal the sidecar parses
+    -- — see docs/plans/Plan — Admin sync-status panel.md (DECISION: sidecar, 2026-07-01).
+    statusFile = "/var/run/lsyncd/status",
     nodaemon   = true,
 }
 
