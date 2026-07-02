@@ -135,7 +135,12 @@ def start_test(env, port):
 
 def stop(env, target):
     if target == "prod":
-        sh(["docker", "compose", "down"], cwd=str(ROOT), env=base_env(env))
+        # --profile backup so `down` also removes the backup sidecars; without it they linger and
+        # hold the network. Dummy BACKUP_DIR only satisfies interpolation (down mounts nothing).
+        e = base_env(env)
+        e.setdefault("BACKUP_DIR", "/unused-for-down")
+        sh(["docker", "compose", "--profile", "backup", "down", "--remove-orphans"],
+           cwd=str(ROOT), env=e)
     else:
         subprocess.run(["docker", "rm", "-f", TEST_CT])
         subprocess.run(["docker", "volume", "rm", TEST_VOL], capture_output=True)
