@@ -30,6 +30,26 @@ type Props = {
   canRedo: Accessor<boolean>;
 };
 
+// Slider is logarithmic across [1, maxBrushSize] so the low end (fine control on
+// small lesions) gets far more travel than the high end — same "multiplicative feel"
+// as the scroll-wheel resize in canvasInteraction.ts's stepSize, just continuous
+// instead of stepped. SLIDER_RESOLUTION is the number of discrete internal slider
+// steps, independent of the actual px range.
+const SLIDER_RESOLUTION = 1000;
+
+const clampBrushSize = (v: number, max: number) => Math.max(1, Math.min(max, Math.round(v)));
+
+const sizeToSliderPos = (size: number, max: number): number => {
+  const hi = Math.log(Math.max(2, max));
+  const v = clampBrushSize(size, max);
+  return Math.round((Math.log(v) / hi) * SLIDER_RESOLUTION);
+};
+
+const sliderPosToSize = (pos: number, max: number): number => {
+  const hi = Math.log(Math.max(2, max));
+  return clampBrushSize(Math.exp((pos / SLIDER_RESOLUTION) * hi), max);
+};
+
 // Toolbar strip extracted from CanvasScreen to keep parent under 200 lines.
 export const CanvasToolbar: Component<Props> = (props) => (
   <div class={styles.toolbar} data-testid="canvas-toolbar">
@@ -54,10 +74,19 @@ export const CanvasToolbar: Component<Props> = (props) => (
       <Show when={props.tool() === 'brush' || props.tool() === 'eraser'}>
         <label class={styles.sizeLabel}>
           {'Size'}
-          <input class={styles.sizeSlider} type="range" min={1} max={props.maxBrushSize()}
-            step={1} value={props.brushSize()} data-testid="brush-size-slider"
-            onInput={(e) => props.setBrushSize(+e.currentTarget.value)} />
-          <span data-testid="brush-size-value">{`${props.brushSize()}px`}</span>
+          <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
+            step={1} value={sizeToSliderPos(props.brushSize(), props.maxBrushSize())}
+            data-testid="brush-size-slider"
+            onInput={(e) => props.setBrushSize(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize()))} />
+          <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize()}
+            step={1} value={props.brushSize()} data-testid="brush-size-input"
+            onChange={(e) => {
+              const parsed = Number(e.currentTarget.value);
+              const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize()) : props.brushSize();
+              e.currentTarget.value = String(next);
+              props.setBrushSize(next);
+            }} />
+          <span data-testid="brush-size-value">{'px'}</span>
         </label>
       </Show>
       <span class={styles.sep} />

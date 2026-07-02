@@ -2,7 +2,7 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasImage } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, buildStrokePath } from './canvasShapes';
+import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, LiveDraftOverlay } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
@@ -138,15 +138,8 @@ const CanvasScreen: Component = () => {
               <Show when={imgLoaded()}>
                 <For each={im().annotations}>{(a) => <AnnotationShape ann={a} />}</For>
               </Show>
-              <Show when={draft().length > 0 && (tool() === 'brush' || tool() === 'eraser')}>
-                <path d={buildStrokePath(draft(), brushSize(), false)}
-                  fill={tool() === 'eraser' ? 'rgba(220,38,38,0.35)' : 'rgba(37,99,235,0.35)'} />
-              </Show>
-              <Show when={(tool() === 'brush' || tool() === 'eraser') && interaction.hoverImg()}>
-                {(c) => <circle cx={c()[0]} cy={c()[1]} r={brushSize() / 2} fill="none"
-                  stroke={tool() === 'eraser' ? 'rgba(220,38,38,0.85)' : 'rgba(37,99,235,0.85)'}
-                  stroke-width="1.5" vector-effect="non-scaling-stroke" pointer-events="none" />}
-              </Show>
+              <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
+                hover={interaction.hoverImg()} />
             </svg>
           </div>
         )}
