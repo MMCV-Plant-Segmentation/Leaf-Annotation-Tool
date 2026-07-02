@@ -21,18 +21,22 @@ Run with: uv run python3 webapp/tests/test_sync_status.py
 import os
 import tempfile
 import time
+from pathlib import Path
 
 TMP = tempfile.mkdtemp(prefix='leaf-anno-syncstatus-test-')
 os.environ['HT_DATA_DIR'] = TMP
 os.environ['SECRET_KEY'] = 'test-secret'
-# Nothing listens here — exercises the "sidecar unreachable" path with no real network
-# dependency and no timeout delay (connection refused on localhost is instant).
-os.environ['BACKUP_STATUS_URL'] = 'http://127.0.0.1:1/status'
 
 from webapp import app as appmod
 from webapp import backup_status as bs
 from webapp import db
+from webapp.config import AppConfig
 
+# Nothing listens here — exercises the "sidecar unreachable" path with no real network
+# dependency and no timeout delay (connection refused on localhost is instant). Set via
+# AppConfig (the request path reads cfg.backup_status_url, never os.environ directly —
+# see webapp/sync_status.py), not an env var.
+db.configure(AppConfig(data_dir=Path(TMP), backup_status_url='http://127.0.0.1:1/status'))
 db.auto_create_schema()
 _c = db.get_db()
 _c.execute("INSERT INTO users (id, username) VALUES (1, 'admin')")

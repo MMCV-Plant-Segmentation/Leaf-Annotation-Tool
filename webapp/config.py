@@ -45,7 +45,19 @@ class AppConfig:
     backup          Asserted invariant only — prod refuses to run silently without it.
                     Backup itself (Litestream/lsyncd) is a compose sidecar, not this code.
     secret_key      Flask session secret. Required by create_app().
-    admin_password  Upserts the 'admin' user on startup if set.
+    admin_password  Seeds the 'admin' user on first boot if set (no admin exists yet).
+                    Does NOT overwrite an existing admin's password — see
+                    admin_password_force.
+    admin_password_force
+                    When True, admin_password force-updates an already-existing admin's
+                    password instead of only seeding on first boot. Set by an explicit
+                    `--admin-password` CLI flag (operator intent), never by the env-sourced
+                    ADMIN_PASSWORD default.
+    backup_dir      Host path where DB/file backups land (display-only in the admin
+                    settings panel); None/'' means "not configured" for this instance.
+    backup_status_url
+                    URL of the `backup-status` sidecar polled by GET /api/sync-status.
+                    None means "use sync_status.py's compose-network default".
     """
     data_dir: Path = field(default_factory=default_data_dir)
     host: str = '127.0.0.1'
@@ -56,3 +68,6 @@ class AppConfig:
     backup: bool = False
     secret_key: str | None = None
     admin_password: str | None = None
+    admin_password_force: bool = False
+    backup_dir: str | None = None
+    backup_status_url: str | None = None
