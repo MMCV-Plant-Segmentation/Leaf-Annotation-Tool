@@ -29,10 +29,7 @@ web app alone, with no backup.
    - `PORT` — host port (defaults to `5000`).
    - `APP_GROUP` — a shared Unix group that co-owns the data + backups, so any member can run the app
      and share the same backup. `./run.sh` (step 4) reads it and runs the stack as *you* + this group;
-     your UID is auto-detected, never typed or hardcoded. (Without it you can still `docker compose`
-     directly, which runs as root.)
-   - `BACKUP_PRIMARY` — set to `1` on the **one** host that runs the `backup` profile; leave unset
-     everywhere else. Guards against two hosts backing up to the same `BACKUP_DIR` at once.
+     your UID is auto-detected, never typed or hardcoded.
 
 2. **Build the images.** Set `GIT_SHA`/`BUILD_TIME` so the running build's identity shows up
    in the app footer + admin Settings panel (`GET /api/version`); omitting them is safe (falls
