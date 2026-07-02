@@ -1,5 +1,4 @@
 """Auth, user management, invite, and settings blueprint."""
-import os
 import secrets
 import time
 from functools import wraps
@@ -253,7 +252,7 @@ def api_accept_invite(token: str):
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 def get_setting(key: str, env_default: str = '') -> str:
-    """Read a setting: DB value wins over env default."""
+    """Read a setting: DB value wins over the AppConfig-sourced default."""
     con = _db.get_db()
     try:
         row = con.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
@@ -261,13 +260,16 @@ def get_setting(key: str, env_default: str = '') -> str:
         _db.close_db(con)
     if row and row['value'] is not None:
         return row['value']
-    return os.environ.get(key, env_default)
+    return env_default
 
 
 @auth_bp.get('/api/settings')
 @admin_required
 def api_get_settings():
-    env_defaults = {'BACKUP_DIR': os.environ.get('BACKUP_DIR', '')}
+    # This instance's AppConfig (webapp/config.py:backup_dir), not a raw environment
+    # read. None/'' means "not configured for this instance", not a value to be
+    # overwritten by a persisted DB row from a different install.
+    env_defaults = {'BACKUP_DIR': _db.get_config().backup_dir or ''}
     con = _db.get_db()
     try:
         rows = con.execute('SELECT key, value, updated_at FROM settings').fetchall()

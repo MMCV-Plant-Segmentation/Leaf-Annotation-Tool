@@ -25,6 +25,8 @@ _cfg = AppConfig(
     backup=True,
     secret_key=os.environ.get('SECRET_KEY'),
     admin_password=os.environ.get('ADMIN_PASSWORD'),
+    backup_dir=os.environ.get('BACKUP_DIR'),
+    backup_status_url=os.environ.get('BACKUP_STATUS_URL'),
 )
 
 app = create_app(_cfg)
