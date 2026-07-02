@@ -35,6 +35,11 @@ COPY --from=frontend-build /app/webapp/static/dist ./webapp/static/dist
 # Install the project itself
 RUN uv sync --frozen --no-dev
 
+# Make the whole app tree world-readable/searchable so the container can run as ANY
+# (non-root) uid — repo source files are mode 640 and COPY preserves that, which would
+# otherwise 'Permission denied' for a non-root user (see the ownership-flip runbook).
+RUN chmod -R a+rX /app
+
 ENV HT_DATA_DIR=/data
 ENV PORT=5000
 
@@ -49,4 +54,6 @@ ENV BUILD_TIME=$BUILD_TIME
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "exec uv run granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
+# Run granian straight from the venv (not `uv run`): as a non-root uid, `uv run` would try to
+# touch its cache/venv and needs a writable HOME; the venv is already built, so invoke it directly.
+CMD ["sh", "-c", "exec /app/.venv/bin/granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
