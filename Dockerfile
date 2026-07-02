@@ -56,4 +56,6 @@ EXPOSE 5000
 
 # Run granian straight from the venv (not `uv run`): as a non-root uid, `uv run` would try to
 # touch its cache/venv and needs a writable HOME; the venv is already built, so invoke it directly.
-CMD ["sh", "-c", "exec /app/.venv/bin/granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
+# umask 002 so files this process writes (the DB, WAL) are GROUP-writable — lets any member of the
+# shared group (see compose PUID/PGID + the ownership runbook) read/write the same data + backups.
+CMD ["sh", "-c", "umask 002 && exec /app/.venv/bin/granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
