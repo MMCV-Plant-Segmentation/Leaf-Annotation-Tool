@@ -132,3 +132,13 @@ export const sizeSlider = style({
   cursor: 'pointer',
   accentColor: vars.color.accent,
 });
+
+export const sizeNumberInput = style({
+  width: '52px',
+  padding: '0.15rem 0.3rem',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: '4px',
+  background: vars.color.surface,
+  color: vars.color.text,
+  fontSize: '0.8rem',
+});
