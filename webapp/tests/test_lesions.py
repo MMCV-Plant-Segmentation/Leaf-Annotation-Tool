@@ -238,6 +238,25 @@ assert bridge['id'] not in live_ids
 print('  ✓  undo restores both originals (strokes repointed back) and removes the merge')
 
 
+# ── M7 redo: re-POSTing the original create re-derives the same fuse ─────────
+# There is no server-side "redo" endpoint (see reverse_annotation_merge's docstring and
+# canvasHistory.ts's redo()) — the client just re-POSTs the ORIGINAL create_annotation
+# body against the now-resurrected originals, deterministically re-fusing them.
+
+print('\n── M7 redo: re-issuing the original bridge create re-fuses b1+b2 ──')
+
+redo_bridge = make_stroke([[tx + pad, row2], [tx + tw - pad, row2]], label='lesion', sw=8)
+assert set(redo_bridge['consumedAnnotationIds']) == {b1['id'], b2['id']}, \
+    f'redo must re-fuse the resurrected originals, got {redo_bridge["consumedAnnotationIds"]}'
+assert is_deleted(b1['id']) and is_deleted(b2['id']), 'redo must re-consume the originals'
+assert redo_bridge['id'] != bridge['id'], \
+    'redo mints a brand-new annotation id, never reuses the undone merge id'
+live_ids2 = {a['id'] for a in live_annotations()}
+assert redo_bridge['id'] in live_ids2
+assert b1['id'] not in live_ids2 and b2['id'] not in live_ids2
+print('  ✓  redo (re-POST of the original create) re-fuses the resurrected originals into one fresh mask')
+
+
 # ── M8: non-fusing kinds (polygon) never merge ────────────────────────────────
 
 print('\n── M8: polygon annotations never fuse, even overlapping a live mask ──')
