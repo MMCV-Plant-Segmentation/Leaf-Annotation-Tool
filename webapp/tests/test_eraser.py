@@ -117,12 +117,15 @@ def _username(client):
     return 'bob' if client is bob_client else 'alice'
 
 
-def make_stroke(client, points, label='lesion', sw=10):
-    r2 = client.post(f'/api/projects/{pid}/annotations', json={
+def make_stroke(client, points, label='lesion', sw=10, outline=None):
+    body = {
         'imageId': image_id, 'annotator': _username(client), 'kind': 'stroke',
         'points': points, 'label': label, 'strokeWidth': sw,
         'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th},
-    })
+    }
+    if outline is not None:
+        body['outline'] = outline
+    r2 = client.post(f'/api/projects/{pid}/annotations', json=body)
     assert r2.status_code == 201, f'make_stroke failed: {jdump(r2)}'
     return jdump(r2)
 
@@ -288,6 +291,22 @@ assert res6['deletedAnnotationIds'] == [inside_lesion['id']], \
 assert is_deleted(inside_lesion['id']), 'lesion circled by the loop must be erased'
 assert not is_deleted(outside_lesion['id']), 'lesion outside the loop must survive'
 print('  ✓  circling a lesion with a looped eraser stroke erases it; outside lesion survives')
+
+
+# ── B7: the SAME loop-fills-solid consolidation on the BRUSH side ─────────────────
+# Regression for "circle a dot with a normal brush stroke → big ring on top of a little
+# dot" (they stayed separate because the brush footprint kept its hole, so the enclosed dot
+# was never fused). create_annotation now uses the same `_footprint` helper as the eraser,
+# so circling a dot englobes it into one filled mask. (Reuses E6's loop_outline; the inside
+# lesion there was a different label + is now deleted, so this corner is clear.)
+print('\n── B7: circling a dot with a looped BRUSH stroke fuses it (shared _footprint) ──')
+brush_dot = make_stroke(alice_client, [[lx - 3, ly], [lx + 3, ly]], sw=2, label='brush-loop')
+brush_ring = make_stroke(alice_client, [[lx, ly]], sw=2, label='brush-loop', outline=loop_outline)
+assert set(brush_ring['consumedAnnotationIds']) == {brush_dot['id']}, \
+    f'circling the dot with the brush must fuse it, got {brush_ring["consumedAnnotationIds"]}'
+assert is_deleted(brush_dot['id']), 'the circled dot must be consumed into the merged mask'
+assert brush_ring['id'] != brush_dot['id'], 'the fuse mints a new annotation'
+print('  ✓  circling a dot with a looped brush stroke fuses it into one filled mask')
 
 
 print('\n✓ All eraser tests passed')
