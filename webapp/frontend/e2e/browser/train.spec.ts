@@ -2,7 +2,7 @@
  * Train screen — pair selector, mode checkboxes, count slider.
  */
 import { test, expect } from '@playwright/test';
-import { collectJsErrors } from '../support/helpers';
+import { collectJsErrors, expectStyled } from '../support/helpers';
 import { SET_ALPHA } from '../fixtures/ids';
 
 test('pair selector, mode checkboxes, count slider all render', async ({ page }) => {
@@ -43,7 +43,22 @@ test('mode checkboxes are interactive', async ({ page }) => {
   const labelChk = page.locator('[role="group"]').filter({ hasText: /label identification/i });
   await expect(polyChk.first()).toBeVisible({ timeout: 5000 });
   await expect(labelChk.first()).toBeVisible();
-  // Toggle polygon off then on
+  // Toggle polygon on then off. A center-of-row click (not just text) must land on the
+  // Control (flex:1, spans the row) so the whole styled card is clickable — data-checked
+  // is the real signal that the click actually registered, not just that it didn't throw.
   await polyChk.first().click();
+  await expect(polyChk.first()).toHaveAttribute('data-checked', '');
   await polyChk.first().click();
+  await expect(polyChk.first()).not.toHaveAttribute('data-checked', '');
+});
+
+test('selecting label-only mode hides the polygon section in the trainer', async ({ page }, testInfo) => {
+  await page.goto('/train');
+  const labelChk = page.locator('[role="group"]').filter({ hasText: /label identification/i }).first();
+  await labelChk.click();
+  await expect(labelChk).toHaveAttribute('data-checked', '');
+  await page.getByRole('button', { name: /start training/i }).click();
+  await expect(page.locator('#app')).toBeVisible({ timeout: 8000 });
+  await expect(page.locator('#label-section')).toBeVisible();
+  await expectStyled(page.locator('#polygon-section'), 'display', 'none', testInfo);
 });
