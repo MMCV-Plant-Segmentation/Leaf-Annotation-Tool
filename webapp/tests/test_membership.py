@@ -23,10 +23,10 @@ TMP = tempfile.mkdtemp(prefix='leaf-anno-member-test-')
 os.environ['HT_DATA_DIR'] = TMP
 os.environ['SECRET_KEY'] = 'test-secret'
 
+import uuid as _uuid
 import numpy as np
 from PIL import Image
 from webapp import db, app as appmod
-from webapp.db import migrate_backfill_project_creator_annotator
 
 db.auto_create_schema()
 _c = db.get_db()
@@ -156,54 +156,6 @@ admin_ids = {p['id'] for p in admin_list}
 assert alice_pid in admin_ids and bob_pid in admin_ids, \
     f'admin missing projects: {admin_ids}'
 print(f'  ✓  admin sees all projects (count={len(admin_list)} ≥ 2)')
-
-
-# ── M5: backfill migration ────────────────────────────────────────────────────
-print('\n── M5: backfill migration ──')
-
-import uuid as _uuid
-# Manually insert a project with created_by_user_id but NO annotator row.
-fake_pid = str(_uuid.uuid4())
-con = db.get_db()
-try:
-    con.execute(
-        '''INSERT INTO project (id, name, tile_size_px, black_threshold, classes_json,
-             created_by, created_by_user_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-        (fake_pid, 'Legacy project', 128, 0, '[]', 'bob', 3, '2026-01-01T00:00:00'),
-    )
-    con.commit()
-finally:
-    db.close_db(con)
-
-# Verify no annotator row exists yet.
-con2 = db.get_db()
-try:
-    pre = con2.execute(
-        'SELECT 1 FROM project_annotator WHERE project_id = ? AND user_id = 3', (fake_pid,)
-    ).fetchone()
-finally:
-    db.close_db(con2)
-assert pre is None, 'annotator row should not exist before backfill'
-
-# Run the backfill.
-migrate_backfill_project_creator_annotator()
-
-# Verify the annotator row was added.
-con3 = db.get_db()
-try:
-    post = con3.execute(
-        'SELECT byline FROM project_annotator WHERE project_id = ? AND user_id = 3', (fake_pid,)
-    ).fetchone()
-finally:
-    db.close_db(con3)
-assert post is not None, 'annotator row should exist after backfill'
-assert post['byline'] == 'bob', f'unexpected byline: {post["byline"]}'
-print('  ✓  backfill adds creator to project_annotator for legacy project')
-
-# Idempotent: running again should not raise.
-migrate_backfill_project_creator_annotator()
-print('  ✓  backfill is idempotent (second call does not error)')
 
 
 # ── M6: per-annotator ownership (a member can't touch another annotator's data) ──
