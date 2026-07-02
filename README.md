@@ -27,6 +27,12 @@ web app alone, with no backup.
    - `BACKUP_DIR` — absolute host path where backups are mirrored. Optional; required only if you
      run the `backup` profile (step 4). No default — leave unset to run without backup.
    - `PORT` — host port (defaults to `5000`).
+   - `APP_GROUP` — a shared Unix group that co-owns the data + backups, so any member can run the app
+     and share the same backup. `./run.sh` (step 4) reads it and runs the stack as *you* + this group;
+     your UID is auto-detected, never typed or hardcoded. (Without it you can still `docker compose`
+     directly, which runs as root.)
+   - `BACKUP_PRIMARY` — set to `1` on the **one** host that runs the `backup` profile; leave unset
+     everywhere else. Guards against two hosts backing up to the same `BACKUP_DIR` at once.
 
 2. **Build the images.** Set `GIT_SHA`/`BUILD_TIME` so the running build's identity shows up
    in the app footer + admin Settings panel (`GET /api/version`); omitting them is safe (falls
@@ -39,19 +45,21 @@ web app alone, with no backup.
 3. **(Restoring a wiped/fresh deployment only)** lay down the DB + files from backup *before* starting:
 
    ```sh
-   docker compose run --rm restore
+   ./run.sh run --rm restore
    ```
 
-4. **Start it.** With backup (requires `BACKUP_DIR` to exist on the host):
+4. **Start it** with `./run.sh` — it runs the stack as *you* + the shared `APP_GROUP` (so the DB and
+   backups stay group-owned, shareable by any group member) and forwards all args to `docker compose`.
+   With backup (the primary host only — needs `BACKUP_DIR` + `BACKUP_PRIMARY=1`):
 
    ```sh
-   docker compose --profile backup up -d
+   ./run.sh --profile backup up -d
    ```
 
-   Or app-only, no backup (e.g. just trying it / no backup target yet):
+   Or app-only, no backup:
 
    ```sh
-   docker compose up -d
+   ./run.sh up -d
    ```
 
 5. Open `http://<host>:<PORT>`, log in as **`admin`** with `ADMIN_PASSWORD`, then go to the
