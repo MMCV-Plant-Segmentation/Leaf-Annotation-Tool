@@ -130,22 +130,26 @@ const TrainScreen: Component = () => {
             checked={polygon()}
             onChange={(v: boolean) => { setPolygon(v); setModeError(false); }}
           >
-            <CheckboxControl style="display:none"><CheckboxIndicator /></CheckboxControl>
-            <div class={styles.modeCheckText}>
-              <strong>{t('train.polygon.title')}</strong>
-              <span>{t('train.polygon.sub')}</span>
-            </div>
+            <CheckboxControl class={styles.modeCheckControl}>
+              <CheckboxIndicator />
+              <div class={styles.modeCheckText}>
+                <strong>{t('train.polygon.title')}</strong>
+                <span>{t('train.polygon.sub')}</span>
+              </div>
+            </CheckboxControl>
           </CheckboxRoot>
           <CheckboxRoot
             class={`${styles.modeCheck}${label() ? ' ' + styles.selected : ''}`}
             checked={label()}
             onChange={(v: boolean) => { setLabel(v); setModeError(false); }}
           >
-            <CheckboxControl style="display:none"><CheckboxIndicator /></CheckboxControl>
-            <div class={styles.modeCheckText}>
-              <strong>{t('train.label.title')}</strong>
-              <span>{t('train.label.sub')}</span>
-            </div>
+            <CheckboxControl class={styles.modeCheckControl}>
+              <CheckboxIndicator />
+              <div class={styles.modeCheckText}>
+                <strong>{t('train.label.title')}</strong>
+                <span>{t('train.label.sub')}</span>
+              </div>
+            </CheckboxControl>
           </CheckboxRoot>
         </div>
 
