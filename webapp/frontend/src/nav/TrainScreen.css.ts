@@ -70,6 +70,15 @@ export const modeCheck = style({
 // Hide the native checkbox input rendered by Kobalte
 globalStyle(`${modeCheck} input[type="checkbox"]`, { display: 'none' });
 
+// CheckboxControl owns the click-to-toggle handler; stretch it to fill the row (flex:1)
+// so the whole styled card is clickable, not just a zero-size glyph.
+export const modeCheckControl = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '14px',
+  flex: 1,
+});
+
 // Modifier class applied when the mode is selected
 export const selected = style({
   borderColor: vars.color.accent,
