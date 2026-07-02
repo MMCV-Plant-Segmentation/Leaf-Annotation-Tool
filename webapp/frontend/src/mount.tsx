@@ -11,6 +11,7 @@ import AnalyzeSetup from './analyze/AnalyzeSetup';
 import AnalyzeViewerRoute from './nav/AnalyzeViewerRoute';
 import LoginScreen from './nav/LoginScreen';
 import AdminScreen from './nav/AdminScreen';
+import AccountScreen from './nav/AccountScreen';
 import InviteScreen from './nav/InviteScreen';
 import ProjectsScreen from './projects/ProjectsScreen';
 import ProjectHubScreen from './projects/ProjectHubScreen';
@@ -39,6 +40,7 @@ void initI18n().then(() => {
         <Route path="/analyze/:setId" component={AnalyzeViewerRoute} />
         <Route path="/login" component={LoginScreen} />
         <Route path="/admin" component={AdminScreen} />
+        <Route path="/account" component={AccountScreen} />
         <Route path="/invite/:token" component={InviteScreen} />
         <Route path="/projects" component={ProjectsScreen} />
         <Route path="/projects/:id" component={ProjectHubScreen} />
