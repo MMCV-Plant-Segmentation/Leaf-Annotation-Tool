@@ -10,60 +10,48 @@ There are two ways to run it: **Docker** (production / collaborators) and **nati
 
 ## Production (Docker)
 
-**Prerequisites:** Docker with `buildx` and `compose`. Backup is **opt-in**: the litestream + lsyncd
-sidecars run only under the `backup` compose profile (see step 4). Plain `docker compose up` runs the
-web app alone, with no backup.
+**Prerequisites:** Docker with `buildx` + `compose`, and membership in a shared Unix group that will
+co-own the data + backups. Everything goes through **`./deploy.py`** — it runs the stack as *you* +
+that group (never root, no sudo, no UID hardcoded), auto-computes the build version, and builds when
+needed. (Raw `docker compose` still works but defaults to running as **root**, which makes the data +
+backups root-owned — use `deploy.py`.)
 
-1. **Create `.env`** from the template and fill in real values:
-
-   ```sh
-   cp .env.example .env
-   ```
-
-   Set, at minimum:
-   - `SECRET_KEY` — a random 32+ char string. Generate one with:
-     `uv run python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
-   - `ADMIN_PASSWORD` — the password for the built-in `admin` account (required on first boot).
-   - `BACKUP_DIR` — absolute host path where backups are mirrored. Optional; required only if you
-     run the `backup` profile (step 4). No default — leave unset to run without backup.
-   - `PORT` — host port (defaults to `5000`).
-   - `APP_GROUP` — a shared Unix group that co-owns the data + backups, so any member can run the app
-     and share the same backup. `./run.sh` (step 4) reads it and runs the stack as *you* + this group;
-     your UID is auto-detected, never typed or hardcoded.
-
-2. **Build the images.** Set `GIT_SHA`/`BUILD_TIME` so the running build's identity shows up
-   in the app footer + admin Settings panel (`GET /api/version`); omitting them is safe (falls
-   back to `unknown`/`dev`):
+1. **Create `.env`** interactively — generates `SECRET_KEY` for you and prompts for the rest
+   (`PORT`, `APP_GROUP` = the shared group, `BACKUP_DIR` = optional backup path, `ADMIN_PASSWORD` =
+   the first-boot `admin` login):
 
    ```sh
-   GIT_SHA=$(git rev-parse --short HEAD) BUILD_TIME=$(date -u +%FT%TZ) docker buildx bake
+   ./deploy.py create-dot-env
    ```
 
-3. **(Restoring a wiped/fresh deployment only)** lay down the DB + files from backup *before* starting:
+2. **Starting from an existing backup** (only when seeding a fresh/wiped host) — lay the DB + files
+   down first:
 
    ```sh
-   ./run.sh run --rm restore
+   ./deploy.py restore
    ```
 
-4. **Start it** with `./run.sh` — it runs the stack as *you* + the shared `APP_GROUP` (so the DB and
-   backups stay group-owned, shareable by any group member) and forwards all args to `docker compose`.
-   With backup (the primary host only — needs `BACKUP_DIR` + `BACKUP_PRIMARY=1`):
+3. **Start it** (builds the image if needed, then runs as you + `APP_GROUP`):
 
    ```sh
-   ./run.sh --profile backup up -d
+   ./deploy.py start prod                 # app only
+   ./deploy.py start prod --with-backup   # + litestream/lsyncd backups (needs BACKUP_DIR)
    ```
 
-   Or app-only, no backup:
+   Stop with `./deploy.py stop prod`.
 
-   ```sh
-   ./run.sh up -d
-   ```
+4. Open `http://<host>:<PORT>`, log in as **`admin`** with `ADMIN_PASSWORD`, then use the **Admin**
+   panel to create invite codes for collaborators.
 
-5. Open `http://<host>:<PORT>`, log in as **`admin`** with `ADMIN_PASSWORD`, then go to the
-   **Admin** panel to create invite codes for collaborators.
+> Backup is **opt-in** (`--with-backup`, needs `BACKUP_DIR`); without it the app runs alone. Data
+> persists in the `leaf-data` Docker volume regardless. Only **one** host should back up to a given
+> `BACKUP_DIR`.
 
-> Data persists in the `leaf-data` Docker volume either way. The `backup` profile only adds the
-> litestream + lsyncd mirrors to `BACKUP_DIR`.
+### Testing against real data
+
+`./deploy.py start test` runs the **real image** against a **throwaway copy** of prod's data on
+`:5001` (prod is never touched) — so container-only issues (permissions, entrypoint) surface before
+you deploy. `./deploy.py stop test` tears it down.
 
 ---
 

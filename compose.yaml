@@ -3,7 +3,7 @@ services:
   # Restoring a fresh/wiped deployment is the explicit one-shot `restore` service below.
   app:
     image: leaf-annotation:latest
-    # Run as the invoking user + shared group. PUID/PGID are injected by ./run.sh (PUID=your uid,
+    # Run as the invoking user + shared group. PUID/PGID are injected by ./deploy.py (PUID=your uid,
     # PGID=the APP_GROUP gid from .env) — not typed or committed. Defaults to root (0:0) if you call
     # `docker compose` directly without them, so this stays portable.
     user: "${PUID:-0}:${PGID:-0}"
