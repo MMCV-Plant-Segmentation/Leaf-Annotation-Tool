@@ -20,6 +20,10 @@ Covers:
   E5. Ownership: erase-stroke is scoped to the REQUESTING annotator's own annotations only
       — another project member's identically-placed eraser stroke deletes nothing of a
       different annotator's work.
+  E6. Loop-fills-solid: a self-intersecting eraser outline that CIRCLES a lesion — the
+      eraser centerline/outline never touches the lesion's own strokes, but the loop
+      encloses it — still soft-deletes the whole enclosed annotation (matches the brush's
+      loop-fills-solid behavior). A lesion clearly OUTSIDE the loop survives.
 
 Run with: uv run python3 webapp/tests/test_eraser.py
 """
@@ -123,11 +127,14 @@ def make_stroke(client, points, label='lesion', sw=10):
     return jdump(r2)
 
 
-def erase(client, points, sw):
-    r2 = client.post(f'/api/projects/{pid}/annotations/erase-stroke', json={
+def erase(client, points, sw, outline=None):
+    body = {
         'imageId': image_id, 'annotator': _username(client),
         'points': points, 'strokeWidth': sw,
-    })
+    }
+    if outline is not None:
+        body['outline'] = outline
+    r2 = client.post(f'/api/projects/{pid}/annotations/erase-stroke', json=body)
     assert r2.status_code == 200, f'erase-stroke failed: {jdump(r2)}'
     return jdump(r2)
 
@@ -225,5 +232,62 @@ assert res5['deletedAnnotationIds'] == [], \
     f"bob's erase must not touch alice's annotation, got {res5['deletedAnnotationIds']}"
 assert not is_deleted(c1['id']), "alice's annotation must survive bob's identically-placed erase"
 print("  ✓  erase-stroke is scoped to the requesting annotator's own work")
+
+# ── E6: self-intersecting (looped) eraser outline fills solid, like the brush ────
+
+print('\n── E6: circling a lesion with a looped eraser stroke erases it whole ──')
+
+# A perfect-freehand-style outline for a stroke that loops back on itself: trace the
+# OUTER boundary of the loop one way, then the INNER boundary in the OPPOSITE winding
+# direction as a single ring. `ShapelyPolygon(outline).buffer(0)` resolves this exactly
+# as the brush's freehand outline resolves a real looped drag: into an annulus whose
+# ENCLOSED area (the inner square) is a hole, not solid fill. `_exterior_only` must
+# turn that hole back into solid fill so a lesion sitting inside it still gets erased.
+#
+# Centered in a fresh corner of the tile (not the tile centre used by earlier sections,
+# where `c1` from E5 is still LIVE) so the only candidates inside/outside the loop are
+# the two lesions this section creates.
+lx, ly = tx + tw - 34, ty + th - 34
+outer_half = 22
+inner_half = 10
+outer_ring = [
+    [lx - outer_half, ly - outer_half], [lx + outer_half, ly - outer_half],
+    [lx + outer_half, ly + outer_half], [lx - outer_half, ly + outer_half],
+]
+inner_ring = list(reversed([
+    [lx - inner_half, ly - inner_half], [lx + inner_half, ly - inner_half],
+    [lx + inner_half, ly + inner_half], [lx - inner_half, ly + inner_half],
+]))
+loop_outline = outer_ring + [outer_ring[0]] + inner_ring + [inner_ring[0]]
+
+# Sanity check: this outline really does resolve to an annulus (a hole) before the fix's
+# helper is applied — otherwise this test wouldn't be exercising the reported bug.
+from shapely.geometry import Polygon as _ShapelyPolygon
+_raw = _ShapelyPolygon([tuple(p) for p in loop_outline]).buffer(0)
+_inner_probe = _ShapelyPolygon([
+    (lx - inner_half / 2, ly - inner_half / 2), (lx + inner_half / 2, ly - inner_half / 2),
+    (lx + inner_half / 2, ly + inner_half / 2), (lx - inner_half / 2, ly + inner_half / 2),
+])
+assert not _raw.contains(_inner_probe), 'test setup bug: outline does not produce a hole'
+
+# Lesion entirely INSIDE the loop's enclosed (hole) area — the eraser's own centerline/
+# outline never touches it, only encircles it.
+inside_lesion = make_stroke(
+    alice_client,
+    [[lx - 3, ly], [lx + 3, ly]], sw=2, label='circled-lesion',
+)
+# Lesion clearly OUTSIDE the loop — must survive.
+outside_lesion = make_stroke(
+    alice_client,
+    [[tx + 4, ty + 4], [tx + 7, ty + 4]], sw=2, label='outside-lesion',
+)
+
+res6 = erase(alice_client, [[lx, ly]], sw=2, outline=loop_outline)
+assert res6['deletedAnnotationIds'] == [inside_lesion['id']], \
+    f'expected only the circled lesion deleted, got {res6["deletedAnnotationIds"]}'
+assert is_deleted(inside_lesion['id']), 'lesion circled by the loop must be erased'
+assert not is_deleted(outside_lesion['id']), 'lesion outside the loop must survive'
+print('  ✓  circling a lesion with a looped eraser stroke erases it; outside lesion survives')
+
 
 print('\n✓ All eraser tests passed')
