@@ -3,9 +3,9 @@ services:
   # Restoring a fresh/wiped deployment is the explicit one-shot `restore` service below.
   app:
     image: leaf-annotation:latest
-    # Run as the host operator's uid/gid (set PUID/PGID in .env) so files this process writes
-    # (the SQLite DB in the volume) are owned by them, not root. Defaults to root (0:0) when
-    # unset, so this stays portable — nobody's uid is hardcoded in a committed file.
+    # Run as the invoking user + shared group. PUID/PGID are injected by ./run.sh (PUID=your uid,
+    # PGID=the APP_GROUP gid from .env) — not typed or committed. Defaults to root (0:0) if you call
+    # `docker compose` directly without them, so this stays portable.
     user: "${PUID:-0}:${PGID:-0}"
     build:
       context: .
