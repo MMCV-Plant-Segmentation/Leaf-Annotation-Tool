@@ -59,7 +59,14 @@ const AppRoot: Component<RouteSectionProps> = (props) => {
     <>
       <Show when={currentUser() && !isPublic()}>
         <div class={styles.authBar}>
-          <span data-testid="auth-username">{currentUser()!.username}</span>
+          <button
+            data-testid="auth-username"
+            class={styles.authBarBtn}
+            onClick={() => nav('/account')}
+            title={t('nav.account')}
+          >
+            {currentUser()!.username}
+          </button>
           <Show when={currentUser()!.is_admin}>
             <button class={styles.authBarBtn} onClick={() => nav('/admin')}>{t('nav.admin')}</button>
           </Show>
