@@ -7,6 +7,7 @@ import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
 import { createAnnotatorSelect } from './annotatorSelect';
+import { createImageDecodeGate } from './imageDecodeGate';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
 import * as styles from './CanvasScreen.css';
@@ -29,16 +30,17 @@ const CanvasScreen: Component = () => {
   const [selClass, setSelClass] = createSignal('lesion');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
-  // BUGS #20: the annotation overlay must not paint before the <image> has loaded
-  // (else it briefly floats over a blank/late image). Reset only on image src change —
-  // never on pan/zoom — so there's no flicker while panning/zooming an already-loaded image.
-  const [imgLoaded, setImgLoaded] = createSignal(false);
+  // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
+  // (else it briefly floats over a blank/late image). imgLoaded is driven by decode(),
+  // not the SVG <image> onLoad, and is keyed to imageId only — never on pan/zoom — so
+  // there's no flicker while panning/zooming an already-loaded image. See imageDecodeGate.ts.
+  const imageId = createMemo(() => image()?.imageId);
+  const imgLoaded = createImageDecodeGate(imageId);
 
   let svgRef: SVGSVGElement | undefined;
 
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
-  const imageId = createMemo(() => image()?.imageId);
-  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); setImgLoaded(false); }));
+  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); }));
 
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
@@ -130,8 +132,7 @@ const CanvasScreen: Component = () => {
               }}
             >
               <image href={imageUrls.overview(im().imageId)} x="0" y="0"
-                width={im().width} height={im().height}
-                onLoad={() => setImgLoaded(true)} />
+                width={im().width} height={im().height} />
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
