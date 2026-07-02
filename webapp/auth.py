@@ -76,6 +76,62 @@ def api_me():
     })
 
 
+# ── Self-service account settings ───────────────────────────────────────────────
+# A logged-in user changing their OWN username/password. Authorized by session only
+# (no admin bypass) — this is distinct from the admin-only user management below,
+# which stays the forgotten-password recovery path (invite links, resets).
+
+@auth_bp.patch('/api/me/username')
+@login_required
+def api_update_username():
+    body     = request.json or {}
+    username = (body.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username required'}), 400
+    con = _db.get_db()
+    try:
+        clash = con.execute(
+            'SELECT 1 FROM users WHERE username = ? AND id != ?',
+            (username, session['user_id']),
+        ).fetchone()
+        if clash:
+            return jsonify({'error': 'username already exists'}), 409
+        con.execute('UPDATE users SET username = ? WHERE id = ?', (username, session['user_id']))
+        con.commit()
+    finally:
+        _db.close_db(con)
+    session['username'] = username
+    return jsonify({'ok': True, 'username': username})
+
+
+@auth_bp.patch('/api/me/password')
+@login_required
+def api_update_password():
+    body     = request.json or {}
+    current  = body.get('current_password') or ''
+    password = body.get('password') or ''
+    confirm  = body.get('confirm') or ''
+    if password != confirm:
+        return jsonify({'error': 'passwords do not match'}), 400
+    if len(password) < 8:
+        return jsonify({'error': 'password must be at least 8 characters'}), 400
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT password_hash FROM users WHERE id = ?', (session['user_id'],),
+        ).fetchone()
+        if not row or not row['password_hash'] or not check_password_hash(row['password_hash'], current):
+            return jsonify({'error': 'current password is incorrect'}), 400
+        con.execute(
+            'UPDATE users SET password_hash = ? WHERE id = ?',
+            (generate_password_hash(password), session['user_id']),
+        )
+        con.commit()
+    finally:
+        _db.close_db(con)
+    return jsonify({'ok': True})
+
+
 # ── User management ───────────────────────────────────────────────────────────
 
 def _make_invite(con, user_id: int) -> dict:

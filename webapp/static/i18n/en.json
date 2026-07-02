@@ -19,6 +19,7 @@
   "common.piles": "{n} piles",
 
   "nav.admin": "Admin",
+  "nav.account": "Account",
   "nav.versionFooter": "v{version} · {sha}",
   "nav.logout": "Log out",
 
@@ -42,6 +43,24 @@
   "login.submit": "Sign in",
   "login.submitting": "Signing in…",
   "login.error.default": "Login failed",
+
+  "account.title": "Account",
+  "account.username.title": "Username",
+  "account.username.label": "Username",
+  "account.username.save": "Save username",
+  "account.username.saving": "Saving…",
+  "account.username.success": "Username updated",
+  "account.username.error.default": "Could not update username",
+  "account.password.title": "Password",
+  "account.password.current": "Current password",
+  "account.password.new": "New password",
+  "account.password.confirm": "Confirm new password",
+  "account.password.save": "Change password",
+  "account.password.saving": "Saving…",
+  "account.password.success": "Password updated",
+  "account.password.error.default": "Could not update password",
+  "account.password.error.mismatch": "New passwords do not match",
+  "account.password.error.short": "Password must be at least 8 characters",
 
   "invite.title.setPassword": "Set your password",
   "invite.title.success": "Password set!",
