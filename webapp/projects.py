@@ -133,6 +133,28 @@ def _poly_rings(poly) -> list:
     return [coords(poly.exterior)]
 
 
+def _exterior_only(geom):
+    """Rebuild `geom` with interior holes filled in (exterior ring(s) only).
+
+    `buffer(0)` on a self-intersecting outline (e.g. a loop drawn around a lesion without
+    touching it) produces a polygon whose enclosed area is an interior hole — the loop's
+    hole, not solid fill. `_poly_rings` already drops holes when STORING a fused brush
+    mask's geometry, which is why a painted loop visually fills solid; this is the same
+    fix applied in-memory to a `Polygon` or `MultiPolygon` before an intersection test, so
+    the eraser's loop-fills-solid behavior matches the brush's.
+
+    Returns None for empty/degenerate input.
+    """
+    if geom is None or geom.is_empty:
+        return None
+    parts = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
+    solids = [ShapelyPolygon(p.exterior) for p in parts if p.geom_type == 'Polygon' and p.exterior]
+    solids = [s for s in solids if s.is_valid and not s.is_empty]
+    if not solids:
+        return None
+    return unary_union(solids)
+
+
 def _stroke_components(rows: list[dict]) -> list[dict]:
     """Connected components of a set of brush-stroke footprints (pure geometry helper).
 
@@ -1369,9 +1391,13 @@ def erase_stroke(project_id: str):
     Erase deletes the WHOLE intersected annotation(s) — no stroke-level logic, no area-
     subtraction. Splits are impossible by construction: a mask only ever grows (via fuse)
     or is deleted whole. Geometry stays server-authoritative: the eraser polygon is built
-    with the same `_stroke_polygon` helper used for paint strokes, and each candidate's own
-    geometry via `_annotation_geom` (stored fused rings for masks, fresh points for 1:1
-    kinds — never recomputed from raw strokes).
+    with the same `_stroke_polygon` helper used for paint strokes, then passed through
+    `_exterior_only` so a self-intersecting (looped) eraser stroke fills solid instead of
+    testing against a hollow donut — a lesion circled entirely within the loop, without the
+    eraser ever touching the lesion's own strokes, is still enclosed and gets erased, matching
+    the brush's loop-fills-solid behavior. Each candidate's own geometry comes from
+    `_annotation_geom` (stored fused rings for masks, fresh points for 1:1 kinds — never
+    recomputed from raw strokes).
 
     Body: { imageId, annotator, points, strokeWidth, outline? } — same shape as a paint
     stroke commit (points + brush size, optionally the perfect-freehand outline).
@@ -1394,7 +1420,7 @@ def erase_stroke(project_id: str):
         err = _member_or_403(con, project_id)
         if err:
             return err
-        eraser_geom = _stroke_polygon(points, stroke_width, outline=outline)
+        eraser_geom = _exterior_only(_stroke_polygon(points, stroke_width, outline=outline))
         if eraser_geom is None or eraser_geom.is_empty:
             return jsonify({'deletedAnnotationIds': [], 'tileStates': []})
         rows = con.execute(
