@@ -634,74 +634,162 @@ on local disk (SQLite on NFS stalls — see §1).
 
 ---
 
-## 10. Projects / Annotator pipeline (as built, 2026-06-30)
+## 10. Projects / Annotator pipeline (as built, 2026-07-02)
 
 The labelme-replacement annotator. Sections 2–9 above describe the **legacy** Train/Merge/Analyze
 tools; this section is the newer, independent pipeline reached from the **Annotate** home tile
 (`/projects`). Backend lives in `webapp/projects.py` (`projects_bp`, DB+HTTP glue), with pure geometry
 in `webapp/tiling.py` and image I/O in `webapp/imaging.py`. Frontend lives in
-`webapp/frontend/src/projects/`. Supersedes the now-stale `ANNOTATOR_STATUS.md` (2026-06-26).
+`webapp/frontend/src/projects/`. Supersedes the now-stale `ANNOTATOR_STATUS.md` (2026-06-26). The
+annotation data model was reworked to a persisted fused-mask shape and schema management moved to
+Alembic in the fused-mask-model refactor (`1263abf`…`fff12fa`, merged to main `21bd1da`, deployed to
+prod `fff12fa` on 2026-07-02) — this section describes that as-built state, not the additive-only
+model from `dcae9d8`.
 
-### 10.1 Data model (additive tables, `db.py`)
+### 10.1 Data model (annotation/stroke split, `db.py` + `alembic/versions/`)
 `project` (name, `tile_size_px` immutable after creation, `black_threshold`, `classes_json`,
 `created_by_user_id`, `tiling_confirmed`) · `project_annotator` (roster: project ↔ user, `byline`) ·
 `project_image` (content-addressed via `imaging`; `width/height/origin_y/leaf_*`) · `tile` (per-image
 grid geometry) · `batch` (a unit of work over sampled tiles) · `batch_tile` (shared tile geometry in a
-batch) · `annotator_tile` (per-annotator **private** progress; `state ∈ assigned|completed|dirty`) ·
-`annotation` (one drawn shape/row; `kind` free-text — `polygon|line|point|stroke`; `pass_no`;
-`points_json`; `annotator`; `project_image_id` = coord space; `stroke_width` for brush; soft-delete via
-`deleted_at`) · `annotation_tile` (which tiles a shape intersects → dirty propagation). **Lesions are derived, not
-stored** — a lesion = a connected component of the Shapely union of an annotator's strokes sharing a
-`label` (`_lesions_for_image`, buffering each stroke via `_stroke_polygon`). Schema changes go through
-idempotent `migrate_*` functions in `auto_create_schema()` — **no alembic**.
+batch) · `annotator_tile` (per-annotator **private** progress; `state ∈ assigned|completed|dirty`).
 
-### 10.2 Endpoints (all `@login_required`; project-scoped ones also authorize)
-Projects CRUD; roster add/remove; image import (admin-only path-import + streaming NDJSON) and
-**browser upload** (`/images/upload`, capped at 4 concurrent via a `BoundedSemaphore` → 429 when
-exhausted; correctness assumes Granian `--workers 1`); tile preview; batch creation; batch/canvas read
-(`/api/batches/<id>`); annotation create/update/delete (soft — create & delete return the edited
-image's **lesion grouping**); **bulk mutate** (`/api/projects/<id>/annotations/mutate`, `delete|restore`
-with per-row ownership, returns the grouping) for the eraser + undo/redo; tile-completion toggle
-(`/api/annotator-tiles/<id>`); project-image overview/crop serving.
+`annotation` is now the persisted, first-class, **hole-less fused mask** — what renders and what
+`annotation_tile` FKs (dirty propagation), no recompute-on-read: `kind ∈ polygon|line|point|stroke`;
+`geometry_json` (exterior-ring-only `rings`, `kind='stroke'` masks only) or `points_json` (the other
+kinds, which never fuse); `label`; `annotator`; `project_image_id` = coord space; `pass_no`; soft-delete
+via `deleted_at`. `stroke` is the raw-input, **provenance-only** row bridged to its owning mask via
+`annotation_id`: just `id`, `annotation_id`, `kind`, `points_json`, `stroke_width`, `outline_json`,
+`created_at` — the project/image/annotator/label columns it used to carry live on the owning
+`annotation` now.
 
-### 10.3 Authorization model
+Only brush (`kind='stroke'`) strokes fuse, and only on contact: `create_annotation` unions a new
+stroke's footprint with every **live**, same-image + same-annotator + same-label mask it intersects,
+mints a **brand-new** `annotation` row holding the merged hole-less geometry, repoints the consumed
+strokes' `annotation_id` to it, and soft-deletes the consumed annotations (a fuse never mutates a live
+mask in place). `point`/`line`/`polygon` always map 1:1 and never fuse — they alone support in-place
+edits (`update_annotation`); PATCHing a `stroke` mask 422s ("erase and redraw" instead, since a fused
+mask isn't a single editable shape). Erase (`erase_stroke`) is a **whole-annotation soft-delete**: every
+live annotation (any kind) whose footprint intersects the swept eraser polygon is deleted outright — no
+splits, no area-subtraction, since a mask can only grow (fuse) or die whole. `_lesions_for_image`
+(recompute-a-lesion-on-every-read) is **gone**; "lesion" as a grouping/endpoint concept is renamed out
+of the code (see `_stroke_components`, `_annotation_geom`, `_visible_annotations`, `_annotation_out`).
+
+### 10.2 Schema management via Alembic
+Schema changes go through Alembic (`alembic/versions/`), not idempotent `migrate_*` calls: `0001_baseline`
+is a hand-written squash of every historic incremental migration into today's exact starting shape;
+`0002_annotation_stroke_model` is the annotation/stroke split above, plus a **one-time universal
+conversion** of every existing row into the new shape (reusing the app's own `_stroke_components` /
+`_tiles_for_geom` / `_poly_rings` helpers — the same code path a live request takes, not hand-rolled
+geometry). `auto_create_schema()` (`db.py`): a fresh DB runs `alembic upgrade head` from nothing; an
+existing pre-Alembic DB (tables present, no `alembic_version` table) gets `stamp 0001_baseline`
+(records "already here" without re-running any DDL) then `upgrade head`; an already-versioned DB
+no-ops unless new revisions landed. A failed upgrade/stamp raises — the app must never serve a
+half-migrated DB. `schemaVersion` (`webapp/version.py`'s `get_version()`) is read live off
+`alembic_version.version_num` via the caller's connection — not a separate constant. The 7 old
+hand-rolled incremental `migrate_*` functions (user FK, project/annotation column adds, etc.) were
+folded into `0001_baseline` and **deleted** from `db.py` (`fff12fa`); only `migrate_meta` (app_version
+bookkeeping in the `meta` table) and `migrate_manifest` (legacy `manifest.json` data import) remain —
+neither is schema DDL.
+
+### 10.3 Endpoints (all `@login_required`; project-scoped ones also authorize)
+Projects CRUD (`GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/<id>`); roster add/remove
+(`POST/DELETE .../annotators[/<annotator_id>]`); image import (admin-only path-import `POST
+.../images/import` + streaming NDJSON `POST .../images/import/stream`) and **browser upload** (`POST
+.../images/upload`, capped at 4 concurrent via a `BoundedSemaphore` → 429 when exhausted; correctness
+assumes Granian `--workers 1`); a **pre-flight dedup probe** (`POST .../images/probe` — content hashes
+in, the subset already present out; read-only, no bytes/writes, upload keeps its own dedup as
+backstop); image delete (`DELETE .../images/<image_id>`); tile preview (`GET
+.../images/<image_id>/tiles/preview`); batch creation (`POST .../batches`) and batch/canvas read (`GET
+/api/batches/<id>`). Annotations: create (`POST .../annotations` — the fuse-or-1:1 write path from
+§10.1; response carries `consumedAnnotationIds`/`consumedGroups`/`createdStrokeId` so the FE can tell a
+plain create from a merge); update (`PATCH /api/annotations/<id>` — non-fusing kinds only); delete
+(`DELETE /api/annotations/<id>` — soft-delete one annotation); **bulk mutate** (`POST
+.../annotations/mutate`, `delete|restore` by id list, same project_image+annotator, per-row ownership)
+backing plain draw undo/redo and eraser-undo; the **eraser sweep** (`POST
+.../annotations/erase-stroke`); the **compound-merge undo** (`POST .../annotations/reverse` —
+hard-deletes a fusing create's minted annotation+stroke, resurrects and repoints the consumed
+originals; there is no matching redo endpoint, the client just re-POSTs the original create); tile
+completion toggle (`PATCH /api/annotator-tiles/<id>`); project-image overview/crop serving (`GET
+/api/projects/images/<image_id>/overview`, `.../crop`).
+
+### 10.4 Authorization model
 - **Membership:** every project-scoped endpoint calls `_member_or_403` — non-members get 403; the
   user `admin` bypasses (sees/acts on everything). `create_project` auto-adds its creator to the
   roster (admin excluded — admin already sees all). `list_projects` is filtered to the caller's
   memberships (admin sees all).
-- **Ownership (2026-06-30):** annotation create/update/delete and tile-state changes require the
+- **Ownership:** annotation create/update/delete/erase/reverse and tile-state changes require the
   caller to **own** the target annotator data (`_owner_or_403`, admin bypass). `create_annotation`
   derives the `annotator` from the **session** for non-admins (admin may seed any byline) — you
   annotate as yourself, enforced server-side, not just in the UI.
 
-### 10.4 Annotator canvas (`CanvasScreen.tsx` + `canvasInteraction.ts` + `canvasShapes.tsx`)
-SolidJS SVG surface, full-width. Annotates the logged-in user's tiles in a batch (no "open-as"
-chooser). View is an SVG `viewBox` signal (`vb`); the fit is keyed to image **identity** so drawing
-never resets zoom.
-- **Tools:** Pan + Brush + Eraser (toolbar-selected — **no tool hotkeys**). Brush uses
-  **perfect-freehand** for the *live draft* (smoothed, variable-width); a single click = a filled
-  circle. Stroke is stored as a point list + `stroke_width`. **Committed** strokes render as **fused
-  lesion polygons:** the server returns each lesion's simplified union geometry (`rings`) and the FE
-  draws one filled (~0.35 opacity) + outlined `<path>` per lesion (`fill-rule=evenodd`). So overlapping
-  strokes show as one shape with a single outline and self-intersections fill — no opacity stacking.
+### 10.5 Annotator canvas (`CanvasScreen.tsx` + `canvasInteraction.ts` + `canvasShapes.tsx`)
+SolidJS SVG surface, full-width. Non-admins annotate their own tiles in a batch; admin gets a
+**read-only roster picker** instead (§10.9). View is an SVG `viewBox` signal (`vb`); the fit is keyed
+to image **identity** so drawing never resets zoom.
+- **Tools:** Pan + Brush + Eraser (toolbar-selected — **no tool hotkeys**; admin's toolbar omits
+  paint/erase/undo/redo/class tools entirely). Brush uses **perfect-freehand** for the *live draft*
+  (smoothed, variable-width); a single click = a filled circle. Stroke is stored as a point list +
+  `stroke_width`. **Committed** strokes render from the **stored fused geometry**: the server returns
+  each mask's `rings` (§10.1) and the FE draws one filled (~0.35 opacity) + outlined `<path>` per mask
+  (`fill-rule=evenodd`). So overlapping strokes show as one shape with a single outline and
+  self-intersections fill — no opacity stacking, no client-side recompute.
 - **Coordinate mapping:** pointer↔image uses `svg.getScreenCTM().inverse()` (handles the
   `xMidYMid meet` letterboxing); a brush preview circle follows the cursor in brush mode.
 - **Brush size:** toolbar slider, range `[1px, image diagonal]`, default 10% of the tile diagonal;
   the scroll wheel (in brush mode) adjusts size **multiplicatively** (fine control at small sizes).
-- **Eraser:** clicking a stroke deletes its **whole lesion** (every stroke in that connected
-  component) in one undoable action, via the bulk `mutate` endpoint.
+- **Eraser:** same drag/click gesture as the brush (`kind='erase'` on commit) — sweeping it
+  soft-deletes every intersecting **whole annotation** (any kind, not just strokes) in one undoable
+  action, via `erase-stroke`.
 - **Undo/redo:** client-only action stack (`canvasHistory.ts`; not persisted across reload) on
-  `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, `Ctrl+Y`, plus toolbar buttons; each step round-trips through
-  `mutate` (delete/restore) and applies the returned grouping.
+  `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, `Ctrl+Y`, plus toolbar buttons. Plain draws and erases round-trip
+  through the bulk `mutate` endpoint (delete/restore by id); a fusing brush create's undo instead calls
+  the compound `/annotations/reverse` endpoint (a delete/restore pair can't unwind a fuse, since it
+  consumed other annotations) — redo just re-POSTs the original create body, which re-derives the same
+  merge against the now-resurrected originals.
 - **Zoom/pan (mouse/trackpad):** `Ctrl/Cmd+scroll` zoom-to-cursor; `scroll` pan-vertical (outside
   brush mode); `Shift+scroll` pan-horizontal; drag / `Space`+drag pan; `Ctrl/Cmd+0` fit. **All panning
   is disabled mid-stroke.** **Touch:** one finger draws; two fingers pinch-zoom/pan keeping the
   image-space points under the fingers fixed.
 - Tiles render with state colors + a "mark complete" toggle; the annotator sees only their own shapes.
 
-### 10.5 Built vs deferred
-**Built:** the full project→batch→paint loop, membership+ownership auth, browser upload with progress,
-the perfect-freehand brush + input scheme, server-side lesion merge + eraser + client-only undo/redo
-(Tier-1 Phase 2). **Deferred (seams left in place):** consensus/merge (two-pass reconcile), per-batch
-annotators, batch state machine, progress redesign, dirty *pull-forward* (today tiles dirty in place), HSV
-histogram capture, labelme export. Active roadmap: `Plan — Annotator next passes.md`.
+### 10.6 Stack-wide versioning
+`webapp/version.py`'s `get_version()` resolves `appVersion` (env `APP_VERSION` → packaged
+`pyproject.toml` version), `gitSha` (env `GIT_SHA` → runtime `git rev-parse --short HEAD`), `builtAt`
+(env `BUILD_TIME` → `"dev"`), and `schemaVersion` (the Alembic revision, via a passed-in connection) —
+pure, no Flask-context dependency. Served at `GET /api/version` and shown in the app-shell footer
+(`VersionFooter.tsx`) and the admin Settings panel (`VersionCard.tsx`); `GIT_SHA`/`BUILD_TIME` are baked
+into the image at build time via `docker buildx bake` (`docker-bake.hcl`).
+
+### 10.7 Backup sync-status sidecar
+A `backup-status` sidecar (compose `--profile backup`, `webapp/sync_status.py`'s
+`fetch_sync_status()`) parses litestream's Prometheus metrics + lsyncd's status file — never the
+backup data itself — and serves its own `GET /status` over the compose network; the main app proxies
+it at admin-gated `GET /api/sync-status`, returning `{configured: false}` (still 200) when the sidecar
+is unreachable (no backup profile, or mid-restart). The main app never mounts `BACKUP_DIR` and has no
+runtime dependency on backup to run.
+
+### 10.8 App-factory / AppConfig
+One `create_app(cfg: AppConfig)` path (`webapp/app.py`) is shared by dev (`leaf-annotation`), the gate,
+and prod (`webapp/wsgi.py`) — each just builds an `AppConfig` (`webapp/config.py`: `data_dir`,
+`host`/`port`/`port_policy`, `db_seed ∈ existing|clean|restore`, `backup`, `secret_key`,
+`admin_password`) and calls it once; nothing downstream re-reads environment variables. `wsgi.py` maps
+`HT_DATA_DIR` → `data_dir` and runs with `db_seed='existing'` (prod never wipes/seeds data;
+`restore` is the explicit one-shot compose step run before boot).
+
+### 10.9 Admin read-only viewer + upload dedup probe
+Admin can open any annotator's canvas read-only via a roster picker (`AnnotatorPicker.tsx`,
+`CanvasScreen`'s `readOnly` gate) — no paint/erase/undo/class tools — for QA without touching another
+annotator's work. Before uploading, the browser probes `POST .../images/probe` with content hashes to
+skip re-sending images the project already has (§10.3); the upload path's own hash dedup is the
+backstop.
+
+### 10.10 Built vs deferred
+**Built and deployed (prod `fff12fa`, 2026-07-02):** the full project→batch→paint loop,
+membership+ownership auth, browser upload with progress + pre-flight dedup, the perfect-freehand brush
++ input scheme, the persisted fused-mask annotation/stroke model + server-side fuse-on-contact + eraser
++ client-only undo/redo (including compound-merge undo), Alembic-managed schema, stack-wide version
+identity, the backup sync-status sidecar, the app-factory/`AppConfig` entrypoint, and the admin
+read-only viewer (Tier-1 Phase 2 + this infra arc). **Deferred (seams left in place):** consensus/merge
+(two-pass reconcile), per-batch annotators, batch state machine, progress redesign, dirty
+*pull-forward* (today tiles dirty in place), HSV histogram capture, labelme export. Active roadmap:
+`Plan — Annotator next passes.md`.
