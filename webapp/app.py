@@ -266,20 +266,29 @@ def _configure_app(cfg: AppConfig) -> None:
 
 
 def _sync_admin(cfg: AppConfig) -> None:
-    """Upsert the admin user from cfg.admin_password."""
+    """Seed or force-update the admin user from cfg.admin_password.
+
+    cfg.admin_password is SEED-only: it creates the admin row on first boot (no admin
+    exists yet) but never touches an already-existing admin's password — so an
+    env-sourced ADMIN_PASSWORD (e.g. the dev .env's placeholder) can't silently clobber
+    an admin restored from a prod snapshot. cfg.admin_password_force opts into
+    overwriting an existing admin too — set only by the explicit `--admin-password` CLI
+    flag, never by the env fallback (see main()/wsgi.py).
+    """
     password = cfg.admin_password
     con = _db.get_db()
     try:
         row = con.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
-        if password:
+        if row and password and cfg.admin_password_force:
             phash = generate_password_hash(password)
-            if row:
-                con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
-            else:
-                con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
+            con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
             con.commit()
         elif not row:
-            raise RuntimeError('ADMIN_PASSWORD must be set on first boot (no admin user exists)')
+            if not password:
+                raise RuntimeError('ADMIN_PASSWORD must be set on first boot (no admin user exists)')
+            phash = generate_password_hash(password)
+            con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
+            con.commit()
     finally:
         _db.close_db(con)
 
@@ -480,7 +489,7 @@ def api_version():
 @app.get('/api/sync-status')
 @admin_required
 def api_sync_status():
-    return jsonify(fetch_sync_status())
+    return jsonify(fetch_sync_status(_db.get_config().backup_status_url))
 
 
 @app.get('/api/images')
@@ -1194,8 +1203,13 @@ def main() -> None:
                              "empty), 'restore' (populate from the host backup).")
     parser.add_argument('--restore-from', type=Path, default=None,
                         help='Litestream replica dir for --seed restore (default: the standard host backup).')
+    parser.add_argument(
+        '--admin-password', default=None,
+        help="Force-set the 'admin' user's password, overwriting an existing admin "
+             '(unlike $ADMIN_PASSWORD, which only seeds admin on first boot).')
     args = parser.parse_args()
     _load_env()
+    admin_password = args.admin_password or os.environ.get('ADMIN_PASSWORD')
     cfg = AppConfig(
         data_dir=args.data_dir,
         host=args.host,
@@ -1204,7 +1218,10 @@ def main() -> None:
         db_seed=args.seed,
         restore_source=args.restore_from,
         secret_key=os.environ.get('SECRET_KEY'),
-        admin_password=os.environ.get('ADMIN_PASSWORD'),
+        admin_password=admin_password,
+        admin_password_force=bool(args.admin_password),
+        backup_dir=os.environ.get('BACKUP_DIR'),
+        backup_status_url=os.environ.get('BACKUP_STATUS_URL'),
     )
     try:
         seed_data(cfg)
