@@ -12,3 +12,4 @@ webapp/frontend/e2e/.auth.json
 
 # Local tooling, not yet battle-tested (root-level only; keep webapp/frontend/scripts/).
 /scripts/
+docs/plans/
