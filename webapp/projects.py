@@ -155,6 +155,17 @@ def _exterior_only(geom):
     return unary_union(solids)
 
 
+def _footprint(points, stroke_width, outline=None):
+    """The solid painted footprint of a stroke — the ONE geometry both paint and erase use.
+
+    `_stroke_polygon` gives the raw shape (which `buffer(0)` can leave holed for a self-
+    intersecting loop); `_exterior_only` fills those holes so a loop drawn AROUND something still
+    englobes it. Consolidated 2026-07-02 so brush and eraser behave identically: circling a dot
+    with the brush fuses it into one filled blob, exactly as circling with the eraser deletes it.
+    """
+    return _exterior_only(_stroke_polygon(points, stroke_width, outline=outline))
+
+
 def _stroke_components(rows: list[dict]) -> list[dict]:
     """Connected components of a set of brush-stroke footprints (pure geometry helper).
 
@@ -1148,7 +1159,7 @@ def create_annotation(project_id: str):
                 except (TypeError, ValueError):
                     stroke_width = None
             outline = body.get('outline')
-            footprint = _stroke_polygon(points, stroke_width, outline=outline)
+            footprint = _footprint(points, stroke_width, outline)
             if footprint is None or footprint.is_empty \
                or not _tiles_for_geom(con, image_id, footprint):
                 return jsonify({'error': 'annotation must intersect at least one tile'}), 422
@@ -1420,7 +1431,7 @@ def erase_stroke(project_id: str):
         err = _member_or_403(con, project_id)
         if err:
             return err
-        eraser_geom = _exterior_only(_stroke_polygon(points, stroke_width, outline=outline))
+        eraser_geom = _footprint(points, stroke_width, outline=outline)
         if eraser_geom is None or eraser_geom.is_empty:
             return jsonify({'deletedAnnotationIds': [], 'tileStates': []})
         rows = con.execute(
