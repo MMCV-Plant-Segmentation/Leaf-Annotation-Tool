@@ -29,12 +29,6 @@ services:
     image: litestream/litestream:0.3.13
     profiles: ["backup"]
     user: "${PUID:-0}:${PGID:-0}"      # write backups as the operator, not root
-    # Single-writer guard: two replicators against the same BACKUP_DIR corrupt the file replica.
-    # Only the designated primary host sets BACKUP_PRIMARY=1 in its .env; anyone else running
-    # `--profile backup` fails fast here (compose refuses to start the service). Honor-code for now —
-    # a heartbeat-lease upgrade is filed in docs/RAINYDAY.md.
-    environment:
-      BACKUP_PRIMARY: "${BACKUP_PRIMARY:?refusing to back up — only the primary backup host may run --profile backup (set BACKUP_PRIMARY=1 in that host's .env)}"
     command: ["replicate", "-config", "/etc/litestream.yml"]
     # :9090 serves litestream's own Prometheus metrics (ops/litestream.yml's `addr`) — scraped
     # by backup-status below, over the compose network only. Not published to the host.
@@ -49,8 +43,6 @@ services:
     image: leaf-lsyncd:latest
     profiles: ["backup"]
     user: "${PUID:-0}:${PGID:-0}"      # mirror files as the operator, not root
-    environment:
-      BACKUP_PRIMARY: "${BACKUP_PRIMARY:?refusing to back up — only the primary backup host may run --profile backup (set BACKUP_PRIMARY=1 in that host's .env)}"
     volumes:
       - leaf-data:/data:ro
       - ./ops/lsyncd.conf.lua:/etc/lsyncd.conf.lua:ro
