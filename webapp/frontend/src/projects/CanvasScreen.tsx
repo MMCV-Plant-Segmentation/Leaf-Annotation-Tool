@@ -10,6 +10,7 @@ import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
+import { adminReadOnlyCommit } from './adminReadOnly';
 import * as styles from './CanvasScreen.css';
 
 const CanvasScreen: Component = () => {
@@ -61,19 +62,28 @@ const CanvasScreen: Component = () => {
     image, getProjectId: () => canvas()?.projectId, annotator, selClass, vb, updateImg, history,
   });
 
+  // BUGS #15: an admin viewing another user's annotations may look but must NOT add or
+  // delete anything for that user. When isAdmin() is true, the commit handed to the canvas
+  // interaction is a no-op, so drawing/erasing produces no server write — regardless of
+  // which tool is selected. (Admin's API-level ability is intentionally left intact; this
+  // is FE enforcement only, consistent with readOnly={isAdmin()} used elsewhere.)
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
     brushSize, setBrushSize, maxBrushSize,
-    commit: (kind, points, passNo, strokeWidth) => void commit(kind, points, passNo, strokeWidth),
+    commit: (kind, points, passNo, strokeWidth) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth),
   });
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') interaction.finishDraft();
+    if (!isAdmin()) {
+      // Edit shortcuts only for the annotator who owns this work — never for an admin viewer.
+      if (e.key === 'Enter') interaction.finishDraft();
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
+      if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
+    }
+    // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
     if (e.key === 'Escape') { setDraft([]); setTool('pan'); }
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
-    if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
     interaction.handleKeyDown(e);
   };
   const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
