@@ -1271,10 +1271,9 @@ def create_viewport_events(project_id: str):
     (webapp/frontend/src/projects/viewportTelemetry.ts) — this endpoint just needs to be
     fast and not blow up; it never affects annotation UX.
 
-    image_id / user_id are resolved EXACTLY like create_annotation resolves imageId /
-    annotator: imageId is taken as-is from the body (no extra lookup), and the acting
-    user is session-derived the same way (admin may pass an explicit `annotator`,
-    everyone else is pinned to their own session username).
+    The sample is always attributed to the acting session user (their own token) — there
+    is no admin/annotator override: we never record telemetry "as" someone else, and admins
+    viewing the annotator view are read-only, so their navigation is simply not recorded.
 
     No consent/opt-out gating — annotators are lab staff. This is the spot to add a
     gate (e.g. a per-user opt-out flag) if that's ever needed.
@@ -1285,10 +1284,7 @@ def create_viewport_events(project_id: str):
     body = request.json or {}
     image_id = body.get('imageId')
     events = body.get('events') or []
-    if session.get('username') == 'admin':
-        user_id = (body.get('annotator') or '').strip()
-    else:
-        user_id = session.get('username') or ''
+    user_id = session.get('username') or ''
     if not (image_id and user_id and isinstance(events, list) and events):
         return jsonify({'error': 'imageId, events required'}), 400
     con = _db.get_db()
