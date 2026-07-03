@@ -476,6 +476,16 @@ def api_i18n(locale: str):
     return jsonify(catalog)
 
 
+@app.get('/api/health')
+def api_health():
+    """Unauthenticated liveness probe (HTTP 200, {"status": "ok"}).
+
+    No auth, no DB touch — used by load balancers / uptime checks to tell a live
+    backend from a dead one without a valid session. Keep it side-effect-free.
+    """
+    return jsonify({'status': 'ok'})
+
+
 @app.get('/api/version')
 @login_required
 def api_version():
