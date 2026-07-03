@@ -69,7 +69,7 @@ const CanvasScreen: Component = () => {
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') interaction.finishDraft();
-    if (e.key === 'Escape') setDraft([]);
+    if (e.key === 'Escape') { setDraft([]); setTool('pan'); }
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
