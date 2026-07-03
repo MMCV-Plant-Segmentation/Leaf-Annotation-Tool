@@ -88,4 +88,16 @@ export const canvasApi = {
 
   setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
     jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
+
+  /** Batch-insert viewport (pan/zoom) telemetry samples — see viewportTelemetry.ts.
+   * Best-effort by design: callers swallow rejections, never surface them to the user. */
+  postViewportEvents: (projectId: string, body: { imageId: string; events: ViewportSample[] }) =>
+    jfetch<{ ok: boolean; count: number }>(`/api/projects/${projectId}/viewport-events`, jbody('POST', body)),
+};
+
+/** One captured canvas viewport sample — wire shape for postViewportEvents. See
+ * viewportTelemetry.ts for how samples are gathered/batched. */
+export type ViewportSample = {
+  clientTs: string; x: number; y: number; w: number; h: number;
+  cssW: number; cssH: number; dpr: number;
 };

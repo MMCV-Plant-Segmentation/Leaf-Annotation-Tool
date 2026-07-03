@@ -1255,6 +1255,66 @@ def create_annotation(project_id: str):
         _db.close_db(con)
 
 
+@projects_bp.post('/api/projects/<project_id>/viewport-events')
+@login_required
+def create_viewport_events(project_id: str):
+    """Batch-insert canvas viewport (pan+zoom) telemetry samples for later analysis of
+    how users view images at different magnifications (per-user "vision level" tile
+    sizing, eventually). Best-effort / fail-quiet by design on the frontend
+    (webapp/frontend/src/projects/viewportTelemetry.ts) — this endpoint just needs to be
+    fast and not blow up; it never affects annotation UX.
+
+    image_id / user_id are resolved EXACTLY like create_annotation resolves imageId /
+    annotator: imageId is taken as-is from the body (no extra lookup), and the acting
+    user is session-derived the same way (admin may pass an explicit `annotator`,
+    everyone else is pinned to their own session username).
+
+    No consent/opt-out gating — annotators are lab staff. This is the spot to add a
+    gate (e.g. a per-user opt-out flag) if that's ever needed.
+
+    Body: {imageId, events: [{clientTs, x, y, w, h, cssW, cssH, dpr}, ...]}.
+    Response: {ok: true, count: N}.
+    """
+    body = request.json or {}
+    image_id = body.get('imageId')
+    events = body.get('events') or []
+    if session.get('username') == 'admin':
+        user_id = (body.get('annotator') or '').strip()
+    else:
+        user_id = session.get('username') or ''
+    if not (image_id and user_id and isinstance(events, list) and events):
+        return jsonify({'error': 'imageId, events required'}), 400
+    con = _db.get_db()
+    try:
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        received_at = _now()
+        rows = []
+        for ev in events:
+            try:
+                rows.append((
+                    project_id, image_id, user_id,
+                    str(ev.get('clientTs') or ''), received_at,
+                    float(ev['x']), float(ev['y']), float(ev['w']), float(ev['h']),
+                    float(ev['cssW']), float(ev['cssH']), float(ev['dpr']),
+                ))
+            except (KeyError, TypeError, ValueError):
+                continue  # malformed sample — skip it, never fail the whole batch
+        if rows:
+            con.executemany(
+                '''INSERT INTO viewport_event
+                     (project_id, image_id, user_id, client_ts, received_at,
+                      x, y, w, h, css_w, css_h, dpr)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                rows,
+            )
+            con.commit()
+        return jsonify({'ok': True, 'count': len(rows)}), 201
+    finally:
+        _db.close_db(con)
+
+
 @projects_bp.patch('/api/annotations/<annotation_id>')
 @login_required
 def update_annotation(annotation_id: str):
