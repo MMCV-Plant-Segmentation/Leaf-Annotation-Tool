@@ -8,6 +8,7 @@ import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
+import { createViewportTelemetry } from './viewportTelemetry';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
 import { adminReadOnlyCommit } from './adminReadOnly';
@@ -72,6 +73,10 @@ const CanvasScreen: Component = () => {
     brushSize, setBrushSize, maxBrushSize,
     commit: (kind, points, passNo, strokeWidth) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth),
   });
+
+  // Best-effort viewport (pan/zoom) telemetry — see viewportTelemetry.ts. No UI; feeds
+  // future analysis of per-user "vision level" tile sizing.
+  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef });
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!isAdmin()) {
