@@ -16,12 +16,13 @@ that group (never root, no sudo, no UID hardcoded), auto-computes the build vers
 needed. (Raw `docker compose` still works but defaults to running as **root**, which makes the data +
 backups root-owned — use `deploy.py`.)
 
-1. **Create `.env`** interactively — generates `SECRET_KEY` for you and prompts for the rest
-   (`PORT`, `APP_GROUP` = the shared group, `BACKUP_DIR` = optional backup path, `ADMIN_PASSWORD` =
-   the first-boot `admin` login):
+1. **Create `app.config.toml`** interactively — generates `SECRET_KEY` for you and prompts for the
+   rest (`port`, `app_group` = the shared group, `backup_dir` = optional backup path,
+   `admin_password` = the first-boot `admin` login). This replaces the old `.env` (a legacy `.env`
+   is still read as a deprecated fallback if the TOML is absent):
 
    ```sh
-   ./deploy.py create-dot-env
+   ./deploy.py create-config
    ```
 
 2. **Starting from an existing backup** (only when seeding a fresh/wiped host) — lay the DB + files
