@@ -20,7 +20,6 @@ export const panel = style({
   fontSize: '0.78rem',
   color: vars.color.text,
   maxWidth: '230px',
-  boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
 });
 
 export const row = style({
@@ -76,5 +75,4 @@ export const ramp = style({
   width: '100%',
   borderRadius: '4px',
   border: `1px solid ${vars.color.border}`,
-  background: 'linear-gradient(to right, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(94,201,98), rgb(253,231,37))',
 });

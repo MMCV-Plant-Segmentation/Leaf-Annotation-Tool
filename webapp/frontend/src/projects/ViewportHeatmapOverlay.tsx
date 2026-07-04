@@ -118,7 +118,8 @@ export const ViewportHeatmapPanel: Component<{ heat: ViewportHeatmap }> = (props
       <div class={styles.hint}>{t('heatmap.empty')}</div>
     }>
       <div class={styles.hint}>{t('heatmap.summary', { count: props.heat.count() })}</div>
-      <div class={styles.ramp} title={t('heatmap.ramp')} />
+      <div class={styles.ramp} title={t('heatmap.ramp')}
+        style={{ background: 'linear-gradient(to right, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(94,201,98), rgb(253,231,37))' }} />
       <div class={styles.row}>
         <span class={styles.label}>{t('heatmap.min')}</span>
         <input class={styles.slider} type="range" min="0" max="1" step="0.01"
