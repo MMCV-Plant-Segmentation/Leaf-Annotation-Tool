@@ -88,6 +88,7 @@ export const classPick = style({
 });
 
 export const stage = style({
+  position: 'relative',  // anchors the admin viewport-heatmap control panel
   flex: '1 1 auto',
   minHeight: 0,
   background: vars.color.bg,
