@@ -202,3 +202,7 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   sidecars) is prod-only — so there's no way to exercise the backup *machinery* in test. Allow `--with-backup`
   on `start test`, pointed at a **throwaway/non-prod backup dir** (never prod's), so the whole backup path can
   be validated before it ships to prod. Logged 2026-07-04.
+- **Multi-select lesions (Ctrl+click + rectangular drag-select).** Christian (2026-07-04): once the Phase-2
+  selection tool exists (see `Plan — Compound labels.md`), extend it to select MULTIPLE lesions — Ctrl+click to
+  add/remove from the selection, and a rectangular click-and-drag marquee select while in select mode — so a
+  batch of lesions can be re-labeled at once. Follows the single-select relabel flow. Logged 2026-07-04.
