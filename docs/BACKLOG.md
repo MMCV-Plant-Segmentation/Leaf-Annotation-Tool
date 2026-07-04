@@ -197,3 +197,8 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   (vitest/c8 or Playwright coverage) — **report the percentage but do NOT fail the gate** (no minimum for now).
   A minimum threshold comes later; right now the priority is fixing known bugs, collecting all the data we need,
   and the minimum features to support annotation. Logged 2026-07-04.
+- **Let the test env RUN the backup sidecars (not just restore).** Christian (2026-07-04): today `start test
+  --data-mode restore` can *consume* a backup (reads `BACKUP_DIR`), but `--with-backup` (litestream/lsyncd
+  sidecars) is prod-only — so there's no way to exercise the backup *machinery* in test. Allow `--with-backup`
+  on `start test`, pointed at a **throwaway/non-prod backup dir** (never prod's), so the whole backup path can
+  be validated before it ships to prod. Logged 2026-07-04.
