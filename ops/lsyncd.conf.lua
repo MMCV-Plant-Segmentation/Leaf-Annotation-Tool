@@ -4,7 +4,11 @@
 -- no-delete: a local mishap cannot wipe the backup.
 
 settings {
-    logfile    = "/var/log/lsyncd.log",
+    -- /var/log is root-owned; lsyncd now runs as PUID:PGID (non-root, per the no-sudo
+    -- ownership-flip design) and can't create a logfile there — it would crash at startup
+    -- with "Cannot open logfile [/var/log/lsyncd.log]". /dev/stdout is world-writable and is
+    -- standard container practice: the log lands in `docker logs lsyncd` instead.
+    logfile    = "/dev/stdout",
     -- Written under /var/run/lsyncd/ (a dedicated subdir, not bare /var/run) so it can be
     -- shared read-only to the backup-status sidecar via one small volume (compose.yaml's
     -- `lsyncd-status` volume) without exposing anything else in /var/run. lsyncd rewrites
