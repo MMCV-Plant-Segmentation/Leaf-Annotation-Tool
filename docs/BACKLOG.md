@@ -161,3 +161,24 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   realistic error," not bulletproof. Lower urgency because the Docker-testenv redesign makes members run
   app-only against their own volume (they never back up), so accidental double-backup is already unlikely.
   Christian chose honor-code for now (2026-07-02). Logged 2026-07-02.
+
+- **css-hygiene lint should strip comments before scanning.** `e2e/unit/css-hygiene.spec.ts`'s "no raw
+  hex / rgb() in .css.ts" test regexes the WHOLE file (`/#[0-9a-fA-F]{3,8}\b|\brgba?\(/`), so a COMMENT
+  containing `rgb()` or a `#28b`-style token (looks like a 3-digit hex colour) trips it even with zero real
+  raw colours (hit twice 2026-07-04 by comments like "// no raw hex/rgb()." and "// BUG #28b:"). Strip `//`
+  and `/* */` comments (and ideally only scan style-value positions) before the regex. Low urgency, but it
+  wastes agent/gate cycles on false positives. Logged 2026-07-04.
+
+- **Compound-label generalizations (domain-dependent — configure carefully for now).** Beyond the initial
+  mutually-exclusive-groups model: (a) HIERARCHY *within* an intra-exclusive group (types can be hierarchical);
+  (b) some GROUPS mutually exclusive with each other (not just members within a group); (c) only certain types
+  carry special ATTRIBUTES. Christian: hold until the domain is clearer; not every domain this app supports looks
+  like leaf-disease. Logged 2026-07-04.
+- **Share compound labels across annotators (not just across images).** The saved-compound-label store is
+  per-annotator-shared-across-images initially; add cross-annotator sharing later ("pretty easily"). Logged 2026-07-04.
+- **Tiling page should take MASKS as input, not the luminance hack.** Today tiling derives the leaf region via a
+  luminance threshold + largest-connected-component heuristic baked into this app. Instead the tiling page should
+  REQUIRE a segmentation mask as input, and the luminance→mask logic should be **completely decoupled** from this
+  app (it's a separate concern / external tool, not part of the annotation tool). Logged 2026-07-04.
+- **LabelMe export for projects.** Export a project's annotations to LabelMe format. Ties to compound-label
+  serialization (export to strings — base64 the serialized value if needed). Logged 2026-07-04.
