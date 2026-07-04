@@ -148,6 +148,43 @@ def bake(env, root=ROOT):
     sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"], cwd=str(root), env=base_env(env, root))
 
 
+def _ensure_prod_volume(penv):
+    """First-boot only: create + chown the prod data volume if it doesn't exist yet, so the app
+    (running as PUID:PGID, not root — see prod_env()) can open its SQLite DB in /data. A
+    brand-new Docker named volume is root-owned, and Compose never chowns a volume it creates —
+    so on a truly fresh host, `docker compose up` would hand the app a root-owned /data and it
+    can't open the DB file. Mirrors _reset_test_volume()'s create+chown, but for prod: create,
+    never wipe.
+
+    Compose names prod's volume f"{COMPOSE_PROJECT_NAME}_leaf-data" (its default naming for a
+    volume declared without `external: true`) — reproduce that exactly so this creates/adopts
+    the SAME volume Compose is about to use, not a shadow one.
+
+    Idempotent + non-destructive: only acts when the volume does NOT already exist. On an
+    existing volume (not first boot) this is a no-op — never wipe, never blanket re-chown (an
+    operator may have deliberately changed ownership, and reusing this on every start would
+    silently stomp on that).
+
+    Labels: validated against this repo's Compose (v5.2.0) that a volume Compose did not create
+    still gets silently ADOPTED (no warning, no error) by `docker compose up` as long as it
+    carries Compose's own `com.docker.compose.project` + `com.docker.compose.volume` labels — a
+    plain unlabeled `docker volume create` works too (Compose adopts it) but prints a
+    "not created by Docker Compose" warning on every future `up`, forever. Labeling it up front
+    avoids that noise; no config-hash label is needed for adoption.
+    """
+    project = penv.get("COMPOSE_PROJECT_NAME", "leaf-annotation-tool")
+    vol = f"{project}_leaf-data"
+    if subprocess.run(["docker", "volume", "inspect", vol], capture_output=True).returncode == 0:
+        return  # already exists — not first boot; never touch (no wipe, no re-chown)
+    print(f"prod data volume {vol!r} doesn't exist yet — creating it (first boot)…")
+    sh(["docker", "volume", "create",
+        "--label", f"com.docker.compose.project={project}",
+        "--label", "com.docker.compose.volume=leaf-data",
+        vol])
+    sh(["docker", "run", "--rm", "-v", f"{vol}:/data", "alpine",
+        "chown", "-R", f"{penv['PUID']}:{penv['PGID']}", "/data"])
+
+
 def start_prod(env, with_backup, branch):
     # Required-ness validated AFTER merging file+env (the config file may supply it, so argparse
     # can't). SECRET_KEY is mandatory for the app to boot; fail here with a clear message rather
@@ -161,6 +198,8 @@ def start_prod(env, with_backup, branch):
         version = git_sha(build_root) or "dev"
     finally:
         cleanup_worktree(worktree)
+    penv = prod_env(env)
+    _ensure_prod_volume(penv)
     # Backup sidecars + BACKUP_DIR interpolation live entirely in compose.backup.yaml (see its
     # header) — only merge that file in when backup was actually asked for, so plain prod never
     # parses a ${BACKUP_DIR:?...} guard and never needs BACKUP_DIR set.
@@ -168,7 +207,7 @@ def start_prod(env, with_backup, branch):
     if with_backup:
         up += ["-f", "compose.backup.yaml"]
     up += ["up", "-d"]
-    sh(up, cwd=str(ROOT), env=prod_env(env))
+    sh(up, cwd=str(ROOT), env=penv)
     print(f"prod up (version {version}). backup: {'on' if with_backup else 'off'}.")
 
 
