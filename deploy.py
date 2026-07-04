@@ -148,15 +148,15 @@ def bake(env, root=ROOT):
     sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"], cwd=str(root), env=base_env(env, root))
 
 
-def _ensure_prod_volume(penv):
-    """First-boot only: create + chown the prod data volume if it doesn't exist yet, so the app
-    (running as PUID:PGID, not root — see prod_env()) can open its SQLite DB in /data. A
-    brand-new Docker named volume is root-owned, and Compose never chowns a volume it creates —
-    so on a truly fresh host, `docker compose up` would hand the app a root-owned /data and it
-    can't open the DB file. Mirrors _reset_test_volume()'s create+chown, but for prod: create,
-    never wipe.
+def _ensure_prod_volume(penv, name):
+    """First-boot only: create + chown a prod named volume if it doesn't exist yet, so a
+    non-root sidecar (running as PUID:PGID — see prod_env()) can write into it. A brand-new
+    Docker named volume is root-owned, and Compose never chowns a volume it creates — so on a
+    truly fresh host, `docker compose up` would hand the container a root-owned mount it can't
+    write to. Mirrors _reset_test_volume()'s create+chown, but for prod: create, never wipe.
 
-    Compose names prod's volume f"{COMPOSE_PROJECT_NAME}_leaf-data" (its default naming for a
+    name: the volume's short name as declared in compose (e.g. "leaf-data", "lsyncd-status").
+    Compose names the actual volume f"{COMPOSE_PROJECT_NAME}_{name}" (its default naming for a
     volume declared without `external: true`) — reproduce that exactly so this creates/adopts
     the SAME volume Compose is about to use, not a shadow one.
 
@@ -173,13 +173,13 @@ def _ensure_prod_volume(penv):
     avoids that noise; no config-hash label is needed for adoption.
     """
     project = penv.get("COMPOSE_PROJECT_NAME", "leaf-annotation-tool")
-    vol = f"{project}_leaf-data"
+    vol = f"{project}_{name}"
     if subprocess.run(["docker", "volume", "inspect", vol], capture_output=True).returncode == 0:
         return  # already exists — not first boot; never touch (no wipe, no re-chown)
-    print(f"prod data volume {vol!r} doesn't exist yet — creating it (first boot)…")
+    print(f"prod {name!r} volume {vol!r} doesn't exist yet — creating it (first boot)…")
     sh(["docker", "volume", "create",
         "--label", f"com.docker.compose.project={project}",
-        "--label", "com.docker.compose.volume=leaf-data",
+        "--label", f"com.docker.compose.volume={name}",
         vol])
     sh(["docker", "run", "--rm", "-v", f"{vol}:/data", "alpine",
         "chown", "-R", f"{penv['PUID']}:{penv['PGID']}", "/data"])
@@ -199,13 +199,17 @@ def start_prod(env, with_backup, branch):
     finally:
         cleanup_worktree(worktree)
     penv = prod_env(env)
-    _ensure_prod_volume(penv)
+    _ensure_prod_volume(penv, "leaf-data")
     # Backup sidecars + BACKUP_DIR interpolation live entirely in compose.backup.yaml (see its
     # header) — only merge that file in when backup was actually asked for, so plain prod never
     # parses a ${BACKUP_DIR:?...} guard and never needs BACKUP_DIR set.
     up = ["docker", "compose", "-f", "compose.yaml"]
     if with_backup:
         up += ["-f", "compose.backup.yaml"]
+        # lsyncd-status is only declared (and only needed) on the --with-backup path — same
+        # first-boot root-owned-volume problem as leaf-data, but for lsyncd's non-root status
+        # writes (see ops/lsyncd.conf.lua's statusFile).
+        _ensure_prod_volume(penv, "lsyncd-status")
     up += ["up", "-d"]
     sh(up, cwd=str(ROOT), env=penv)
     print(f"prod up (version {version}). backup: {'on' if with_backup else 'off'}.")
