@@ -182,3 +182,18 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   app (it's a separate concern / external tool, not part of the annotation tool). Logged 2026-07-04.
 - **LabelMe export for projects.** Export a project's annotations to LabelMe format. Ties to compound-label
   serialization (export to strings — base64 the serialized value if needed). Logged 2026-07-04.
+- **Dedicated production branch (deploy prod from it, not `main`).** Christian (2026-07-04): with the new
+  "test from a branch, don't merge-to-test" workflow, `main` is effectively the integration/test line. Add a
+  `production` (or `release`) branch that prod actually deploys from, so merging to `main` no longer implies
+  "this is live." Prod redeploys track that branch; `main` stays the staging tip. Logged 2026-07-04.
+- **Structured BE error/request logging + log backup (with version/sha).** Christian (2026-07-04): today the
+  backend logs nothing durable — malformed requests return a `400` JSON but are unrecorded, and uncaught
+  exceptions only hit container stdout (ephemeral). Add real logging: capture 4xx/5xx + tracebacks to a
+  persistent log (a file in a volume), **stamp every line with the build version/sha** (so we can tie a bug to
+  a deploy), and **back the logs up** alongside the DB (litestream/lsyncd sidecars). Goal = catch bugs we don't
+  know about. Companion to the harness token/tool-usage audit work. Logged 2026-07-04.
+- **Coverage gate step (FE + BE), no threshold yet.** Christian (2026-07-04): add a coverage-measurement stage
+  to `scripts/gate.py` for BOTH backends (wrap the standalone test scripts in `coverage run`) and frontend
+  (vitest/c8 or Playwright coverage) — **report the percentage but do NOT fail the gate** (no minimum for now).
+  A minimum threshold comes later; right now the priority is fixing known bugs, collecting all the data we need,
+  and the minimum features to support annotation. Logged 2026-07-04.
