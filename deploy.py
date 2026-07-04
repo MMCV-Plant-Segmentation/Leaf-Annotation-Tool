@@ -161,7 +161,13 @@ def start_prod(env, with_backup, branch):
         version = git_sha(build_root) or "dev"
     finally:
         cleanup_worktree(worktree)
-    up = ["docker", "compose"] + (["--profile", "backup"] if with_backup else []) + ["up", "-d"]
+    # Backup sidecars + BACKUP_DIR interpolation live entirely in compose.backup.yaml (see its
+    # header) — only merge that file in when backup was actually asked for, so plain prod never
+    # parses a ${BACKUP_DIR:?...} guard and never needs BACKUP_DIR set.
+    up = ["docker", "compose", "-f", "compose.yaml"]
+    if with_backup:
+        up += ["-f", "compose.backup.yaml"]
+    up += ["up", "-d"]
     sh(up, cwd=str(ROOT), env=prod_env(env))
     print(f"prod up (version {version}). backup: {'on' if with_backup else 'off'}.")
 
@@ -282,19 +288,22 @@ def start_test(env, port, data_mode, branch):
 
 def stop(env, target):
     if target == "prod":
-        # --profile backup so `down` also removes the backup sidecars; without it they linger and
-        # hold the network. Dummy BACKUP_DIR only satisfies interpolation (down mounts nothing).
+        # -f compose.backup.yaml too, so `down` also removes the backup sidecars if they're up;
+        # without it they linger and hold the network. Dummy BACKUP_DIR only satisfies
+        # compose.backup.yaml's ${BACKUP_DIR:?...} interpolation guard (down mounts nothing).
         e = base_env(env)
         e.setdefault("BACKUP_DIR", "/unused-for-down")
-        sh(["docker", "compose", "--profile", "backup", "down", "--remove-orphans"],
-           cwd=str(ROOT), env=e)
+        sh(["docker", "compose", "-f", "compose.yaml", "-f", "compose.backup.yaml",
+            "down", "--remove-orphans"], cwd=str(ROOT), env=e)
     else:
         subprocess.run(["docker", "rm", "-f", TEST_CT])
         subprocess.run(["docker", "volume", "rm", TEST_VOL], capture_output=True)
 
 
 def restore(env):
-    sh(["docker", "compose", "run", "--rm", "restore"], cwd=str(ROOT), env=prod_env(env))
+    # restore now lives in compose.backup.yaml (see its header) — always composed with the base.
+    sh(["docker", "compose", "-f", "compose.yaml", "-f", "compose.backup.yaml", "run", "--rm", "restore"],
+       cwd=str(ROOT), env=prod_env(env))
 
 
 def _toml_str(value):
