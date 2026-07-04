@@ -1,0 +1,88 @@
+# compose.backup.yaml — the opt-in backup/restore sidecars (litestream, lsyncd, backup-status,
+# restore). Split OUT of compose.yaml so a plain `docker compose -f compose.yaml up` (no backup)
+# never parses these services: Compose interpolates ${BACKUP_DIR:?...} for EVERY service at parse
+# time, even ones a `profiles:` filter would otherwise exclude — so as long as this file was
+# merged in, a first-time user with no BACKUP_DIR configured would get a hard error just from
+# `up`, even without asking for backup. Keeping these services in a separate file means Compose
+# never even looks at them unless this file is explicitly included.
+#
+# ALWAYS composed together with the base file, never alone (these services share `leaf-data` with
+# the app, declared in compose.yaml):
+#   docker compose -f compose.yaml -f compose.backup.yaml up -d              # app + backup sidecars
+#   docker compose -f compose.yaml -f compose.backup.yaml run --rm restore   # one-shot restore
+#   docker compose -f compose.yaml -f compose.backup.yaml down --remove-orphans
+#
+# litestream/lsyncd/backup-status now run unconditionally once this file is included (no
+# `profiles:` gate needed — file-inclusion IS the gate). `restore` keeps its own `profiles:
+# ["restore"]` so it's never started by a plain `up` even when this file is merged in for
+# `--with-backup`; `docker compose run --rm restore` still works because Compose implicitly
+# activates the profile(s) required by a service named explicitly on the command line.
+services:
+  litestream:
+    image: litestream/litestream:0.3.13
+    user: "${PUID:-0}:${PGID:-0}"      # write backups as the operator, not root
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    # :9090 serves litestream's own Prometheus metrics (ops/litestream.yml's `addr`) — scraped
+    # by backup-status below, over the compose network only. Not published to the host.
+    expose: ["9090"]
+    volumes:
+      - leaf-data:/data
+      - ./ops/litestream.yml:/etc/litestream.yml:ro
+      - ${BACKUP_DIR:?BACKUP_DIR must be set to use the backup/restore profiles}/db:/backup/db
+    restart: unless-stopped
+
+  lsyncd:
+    image: leaf-lsyncd:latest
+    user: "${PUID:-0}:${PGID:-0}"      # mirror files as the operator, not root
+    volumes:
+      - leaf-data:/data:ro
+      - ./ops/lsyncd.conf.lua:/etc/lsyncd.conf.lua:ro
+      - ${BACKUP_DIR:?BACKUP_DIR must be set to use the backup/restore profiles}/files:/backup/files
+      # Shares ONLY lsyncd's own status file (not the backup data) with backup-status.
+      - lsyncd-status:/var/run/lsyncd
+    restart: unless-stopped
+
+  # Tiny stdlib HTTP status sidecar: parses litestream's metrics + lsyncd's status file (never
+  # the backup data itself) and serves GET /status for the main app to proxy. Keeps the app
+  # fully decoupled from backup — see docs/plans/Plan — Admin sync-status panel.md (DECISION:
+  # sidecar, 2026-07-01). No ${BACKUP_DIR} mount here either.
+  backup-status:
+    image: leaf-backup-status:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.backup-status
+    environment:
+      LITESTREAM_METRICS_URL: http://litestream:9090/metrics
+      LSYNCD_STATUS_FILE: /var/run/lsyncd/status
+      PORT: "8098"
+    volumes:
+      - lsyncd-status:/var/run/lsyncd:ro
+    restart: unless-stopped
+
+  # Explicit, one-shot restore for a fresh/wiped deployment — run BEFORE `up`:
+  #   docker compose -f compose.yaml -f compose.backup.yaml run --rm restore
+  # Restores the DB from the litestream replica (skips if a DB already exists) and copies
+  # the file backup back wholesale (all-or-nothing), then exits. Fully decoupled from the app.
+  restore:
+    image: litestream/litestream:0.3.13
+    profiles: ["restore"]   # never started by a plain `up`, even with this file merged in
+    user: "${PUID:-0}:${PGID:-0}"      # restore into the volume as the operator, not root
+    entrypoint: ["/bin/sh", "-c"]
+    # busybox `cp -an /src/.` is unreliable (no -n; mishandles /.) and `tar xk` aborts on the
+    # first conflict — so a plain tar pipe. Restore targets a fresh volume; the file mirror
+    # excludes app.db*, so this only lays down images/jsons/manifest and never touches the DB
+    # litestream just restored. DB ← litestream replica; files ← lsyncd mirror.
+    command: ["litestream restore -if-db-not-exists -config /etc/litestream.yml /data/app.db && (cd /backup/files && tar cf - . | tar xf - -C /data) && echo '[restore] done'"]
+    volumes:
+      - leaf-data:/data
+      - ./ops/litestream.yml:/etc/litestream.yml:ro
+      - ${BACKUP_DIR:?BACKUP_DIR must be set to use the backup/restore profiles}/db:/backup/db:ro
+      - ${BACKUP_DIR:?BACKUP_DIR must be set to use the backup/restore profiles}/files:/backup/files:ro
+
+volumes:
+  leaf-data:
+    # Declared here too (merges with compose.yaml's decl) so Compose resolves it when this file
+    # is loaded — same named volume, not a second one.
+  lsyncd-status:
+    # Tiny shared volume: ONLY lsyncd's self-reported status file, read-only on the
+    # backup-status side. Never the backup data (${BACKUP_DIR}/files) itself.
