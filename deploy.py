@@ -14,6 +14,7 @@ prod's live volume. Test's data comes from --data-mode, not from prod.
   ./deploy.py start test --data-mode reset     # run the real image against a fresh empty volume
   ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR
   ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
+  ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch, no merge needed
   ./deploy.py stop prod | test
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
 """
@@ -22,8 +23,10 @@ import getpass
 import grp
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -54,9 +57,12 @@ def sh(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def git_sha():
+def git_sha(root=ROOT):
+    """SHA of `root`'s checked-out HEAD — pass the actual build_root (main checkout, or a
+    --branch worktree) so the baked-in version identity matches what was ACTUALLY built, not
+    always the main checkout's HEAD."""
     try:
-        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
                              capture_output=True, text=True)
         return out.stdout.strip()
     except Exception:
@@ -75,11 +81,13 @@ def identity(env):
     return str(os.getuid()), str(gid)
 
 
-def base_env(env):
+def base_env(env, root=ROOT):
     """Version + project pin for build/compose. No identity → `test` and `stop` work without
-    APP_GROUP or a .env (test runs as your personal uid/gid; stop doesn't start containers)."""
+    APP_GROUP or a .env (test runs as your personal uid/gid; stop doesn't start containers).
+    root: whichever tree is actually being built (main checkout, or a --branch worktree) —
+    GIT_SHA must match what was built, not always the main checkout's HEAD."""
     e = dict(os.environ)
-    e.update(GIT_SHA=git_sha(), BUILD_TIME=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    e.update(GIT_SHA=git_sha(root), BUILD_TIME=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     e.setdefault("COMPOSE_PROJECT_NAME", env.get("COMPOSE_PROJECT_NAME", "leaf-annotation-tool"))
     return e
 
@@ -92,17 +100,45 @@ def prod_env(env):
     return e
 
 
-def bake(env):
+def resolve_build_root(branch):
+    """(build_root, worktree_dir_or_None) for bake(). No --branch: build the current checkout,
+    unchanged. With --branch: check out that ref into a throwaway git worktree so the build reads
+    that ref's tree without disturbing the user's working tree — --detach so this works even if
+    --branch names the branch currently checked out in the main worktree (git normally refuses to
+    check out the same branch twice; a detached worktree sidesteps that)."""
+    if not branch:
+        return ROOT, None
+    wt_dir = Path(tempfile.mkdtemp(prefix="leaf-deploy-build-"))
+    wt_dir.rmdir()  # git worktree add wants to create this path itself
+    sh(["git", "-C", str(ROOT), "worktree", "add", "--detach", str(wt_dir), branch])
+    return wt_dir, wt_dir
+
+
+def cleanup_worktree(wt_dir):
+    if wt_dir is None:
+        return
+    subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(wt_dir)],
+                    capture_output=True)
+    shutil.rmtree(wt_dir, ignore_errors=True)
+
+
+def bake(env, root=ROOT):
     # -f docker-bake.hcl only: bake otherwise also loads compose.yaml and demands BACKUP_DIR
-    # (from the backup services) even to build just `app`.
-    sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"], cwd=str(ROOT), env=base_env(env))
+    # (from the backup services) even to build just `app`. cwd=root so the "." build context
+    # (docker-bake.hcl) resolves against the ref being built, not always the main checkout.
+    sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"], cwd=str(root), env=base_env(env, root))
 
 
-def start_prod(env, with_backup):
-    bake(env)
+def start_prod(env, with_backup, branch):
+    build_root, worktree = resolve_build_root(branch)
+    try:
+        bake(env, root=build_root)
+        version = git_sha(build_root) or "dev"
+    finally:
+        cleanup_worktree(worktree)
     up = ["docker", "compose"] + (["--profile", "backup"] if with_backup else []) + ["up", "-d"]
     sh(up, cwd=str(ROOT), env=prod_env(env))
-    print(f"prod up (version {git_sha() or 'dev'}). backup: {'on' if with_backup else 'off'}.")
+    print(f"prod up (version {version}). backup: {'on' if with_backup else 'off'}.")
 
 
 def _reset_test_volume(puid, pgid):
@@ -177,14 +213,18 @@ def _prep_test_data(mode, env, puid, pgid):
         raise ValueError(f"unknown data-mode: {mode!r}")
 
 
-def start_test(env, port, data_mode):
+def start_test(env, port, data_mode, branch):
     if data_mode is None:
         die("start test requires --data-mode {keep|reset|restore} (no default — this is a "
             "wipe-guard, since 'reset' deletes the test volume). Choose: "
             "keep (reuse test data as-is), reset (fresh empty data), "
             "or restore (populate from BACKUP_DIR).")
     puid, pgid = str(os.getuid()), str(os.getgid())  # personal identity — test data isn't shared
-    bake(env)  # test the CURRENT code, same image prod would get
+    build_root, worktree = resolve_build_root(branch)
+    try:
+        bake(env, root=build_root)  # test that code, same image prod would get
+    finally:
+        cleanup_worktree(worktree)
     subprocess.run(["docker", "rm", "-f", TEST_CT], capture_output=True)  # release the volume first
     _prep_test_data(data_mode, env, puid, pgid)
     admin_pw = env.get("ADMIN_PASSWORD")  # only takes effect if no admin exists yet (fresh 'reset'
@@ -248,6 +288,10 @@ def main():
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
                          "data), restore (populate from BACKUP_DIR). No default (wipe-guard). "
                          "Ignored for prod.")
+    ps.add_argument("--branch", default=None,
+                    help="git ref to build the image from (via a throwaway worktree), instead of "
+                         "the current checkout — e.g. deploy+test a feature branch without "
+                         "merging it. Default: build the current checkout, unchanged.")
     st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
     sub.add_parser("create-dot-env", help="interactively write a .env")
@@ -256,7 +300,8 @@ def main():
     if a.cmd == "create-dot-env":
         create_dot_env()
     elif a.cmd == "start":
-        (start_prod(env, a.with_backup) if a.target == "prod" else start_test(env, a.port, a.data_mode))
+        (start_prod(env, a.with_backup, a.branch) if a.target == "prod"
+         else start_test(env, a.port, a.data_mode, a.branch))
     elif a.cmd == "stop":
         stop(env, a.target)
     elif a.cmd == "restore":
