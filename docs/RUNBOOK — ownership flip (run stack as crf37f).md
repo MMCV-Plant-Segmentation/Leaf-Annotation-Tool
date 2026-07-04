@@ -56,8 +56,8 @@ CT=leaf-annotation-tool-app-1
 docker exec "$CT" id                                   # uid=<you>, gid=100647871
 docker exec "$CT" stat -c '%g %a %n' /data/app.db      # group 100647871, mode has group-write (66x)
 curl -s -o /dev/null -w '%{http_code}\n' localhost:${PORT:-5000}/   # 200
-# The real proof — a clean Docker testenv off a throwaway copy of prod:
-./deploy.py start test                                 # serves :5001; ./deploy.py stop test to tear down
+# The real proof — a clean Docker testenv (decoupled from prod; --data-mode is required):
+./deploy.py start test --data-mode reset               # auto-picks a free port; ./deploy.py stop test to tear down
 ```
 
 ## Backup exclusivity
