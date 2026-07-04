@@ -95,6 +95,17 @@ export const classPick = style({
   gap: '0.3rem',
 });
 
+// BUG 28b: the native <select> dropdown caret overlaps the selected annotator name.
+// Right-padding the select reserves space for the arrow so text never sits under it.
+globalStyle(`${classPick} select`, {
+  padding: '0.3rem 1.5rem 0.3rem 0.4rem',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: '6px',
+  background: vars.color.surface,
+  color: vars.color.text,
+  fontSize: '0.82rem',
+});
+
 export const stage = style({
   flex: '1 1 auto',
   minHeight: 0,
