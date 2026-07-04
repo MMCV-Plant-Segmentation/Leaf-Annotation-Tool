@@ -1,6 +1,7 @@
 import { type Component, For, Show } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import type { Tool } from './canvasShapes';
+import type { Label } from './api';
 import { AnnotatorPicker } from './AnnotatorPicker';
 import { t } from '../i18n/catalog';
 import * as styles from './CanvasScreen.css';
@@ -17,7 +18,7 @@ type Props = {
   maxBrushSize: Accessor<number>;
   selClass: Accessor<string>;
   setSelClass: (c: string) => void;
-  classOptions: () => string[];
+  classOptions: () => Label[];
   imgIdx: Accessor<number>;
   imgCount: number;
   onBack: () => void;
@@ -97,8 +98,15 @@ export const CanvasToolbar: Component<Props> = (props) => (
       <span class={styles.sep} />
       <label class={styles.classPick}>{t('canvas.class')}
         <select onChange={(e) => props.setSelClass(e.currentTarget.value)} value={props.selClass()}>
-          <For each={props.classOptions()}>{(c) => <option value={c}>{c}</option>}</For>
+          <For each={props.classOptions()}>{(c) => <option value={c.name}>{c.name}</option>}</For>
+          {/* Lenient backend: keep an out-of-set selClass selectable as free text. */}
+          <Show when={props.selClass() && !props.classOptions().some((c) => c.name === props.selClass())}>
+            <option value={props.selClass()}>{props.selClass()}</option>
+          </Show>
         </select>
+        <Show when={props.classOptions().find((c) => c.name === props.selClass())}>
+          {(c) => <span class={styles.swatch} style={{ background: c().color }} aria-hidden="true" />}
+        </Show>
       </label>
     </Show>
     <button class={styles.tool} onClick={props.onFit}>{t('canvas.fit')}</button>

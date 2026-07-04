@@ -2,17 +2,22 @@
  * Images sub-route (`/projects/:id/images`): browser upload (primary) with per-file
  * streaming progress, plus a de-emphasized server-path import for dev/admin use,
  * and a clamped lazy-loading preview of the imported images.
+ *
+ * Progress/streaming state lives in `imageImportProgress.ts` (extracted to keep this
+ * file ≤200 lines). Both upload + import flows feed the same `ImportEvent` stream.
  */
 import { type Component, createResource, createSignal, ErrorBoundary, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, streamImport, type ImportEvent } from './api';
+import { projectsApi, imageUrls, streamImport } from './api';
 import { uploadWithPreflight } from './preflightHash';
+import { createImportProgress } from './imageImportProgress';
 import { currentUser } from '../auth';
 import { t } from '../i18n/catalog';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
 import ProjectNotFound from './ProjectNotFound';
 import SelectedFilesList from './SelectedFilesList';
+import LabelEditor from './LabelEditor';
 import * as styles from './ProjectImagesScreen.css';
 
 const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.tif,.tiff';
@@ -22,47 +27,27 @@ const ProjectImagesScreen: Component = () => {
   const nav = useNavigate();
   const id = () => params.id!;
   const [project, { refetch }] = createResource(id, (pid) => projectsApi.get(pid));
+  const reload = () => void refetch();
 
-  // Shared progress state (used by both upload and path-import flows)
-  const [busy, setBusy] = createSignal(false);
-  const [total, setTotal] = createSignal(0);
-  const [done, setDone] = createSignal(0);
-  const [errs, setErrs] = createSignal(0);
-  const [summary, setSummary] = createSignal('');
+  const prog = createImportProgress();
+  const { busy, total, done, errs, summary, pct, setBusy, setSummary } = prog;
+
   const [boxId, setBoxId] = createSignal<string | null>(null);
-
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
   const [alreadyPresent, setAlreadyPresent] = createSignal<Set<File>>(new Set());
   const [dragging, setDragging] = createSignal(false);
-  const [byteLoaded, setByteLoaded] = createSignal(0);
-  const [byteTotal, setByteTotal] = createSignal(0);
   const [path, setPath] = createSignal('');
 
   let fileInputRef!: HTMLInputElement;
 
   const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
-  // Use byte fraction when available (upload flow); fall back to file count (path-import flow).
-  const pct = () => byteTotal() > 0
-    ? Math.round((byteLoaded() / byteTotal()) * 100)
-    : total() > 0 ? Math.round((done() / total()) * 100) : 0;
-
-  const onEvent = (ev: ImportEvent) => {
-    if (ev.type === 'start') { setTotal(ev.total); setDone(0); setErrs(0); }
-    else if (ev.type === 'progress') { setByteLoaded(ev.loaded); setByteTotal(ev.total); }
-    else if (ev.type === 'file') { setDone((n) => n + 1); if (!ev.ok) setErrs((n) => n + 1); }
-    else if (ev.type === 'done') {
-      const p = alreadyPresent().size;
-      setSummary(t('detail.images.importDone', {
-        imported: ev.imported, skipped: ev.skipped + p, errors: ev.errors.length,
-      }) + (p > 0 ? ' ' + t('detail.images.presentNote', { present: p }) : ''));
-    }
-  };
+  const onEvent = (ev: Parameters<typeof prog.onEvent>[0]) =>
+    prog.onEvent(ev, () => alreadyPresent().size);
 
   const doUpload = async () => {
     const files = selectedFiles();
     if (!files.length || busy()) return;
-    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
-    setByteLoaded(0); setByteTotal(0); setAlreadyPresent(new Set<File>());
+    setBusy(true); prog.reset();
     try {
       await uploadWithPreflight(id(), files, onEvent,
         (found) => setAlreadyPresent(new Set(found)));
@@ -79,7 +64,7 @@ const ProjectImagesScreen: Component = () => {
   const doImport = async () => {
     const p = path().trim();
     if (!p || busy()) return;
-    setBusy(true); setSummary(''); setTotal(0); setDone(0); setErrs(0);
+    setBusy(true); prog.reset();
     try {
       await streamImport(id(), p, onEvent);
       void refetch();
@@ -146,6 +131,9 @@ const ProjectImagesScreen: Component = () => {
               {busy() ? t('detail.images.uploading') : t('detail.images.upload')}
             </button>
           </div>
+
+          {/* ── Label taxonomy editor (any project member — not admin-only) ── */}
+          <LabelEditor projectId={id()} labels={p().classes} onSaved={reload} />
 
           {/* ── Secondary (de-emphasized): server-path import for dev/admin ── */}
           <Show when={currentUser()?.is_admin}>

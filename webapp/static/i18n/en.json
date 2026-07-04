@@ -1,6 +1,5 @@
 {
   "app.title": "Annotation Tool",
-
   "common.loading": "Loading…",
   "common.saving": "Saving…",
   "common.saved": "Saved",
@@ -17,15 +16,12 @@
   "common.locked": "locked",
   "common.shapes": "{n} shapes",
   "common.piles": "{n} piles",
-
   "nav.admin": "Admin",
   "nav.account": "Account",
   "nav.versionFooter": "v{version} · {sha}",
   "nav.logout": "Log out",
-
   "theme.switchDark": "Switch to dark theme",
   "theme.switchLight": "Switch to light theme",
-
   "home.manageTitle": "Manage Sets",
   "home.manageSub": "Upload, rename, delete",
   "home.mergeTitle": "Merge Sets",
@@ -36,14 +32,12 @@
   "home.projectsSub": "Images, tiles & batches",
   "home.trainTitle": "Train",
   "home.trainSub": "Practice annotation",
-
   "login.title": "Sign in",
   "login.username": "Username",
   "login.password": "Password",
   "login.submit": "Sign in",
   "login.submitting": "Signing in…",
   "login.error.default": "Login failed",
-
   "account.title": "Account",
   "account.username.title": "Username",
   "account.username.label": "Username",
@@ -61,7 +55,6 @@
   "account.password.error.default": "Could not update password",
   "account.password.error.mismatch": "New passwords do not match",
   "account.password.error.short": "Password must be at least 8 characters",
-
   "invite.title.setPassword": "Set your password",
   "invite.title.success": "Password set!",
   "invite.title.invalid": "Invalid invite",
@@ -75,7 +68,6 @@
   "invite.error.mismatch": "Passwords do not match",
   "invite.error.short": "Password must be at least 8 characters",
   "invite.error.default": "Failed",
-
   "manage.title": "Annotation sets",
   "manage.empty": "No annotation sets yet. Click \"+ Add\" below.",
   "manage.addBtn": "+ Add new annotation set",
@@ -85,7 +77,6 @@
   "manage.btn.replace": "Replace files",
   "manage.btn.delete": "Delete",
   "admin.user.inviteExpires": "Invite (expires {expiry}):",
-
   "merge.image": "Image",
   "merge.annotationSets": "Annotation sets",
   "merge.empty": "No annotation sets yet.",
@@ -95,7 +86,6 @@
   "merge.continueComparison": "Continue comparison",
   "merge.newComparison": "New comparison →",
   "merge.deleteComparison": "✕ Delete saved comparison",
-
   "train.annotationSet": "Annotation set",
   "train.practice": "What would you like to practice?",
   "train.polygon.title": "Polygon drawing",
@@ -111,7 +101,6 @@
   "train.newSession": "New session →",
   "train.deletedNotice": "Your previous session's annotation set was deleted.",
   "train.empty": "No annotation sets yet.",
-
   "analyze.loading": "Loading…",
   "analyze.empty": "No merged or reannotated sets yet. Save a comparison first.",
   "analyze.start": "Analyze →",
@@ -140,16 +129,13 @@
   "analyze.blind": "🙈 Blind",
   "analyze.bbox": "⬚ Bbox",
   "analyze.home": "Home",
-
   "pile.annotatorsSingular": "{m} annotator drew this lesion",
   "pile.annotatorsPlural": "{m} annotators drew this lesion",
-
   "iou.intersection": "∩ Intersection:",
   "iou.union": "∪ Union:",
   "iou.pxUnit": "px²",
   "iou.formula": "IoU =",
   "iou.result": "{pct}%",
-
   "admin.tab.users": "Users",
   "admin.tab.settings": "Settings",
   "admin.user.placeholder": "New username",
@@ -164,7 +150,6 @@
   "admin.settings.backupDirPlaceholder": "/path/to/backup",
   "admin.settings.conflict": "Conflict — another session updated this setting",
   "admin.settings.saveFailed": "Save failed",
-  "admin.settings.saving": "Saving…",
   "admin.settings.saving": "Saving…",
   "admin.syncStatus.title": "Backup sync status",
   "admin.syncStatus.notConfigured": "Backup not configured",
@@ -182,7 +167,6 @@
   "admin.version.gitSha": "Git SHA",
   "admin.version.builtAt": "Built at",
   "admin.version.schemaVersion": "DB schema version",
-
   "projects.title": "Projects",
   "projects.form.name": "Name",
   "projects.form.namePlaceholder": "e.g. My lesion project",
@@ -196,7 +180,6 @@
   "projects.annotators": "{count} annotators",
   "projects.batches": "{count} batches",
   "projects.tiles": "{px}px tiles",
-
   "detail.back": "← Projects",
   "detail.backHub": "← Project",
   "detail.annotators": "Annotators",
@@ -263,11 +246,9 @@
   "detail.progress.vertices": "Vertices",
   "detail.progress.tileCount": "{done} / {total}",
   "detail.tile.sub": "{px}px tiles · threshold {threshold}",
-
   "project.notFound": "Project not found.",
   "project.backToList": "← Back to projects",
   "tiling.unsavedWarn": "You have unsaved tiling changes. Leave anyway?",
-
   "canvas.noAnnotator": "No annotator selected — open this batch from the project page.",
   "canvas.back": "← Back",
   "canvas.as": "as",
@@ -280,5 +261,13 @@
   "canvas.viewport": "viewport: x {x} · y {y} · w {w} · h {h}",
   "canvas.undo": "↩ undo",
   "canvas.redo": "↪ redo",
-  "canvas.viewing": "viewing"
+  "canvas.viewing": "viewing",
+  "detail.labels.title": "Labels",
+  "detail.labels.add": "Add label",
+  "detail.labels.edit": "Edit labels",
+  "detail.labels.save": "Save",
+  "detail.labels.remove": "Remove",
+  "detail.labels.up": "Move up",
+  "detail.labels.down": "Move down",
+  "detail.labels.namePlaceholder": "Label name"
 }

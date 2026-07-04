@@ -1,6 +1,6 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasImage } from './api';
+import { projectsApi, imageUrls, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
 import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, LiveDraftOverlay } from './canvasShapes';
 import { createCanvasInteraction } from './canvasInteraction';
@@ -28,7 +28,7 @@ const CanvasScreen: Component = () => {
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
   const [tool, setTool] = createSignal<Tool>('pan');
   const [draft, setDraft] = createSignal<number[][]>([]);
-  const [selClass, setSelClass] = createSignal('lesion');
+  const [selClass, setSelClass] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
   // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
@@ -101,11 +101,23 @@ const CanvasScreen: Component = () => {
     }));
   };
 
-  const classOptions = (): string[] => {
-    const fromProject = canvas()?.classes ?? [];
-    const base = fromProject.length > 0 ? fromProject : ['lesion', 'midrib', 'uncertain'];
-    return base.includes(selClass()) ? base : [selClass(), ...base];
+  const classOptions = (): Label[] => canvas()?.classes ?? [];
+
+  // Labels render in their configured colour (per-label colours, Option A). Annotations
+  // whose label is not in the configured set (lenient backend, legacy free-text) fall
+  // back to the canonical blue so existing data still reads.
+  const labelColor = (label: string | null): string => {
+    const match = (canvas()?.classes ?? []).find((c) => c.name === label);
+    return match ? match.color : '#2563eb';
   };
+
+  // Keep selClass valid against the project's labels. The backend is LENIENT (a label
+  // need not be configured), so an out-of-set selClass is preserved as a free-text
+  // option rather than dropped — but when empty, default to the first configured label.
+  createEffect(on(classOptions, (opts) => {
+    const cur = selClass();
+    if (!cur && opts.length) setSelClass(opts[0].name);
+  }));
 
   return (
     <div class={styles.wrap} data-screen="canvas">
@@ -146,7 +158,7 @@ const CanvasScreen: Component = () => {
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
-                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} />}</For>
+                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label)} />}</For>
               </Show>
               <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
                 hover={interaction.hoverImg()} />

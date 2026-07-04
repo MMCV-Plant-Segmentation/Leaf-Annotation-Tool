@@ -80,28 +80,41 @@ export const CanvasTiles: Component<{
 // (drop_holes(union(...)) of every bridged stroke) — no client-side re-derivation, no
 // separate lesion-union overlay. point/line/polygon never fuse, so they still render
 // from their own `points`, unchanged from before.
-export const AnnotationShape: Component<{ ann: CanvasAnnotation }> = (props) => {
-  const stroke = '#2563eb';
+// Per-label colour: `color` is the label's configured hex (Option A taxonomy). It drives
+// every fill/stroke so annotations render in their label's colour instead of a hardcoded
+// blue. `withAlpha` keeps the translucent fill consistent across label colours.
+function withAlpha(hex: string, alpha: number): string {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const r = parseInt(full.slice(0, 2), 16) || 37;
+  const g = parseInt(full.slice(2, 4), 16) || 99;
+  const b = parseInt(full.slice(4, 6), 16) || 235;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string }> = (props) => {
+  const color = () => props.color ?? '#2563eb';
+  const fill = () => withAlpha(color(), 0.55);
   return (
     <Show when={props.ann.kind === 'stroke'} fallback={
       <Show when={props.ann.kind === 'point'} fallback={
         <Show when={props.ann.kind === 'line'} fallback={
           <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="rgba(37,99,235,0.18)" stroke={stroke} stroke-width="2"
+            fill={withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
             vector-effect="non-scaling-stroke" />
         }>
           <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="none" stroke={stroke} stroke-width="2"
+            fill="none" stroke={color()} stroke-width="2"
             vector-effect="non-scaling-stroke" />
         </Show>
       }>
         <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
-          fill={stroke} vector-effect="non-scaling-stroke" />
+          fill={color()} vector-effect="non-scaling-stroke" />
       </Show>
     }>
       <Show when={props.ann.rings.length > 0}>
         <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
-          fill={stroke} fill-opacity="0.55" stroke={stroke} stroke-width="1.5"
+          fill={fill()} stroke={color()} stroke-width="1.5"
           vector-effect="non-scaling-stroke" />
       </Show>
     </Show>

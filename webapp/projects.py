@@ -28,6 +28,7 @@ from shapely.ops import unary_union
 from . import db as _db
 from . import imaging, tiling
 from .auth import admin_required, login_required
+from . import taxonomy
 
 projects_bp = Blueprint('projects', __name__)
 
@@ -59,12 +60,14 @@ def _project(con, project_id: str) -> dict | None:
 
 
 def _project_out(row: dict) -> dict:
-    """Shape a project row for JSON (parse classes_json, normalise tiling_confirmed)."""
+    """Shape a project row for JSON (parse + upgrade classes_json, normalise tiling_confirmed).
+
+    `classes_json` is upgraded from the legacy string-array form to the canonical object
+    list (see webapp.taxonomy). The upgraded form is NOT persisted here — the next
+    project write that touches `classes` re-serialises it; reads stay lenient/lossless.
+    """
     out = dict(row)
-    try:
-        out['classes'] = json.loads(row.get('classes_json') or '[]')
-    except (ValueError, TypeError):
-        out['classes'] = []
+    out['classes'] = taxonomy.normalise_classes(row.get('classes_json'))
     out.pop('classes_json', None)
     out['tiling_confirmed'] = bool(out.get('tiling_confirmed', 0))
     return out
@@ -380,7 +383,11 @@ def create_project():
     # component rule defines the leaf regardless, so 0 is a safe, no-surprise default.
     raw_threshold = body.get('black_threshold')
     threshold = int(raw_threshold) if raw_threshold is not None else 0
-    classes = body.get('classes') or []
+    classes = taxonomy.coerce_classes(body.get('classes'))
+    if not classes:
+        # New/empty project → seed the single removable 'unknown' label (no more
+        # hardcoded ['lesion','midrib','uncertain'] FE fallback).
+        classes = taxonomy.normalise_classes('[]')
     if tile_size < 8:
         return jsonify({'error': 'tile_size_px too small'}), 400
     pid = _uid()
@@ -391,7 +398,7 @@ def create_project():
                  (id, name, tile_size_px, black_threshold, classes_json,
                   created_by, created_by_user_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (pid, name, tile_size, threshold, json.dumps(classes),
+            (pid, name, tile_size, threshold, taxonomy.dump_classes(classes),
              _byline(), session.get('user_id'), _now()),
         )
         # Auto-add creator as an annotator so the project is immediately visible to them.
@@ -426,7 +433,10 @@ def update_project(project_id: str):
             sets.append('black_threshold = ?'); vals.append(int(body['black_threshold']))
             sets.append('tiling_confirmed = ?'); vals.append(1)
         if 'classes' in body:
-            sets.append('classes_json = ?'); vals.append(json.dumps(body['classes'] or []))
+            # Editor (any project member — same permission model as image/batch management,
+            # NOT admin-only) sends the canonical object list; coerce defensively + dump.
+            classes = taxonomy.coerce_classes(body['classes'])
+            sets.append('classes_json = ?'); vals.append(taxonomy.dump_classes(classes))
         if 'tiling_confirmed' in body:
             sets.append('tiling_confirmed = ?'); vals.append(1 if body['tiling_confirmed'] else 0)
         if 'tile_size_px' in body:
@@ -1016,10 +1026,7 @@ def get_batch(batch_id: str):
         proj = con.execute(
             'SELECT classes_json FROM project WHERE id = ?', (batch['project_id'],)
         ).fetchone()
-        try:
-            classes = json.loads(proj['classes_json'] or '[]') if proj else []
-        except (TypeError, ValueError):
-            classes = []
+        classes = taxonomy.normalise_classes(proj['classes_json']) if proj else []
         rows = con.execute(
             '''SELECT bt.id bt_id, t.id tile_id, t.project_image_id, t.x, t.y, t.w, t.h
                FROM batch_tile bt JOIN tile t ON t.id = bt.tile_id

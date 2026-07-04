@@ -1,12 +1,15 @@
 // API client + types for the annotator project pipeline.
 // Mirrors webapp/projects.py. Kept thin so the backend stays the single source of truth.
 
+/** A per-project label (Option A taxonomy): flat list, no hierarchy/sharing. */
+export type Label = { id: string; name: string; color: string; order: number };
+
 export type ProjectSummary = {
   id: string;
   name: string;
   tile_size_px: number;
   black_threshold: number;
-  classes: string[];
+  classes: Label[];
   tiling_confirmed: boolean;
   created_by: string | null;
   created_at: string;
@@ -86,7 +89,7 @@ export const projectsApi = {
   get: (id: string) => jfetch<ProjectDetail>(`/api/projects/${id}`),
   create: (body: { name: string }) =>
     jfetch<ProjectSummary>('/api/projects', jbody('POST', body)),
-  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: string[]; tiling_confirmed: boolean }>) =>
+  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: Label[]; tiling_confirmed: boolean }>) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', body)),
   updateTileSize: (id: string, tileSizePx: number) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', { tile_size_px: tileSizePx })),

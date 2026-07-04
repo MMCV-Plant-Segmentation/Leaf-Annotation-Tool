@@ -1,7 +1,7 @@
 // Canvas annotation types + the annotation-mutation API surface — split out of api.ts
 // to keep it ≤200 lines. Re-exported from api.ts so `projectsApi.createAnnotation(...)`
 // etc. keep working unchanged for every existing caller.
-import type { Rect } from './api';
+import type { Rect, Label } from './api';
 import { jbody, jfetch } from './httpJson';
 
 export type CanvasTile = Rect & {
@@ -43,7 +43,7 @@ export type BatchCanvas = {
   projectId: string;
   seq: number;
   status: string;
-  classes: string[];
+  classes: Label[];
   images: CanvasImage[];
 };
 
