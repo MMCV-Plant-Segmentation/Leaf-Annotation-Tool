@@ -824,12 +824,19 @@ def upload_images(project_id: str):
 @projects_bp.post('/api/projects/<project_id>/images/probe')
 @login_required
 def probe_images(project_id: str):
-    """Pre-flight dedup probe: given candidate content hashes, return the subset this
-    project already has. Read-only — no bytes, no writes. Lets the browser skip
-    re-uploading files already present; the upload path keeps its own dedup as backstop.
+    """Pre-flight dedup probe: given candidate content hashes, return the subset whose
+    bytes ALREADY EXIST in the global content-addressed store — i.e. referenced by ANY
+    project, not just this one (BUGS #26: global dedup, approved by Christian). Read-only
+    — no bytes, no writes. Lets the browser skip re-uploading content already on disk;
+    for content present globally but not yet in THIS project, the client registers it by
+    hash via /images/register instead of re-sending bytes.
 
     Body {"hashes": [...]}  →  {"have": [...]}. Hashes are imaging.hash_bytes() values
     (sha256(bytes).hexdigest()[:24]); the client reproduces the scheme byte-for-byte.
+
+    NOTE: "have" here means "the bytes are on disk somewhere" — the DB still guards which
+    images are VISIBLE in which project (register-by-hash inserts the per-project row).
+    Reporting a hash as present does NOT make its content viewable across projects.
     """
     hashes = (request.json or {}).get('hashes')
     if not isinstance(hashes, list):
@@ -841,20 +848,111 @@ def probe_images(project_id: str):
         err = _member_or_403(con, project_id)
         if err:
             return err
-        # De-dupe the candidates and query in chunks so a huge folder can't blow past
-        # SQLite's bound-variable limit. Hits the UNIQUE(project_id, image_hash) index.
+        # GLOBAL: a hash is "have" when ANY project references it (the bytes are on disk in
+        # the content-addressed store). De-dupe + chunk so a huge folder can't blow past
+        # SQLite's bound-variable limit. DISTINCT so a hash shared by many projects hits once.
         wanted = list({str(h) for h in hashes if h})
         have: list[str] = []
         for i in range(0, len(wanted), 500):
             chunk = wanted[i:i + 500]
             placeholders = ','.join('?' * len(chunk))
             rows = con.execute(
-                f'SELECT image_hash FROM project_image '
-                f'WHERE project_id = ? AND image_hash IN ({placeholders})',
-                (project_id, *chunk),
+                f'SELECT DISTINCT image_hash FROM project_image '
+                f'WHERE image_hash IN ({placeholders})',
+                (*chunk,),
             ).fetchall()
             have.extend(r['image_hash'] for r in rows)
         return jsonify({'have': have})
+    finally:
+        _db.close_db(con)
+
+
+def _register_one_by_hash(con, project_id: str, image_hash: str, source_name: str,
+                          threshold: int, tile_size: int) -> dict:
+    """Register an already-stored image into THIS project by content hash, WITHOUT
+    re-uploading its bytes (BUGS #26). Pulls the stored bytes (via imaging.get_image, keyed
+    by hash+ext copied from an existing project_image row anywhere in the system), recomputes
+    THIS project's leaf_bbox/origin_y from its own threshold/tile_size, and inserts a
+    project_image row. Idempotent: a row already present for (project_id, image_hash) is a
+    no-op. Returns {'registered': bool, 'missing': bool} — 'missing' means the hash is
+    genuinely not in the store and the client must fall back to the full upload path.
+
+    Does NOT commit — the caller controls the transaction.
+    """
+    # Already in THIS project? UNIQUE(project_id, image_hash) — idempotent no-op.
+    if con.execute(
+        'SELECT 1 FROM project_image WHERE project_id = ? AND image_hash = ?',
+        (project_id, image_hash),
+    ).fetchone():
+        return {'registered': True, 'missing': False}
+    # The bytes are on disk only if SOME project references the hash. Grab ext + dims from
+    # any existing row (they are content-derived: same hash ⇒ same image ⇒ same ext/dims).
+    src = con.execute(
+        'SELECT image_ext, width, height FROM project_image WHERE image_hash = ? LIMIT 1',
+        (image_hash,),
+    ).fetchone()
+    if src is None:
+        return {'registered': False, 'missing': True}
+    ext = src['image_ext']
+    img = imaging.get_image(image_hash, ext)
+    w, hgt = img.size
+    bb = tiling.compute_leaf_bbox(img, threshold)
+    if bb is None:
+        bb = tiling.Rect(0, 0, w, hgt)
+    origin_y = tiling.bbox_centered_origin_y(bb, hgt, tile_size)
+    con.execute(
+        '''INSERT INTO project_image
+             (id, project_id, image_hash, image_ext, source_name, source_path,
+              width, height, origin_y, leaf_x, leaf_y, leaf_w, leaf_h, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (_uid(), project_id, image_hash, ext, source_name, None, w, hgt,
+         origin_y, bb.x, bb.y, bb.w, bb.h, _now()),
+    )
+    return {'registered': True, 'missing': False}
+
+
+@projects_bp.post('/api/projects/<project_id>/images/register')
+@login_required
+def register_images(project_id: str):
+    """Register already-stored images into THIS project by content hash, WITHOUT
+    re-uploading bytes (BUGS #26: global pre-flight dedup). For each hash whose bytes
+    already exist in the global content-addressed store (any project references it),
+    insert a project_image row for THIS project (ext/dims from the stored image, leaf_bbox
+    + origin recomputed for this project's threshold/tile_size). Hashes that are genuinely
+    absent from the store are returned as 'missing' so the client falls back to the normal
+    full-upload path. UNIQUE(project_id, image_hash) is enforced (idempotent re-register).
+
+    Body {"items": [{"hash": "...", "name": "..."}, ...]}
+      → {"registered": [hash, ...], "missing": [hash, ...]}
+    """
+    items = (request.json or {}).get('items')
+    if not isinstance(items, list):
+        return jsonify({'error': 'items must be a list'}), 400
+    con = _db.get_db()
+    try:
+        proj = _project(con, project_id)
+        if not proj:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
+        registered: list[str] = []
+        missing: list[str] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            h = str(it.get('hash') or '')
+            if not h:
+                continue
+            name = str(it.get('name') or '')
+            res = _register_one_by_hash(con, project_id, h, name, threshold, tile_size)
+            if res['missing']:
+                missing.append(h)
+            else:
+                registered.append(h)
+        con.commit()
+        return jsonify({'registered': registered, 'missing': missing})
     finally:
         _db.close_db(con)
 
