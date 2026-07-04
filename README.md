@@ -49,15 +49,21 @@ backups root-owned — use `deploy.py`.)
 
 ### Testing (fully decoupled from prod)
 
-`./deploy.py start test --data-mode {keep|reset|restore}` runs the **real image** in a throwaway
-container/volume on an **auto-assigned free port** — so container-only issues (permissions,
-entrypoint) surface before you deploy. It does **not** require prod to be running and never reads
-prod's live volume; `--data-mode` is required (no default, since `reset`/`restore` replace the test
-volume's contents):
+`./deploy.py start test --data-mode {keep|reset|restore|fixture}` runs the **real image** in a
+throwaway container/volume on an **auto-assigned free port** — so container-only issues
+(permissions, entrypoint) surface before you deploy. It does **not** require prod to be running and
+never reads prod's live volume; `--data-mode` is required (no default, since every mode except
+`keep` replaces the test volume's contents):
 
 - `keep` — reuse whatever's already in the test volume.
 - `reset` — fresh, empty volume (schema auto-creates on boot).
 - `restore` — populate from `BACKUP_DIR` (the same backup source prod restore uses).
+- `fixture` — the small **synthetic dataset** committed at
+  `webapp/tests/fixtures/subagent_dataset/` (seeded `admin` / `subagent` logins, one demo
+  project + images). It is a **disjoint data lineage from prod by construction** — never sourced
+  from prod's volume or backups — so it's the safe source for **subagent** test envs. Rebuild or
+  extend it with `uv run python webapp/tests/build_subagent_fixture.py`; a human can later replace
+  its contents with real data and give it its own backup lineage.
 
 Add `--branch <ref>` to build+test a feature branch without merging it to main. `./deploy.py stop
 test` tears it down.

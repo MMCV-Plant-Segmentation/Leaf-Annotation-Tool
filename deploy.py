@@ -18,6 +18,7 @@ prod's live volume. Test's data comes from --data-mode, not from prod.
   ./deploy.py start test --data-mode reset     # run the real image against a fresh empty volume
   ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR
   ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
+  ./deploy.py start test --data-mode fixture   # ...on the in-repo synthetic dataset (subagents)
   ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch, no merge needed
   ./deploy.py stop prod | test
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
@@ -41,6 +42,9 @@ ROOT = Path(__file__).resolve().parent
 IMAGE = "leaf-annotation:latest"
 TEST_CT = "leaf-testenv"
 TEST_VOL = "leaf-test-data"
+# In-repo synthetic dataset for subagent test envs — DISJOINT from prod by construction, never
+# sourced from prod's volume or backups. Rebuild/extend: webapp/tests/build_subagent_fixture.py.
+FIXTURE_DIR = ROOT / "webapp" / "tests" / "fixtures" / "subagent_dataset"
 
 # Config values the prod CONTAINER needs injected as env (compose interpolates these from the
 # process env deploy.py hands to `docker compose`; see compose.yaml's app `environment:` block).
@@ -210,6 +214,18 @@ def _restore_test_volume(env, puid, pgid):
         "--entrypoint", "/bin/sh", "litestream/litestream:0.3.13", "-c", cmd])
 
 
+def _fixture_test_volume(puid, pgid):
+    """Populate the test volume from the in-repo synthetic FIXTURE (webapp/tests/fixtures/…).
+    This is the SUBAGENT data source: disjoint from prod by construction, never prod's volume or
+    backups. Copies the fixture dir wholesale into a fresh, chowned volume."""
+    if not (FIXTURE_DIR / "app.db").is_file():
+        die(f"--data-mode fixture: no fixture at {FIXTURE_DIR} — build it first with "
+            f"`uv run python webapp/tests/build_subagent_fixture.py`.")
+    _reset_test_volume(puid, pgid)  # fresh, chowned volume to copy onto
+    sh(["docker", "run", "--rm", "-v", f"{FIXTURE_DIR}:/src:ro", "-v", f"{TEST_VOL}:/data",
+        "alpine", "sh", "-c", f"cp -a /src/. /data/ && chown -R {puid}:{pgid} /data"])
+
+
 def _test_volume_exists():
     return subprocess.run(["docker", "volume", "inspect", TEST_VOL], capture_output=True).returncode == 0
 
@@ -230,16 +246,20 @@ def _prep_test_data(mode, env, puid, pgid):
     elif mode == "restore":
         print("restoring test volume from backup…")
         _restore_test_volume(env, puid, pgid)
+    elif mode == "fixture":
+        print("loading test volume from the in-repo synthetic fixture (disjoint from prod)…")
+        _fixture_test_volume(puid, pgid)
     else:
         raise ValueError(f"unknown data-mode: {mode!r}")
 
 
 def start_test(env, port, data_mode, branch):
     if data_mode is None:
-        die("start test requires --data-mode {keep|reset|restore} (no default — this is a "
-            "wipe-guard, since 'reset' deletes the test volume). Choose: "
+        die("start test requires --data-mode {keep|reset|restore|fixture} (no default — this is a "
+            "wipe-guard, since reset/restore/fixture replace the test volume). Choose: "
             "keep (reuse test data as-is), reset (fresh empty data), "
-            "or restore (populate from BACKUP_DIR).")
+            "restore (populate from BACKUP_DIR), or "
+            "fixture (in-repo synthetic dataset, disjoint from prod — for subagents).")
     puid, pgid = str(os.getuid()), str(os.getgid())  # personal identity — test data isn't shared
     build_root, worktree = resolve_build_root(branch)
     try:
@@ -325,9 +345,10 @@ def main():
     ps.add_argument("--port", type=int, default=None,
                     help="test: host port (default: auto-assigned free port, so multiple test "
                          "envs don't collide); prod always uses app.config.toml's port")
-    ps.add_argument("--data-mode", choices=["keep", "reset", "restore"], default=None,
+    ps.add_argument("--data-mode", choices=["keep", "reset", "restore", "fixture"], default=None,
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
-                         "data), restore (populate from BACKUP_DIR). No default (wipe-guard). "
+                         "data), restore (populate from BACKUP_DIR), fixture (in-repo synthetic "
+                         "dataset, disjoint from prod — for subagents). No default (wipe-guard). "
                          "Ignored for prod.")
     ps.add_argument("--branch", default=None,
                     help="git ref to build the image from (via a throwaway worktree), instead of "
