@@ -47,11 +47,20 @@ backups root-owned — use `deploy.py`.)
 > persists in the `leaf-data` Docker volume regardless. Only **one** host should back up to a given
 > `BACKUP_DIR`.
 
-### Testing against real data
+### Testing (fully decoupled from prod)
 
-`./deploy.py start test` runs the **real image** against a **throwaway copy** of prod's data on
-`:5001` (prod is never touched) — so container-only issues (permissions, entrypoint) surface before
-you deploy. `./deploy.py stop test` tears it down.
+`./deploy.py start test --data-mode {keep|reset|restore}` runs the **real image** in a throwaway
+container/volume on an **auto-assigned free port** — so container-only issues (permissions,
+entrypoint) surface before you deploy. It does **not** require prod to be running and never reads
+prod's live volume; `--data-mode` is required (no default, since `reset`/`restore` replace the test
+volume's contents):
+
+- `keep` — reuse whatever's already in the test volume.
+- `reset` — fresh, empty volume (schema auto-creates on boot).
+- `restore` — populate from `BACKUP_DIR` (the same backup source prod restore uses).
+
+Add `--branch <ref>` to build+test a feature branch without merging it to main. `./deploy.py stop
+test` tears it down.
 
 ---
 
