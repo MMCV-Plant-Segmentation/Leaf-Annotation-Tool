@@ -80,6 +80,14 @@ export const toolActive = style({
   textTransform: 'capitalize',
 });
 
+export const swatch = style({
+  display: 'inline-block',
+  width: '12px',
+  height: '12px',
+  borderRadius: '3px',
+  border: `1px solid ${vars.color.border}`,
+});
+
 export const classPick = style({
   fontSize: '0.82rem',
   display: 'flex',
