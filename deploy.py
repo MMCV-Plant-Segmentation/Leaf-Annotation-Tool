@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """deploy.py — one tool to run the Leaf Annotation stack: prod, or a throwaway test copy.
 
-Runs the stack as YOU + a shared group (APP_GROUP in .env), so data + backups are group-owned,
-never root — no UID typed or hardcoded, and no sudo needed (works even on a host you don't own,
-as long as you're in APP_GROUP). Auto-computes the build version. No third-party dependencies
-(the one non-stdlib import, webapp.seed.free_port, is a sibling pure-stdlib module in this repo —
-no pip install/venv needed, since ROOT is already on sys.path when run as `./deploy.py`).
+Runs the stack as YOU + a shared group (app_group in app.config.toml), so data + backups are
+group-owned, never root — no UID typed or hardcoded, and no sudo needed (works even on a host you
+don't own, as long as you're in app_group). Auto-computes the build version. Depends only on the
+stdlib + two sibling pure-stdlib repo modules (webapp.seed, webapp.config_file) — no pip install.
+
+Config comes from app.config.toml (repo root; replaces .env — a legacy .env is still read as a
+deprecated fallback when the toml is absent). See app.config.toml.example.
 
 Test is fully decoupled from prod: it does NOT require prod to be running, and it never copies
 prod's live volume. Test's data comes from --data-mode, not from prod.
 
-  ./deploy.py create-dot-env                  # interactively write a .env (generates SECRET_KEY)
+  ./deploy.py create-config                    # interactively write app.config.toml (gen SECRET_KEY)
   ./deploy.py start prod                       # build (auto-version) + run prod as you+group
   ./deploy.py start prod --with-backup         # + the litestream/lsyncd backup sidecars
   ./deploy.py start test --data-mode reset     # run the real image against a fresh empty volume
@@ -32,6 +34,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from webapp.config_file import load_file_config
 from webapp.seed import free_port
 
 ROOT = Path(__file__).resolve().parent
@@ -39,21 +42,20 @@ IMAGE = "leaf-annotation:latest"
 TEST_CT = "leaf-testenv"
 TEST_VOL = "leaf-test-data"
 
+# Config values the prod CONTAINER needs injected as env (compose interpolates these from the
+# process env deploy.py hands to `docker compose`; see compose.yaml's app `environment:` block).
+CONTAINER_ENV_KEYS = ("PORT", "SECRET_KEY", "ADMIN_PASSWORD", "BACKUP_DIR", "BACKUP_STATUS_URL")
+
 
 def die(msg):
     sys.exit(f"deploy.py: {msg}")
 
 
 def load_env():
-    env = {}
-    f = ROOT / ".env"
-    if f.exists():
-        for line in f.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k] = v
-    return env
+    """Resolve stack config from app.config.toml (preferred) or a legacy .env (deprecated
+    fallback), keyed by ENV-style names (APP_GROUP, PORT, SECRET_KEY, …). See webapp/config_file.py.
+    Returns a plain dict so existing `env.get('APP_GROUP')` call sites are unchanged."""
+    return load_file_config(ROOT).as_env()
 
 
 def sh(cmd, **kw):
@@ -77,7 +79,7 @@ def identity(env):
     """(uid, gid) to run as: your uid + the APP_GROUP gid. No sudo, nothing hardcoded."""
     group = env.get("APP_GROUP")
     if not group:
-        die("APP_GROUP not set in .env — run: ./deploy.py create-dot-env")
+        die("APP_GROUP not set in app.config.toml (or legacy .env) — run: ./deploy.py create-config")
     try:
         gid = grp.getgrnam(group).gr_gid
     except KeyError:
@@ -97,10 +99,19 @@ def base_env(env, root=ROOT):
 
 
 def prod_env(env):
-    """base_env + run-as identity (your uid + the APP_GROUP gid) for running prod containers."""
+    """base_env + run-as identity (your uid + the APP_GROUP gid) for running prod containers,
+    PLUS the container-facing config values (SECRET_KEY/ADMIN_PASSWORD/BACKUP_DIR/…) so compose
+    can interpolate them into the container's environment. Sourcing them from `env` (app.config.toml
+    or the legacy .env) is what lets prod run WITHOUT a .env on disk — the toml is enough. Only set
+    keys that actually resolved, so we never blank out a value compose would otherwise auto-load
+    from a present .env (which would silently break an existing .env-based prod)."""
     puid, pgid = identity(env)
     e = base_env(env)
     e.update(PUID=puid, PGID=pgid)
+    for key in CONTAINER_ENV_KEYS:
+        val = env.get(key)
+        if val is not None:
+            e[key] = val
     return e
 
 
@@ -134,6 +145,12 @@ def bake(env, root=ROOT):
 
 
 def start_prod(env, with_backup, branch):
+    # Required-ness validated AFTER merging file+env (the config file may supply it, so argparse
+    # can't). SECRET_KEY is mandatory for the app to boot; fail here with a clear message rather
+    # than letting the container crash-loop on a missing key.
+    if not env.get("SECRET_KEY"):
+        die("SECRET_KEY not set in app.config.toml (or legacy .env) — prod can't start without it. "
+            "Run: ./deploy.py create-config")
     build_root, worktree = resolve_build_root(branch)
     try:
         bake(env, root=build_root)
@@ -260,26 +277,42 @@ def restore(env):
     sh(["docker", "compose", "run", "--rm", "restore"], cwd=str(ROOT), env=prod_env(env))
 
 
-def create_dot_env():
-    f = ROOT / ".env"
-    if f.exists() and input(".env already exists — overwrite? [y/N] ").strip().lower() != "y":
+def _toml_str(value):
+    """Minimal TOML string literal — good enough for the values we write (paths, group names,
+    generated secrets). Escapes backslash and double-quote for a basic double-quoted string."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def create_config():
+    """Interactively write app.config.toml (the config file that replaces .env)."""
+    f = ROOT / "app.config.toml"
+    if f.exists() and input("app.config.toml already exists — overwrite? [y/N] ").strip().lower() != "y":
         die("aborted")
-    port = input("PORT [5000]: ").strip() or "5000"
-    group = input("APP_GROUP (shared unix group that co-owns data + backups): ").strip()
+    port = input("port [5000]: ").strip() or "5000"
+    group = input("app_group (shared unix group that co-owns data + backups): ").strip()
     if not group:
-        die("APP_GROUP is required")
-    backup = input("BACKUP_DIR (absolute host path for backups; blank = no backup): ").strip()
-    admin = getpass.getpass("ADMIN_PASSWORD (first-boot admin login): ")
+        die("app_group is required")
+    backup = input("backup_dir (absolute host path for backups; blank = no backup): ").strip()
+    admin = getpass.getpass("admin_password (first-boot admin login): ")
     while not admin:
-        admin = getpass.getpass("ADMIN_PASSWORD can't be empty: ")
-    lines = [f"PORT={port}", f"APP_GROUP={group}"]
+        admin = getpass.getpass("admin_password can't be empty: ")
+    lines = [
+        "# app.config.toml — config for the Leaf Annotation stack (replaces .env).",
+        "# GITIGNORED; contains secrets. CLI flags override these values.",
+        "",
+        f"port = {int(port)}",
+        f"app_group = {_toml_str(group)}",
+    ]
     if backup:
-        lines.append(f"BACKUP_DIR={backup}")
-    lines += [f"SECRET_KEY={secrets.token_urlsafe(32)}", f"ADMIN_PASSWORD={admin}",
-              "COMPOSE_PROJECT_NAME=leaf-annotation-tool"]
+        lines.append(f"backup_dir = {_toml_str(backup)}")
+    lines += [
+        f"secret_key = {_toml_str(secrets.token_urlsafe(32))}",
+        f"admin_password = {_toml_str(admin)}",
+        'compose_project_name = "leaf-annotation-tool"',
+    ]
     f.write_text("\n".join(lines) + "\n")
     os.chmod(f, 0o600)
-    print(f"wrote {f} (SECRET_KEY generated for you). Next: ./deploy.py start prod")
+    print(f"wrote {f} (secret_key generated for you). Next: ./deploy.py start prod")
 
 
 def main():
@@ -291,7 +324,7 @@ def main():
     ps.add_argument("--with-backup", action="store_true", help="prod: also run the backup sidecars")
     ps.add_argument("--port", type=int, default=None,
                     help="test: host port (default: auto-assigned free port, so multiple test "
-                         "envs don't collide); prod always uses .env's PORT")
+                         "envs don't collide); prod always uses app.config.toml's port")
     ps.add_argument("--data-mode", choices=["keep", "reset", "restore"], default=None,
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
                          "data), restore (populate from BACKUP_DIR). No default (wipe-guard). "
@@ -302,11 +335,11 @@ def main():
                          "merging it. Default: build the current checkout, unchanged.")
     st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
-    sub.add_parser("create-dot-env", help="interactively write a .env")
+    sub.add_parser("create-config", help="interactively write app.config.toml (replaces .env)")
     a = ap.parse_args()
     env = load_env()
-    if a.cmd == "create-dot-env":
-        create_dot_env()
+    if a.cmd == "create-config":
+        create_config()
     elif a.cmd == "start":
         (start_prod(env, a.with_backup, a.branch) if a.target == "prod"
          else start_test(env, a.port, a.data_mode, a.branch))

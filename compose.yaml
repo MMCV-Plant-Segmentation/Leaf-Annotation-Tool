@@ -13,9 +13,18 @@ services:
       args:
         GIT_SHA: "${GIT_SHA:-}"
         BUILD_TIME: "${BUILD_TIME:-}"
-    env_file: .env
+    # Container config is interpolated from the environment deploy.py hands to `docker compose`
+    # (deploy.py resolves these from app.config.toml, or a legacy .env, via prod_env()). For a
+    # raw `docker compose up` (no deploy.py) with a .env present, Compose auto-loads ./.env into
+    # this interpolation context, so the legacy .env path keeps working unchanged. No `env_file:`
+    # entry, so a toml-only deployment (no .env on disk) doesn't error on a missing file.
     environment:
       HT_DATA_DIR: /data
+      PORT: "${PORT:-5000}"
+      SECRET_KEY: "${SECRET_KEY:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      BACKUP_DIR: "${BACKUP_DIR:-}"
+      BACKUP_STATUS_URL: "${BACKUP_STATUS_URL:-}"
     ports:
       - "${PORT:-5000}:${PORT:-5000}"
     volumes:

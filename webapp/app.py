@@ -37,6 +37,7 @@ from werkzeug.security import generate_password_hash
 from . import db as _db
 from .auth import admin_required, auth_bp, login_required
 from .config import AppConfig, default_data_dir
+from .config_file import load_file_config
 from .projects import projects_bp
 from .seed import resolve_port, seed_data
 from .sync_status import fetch_sync_status
@@ -255,13 +256,17 @@ def _warn_if_bundle_stale() -> None:
 
 
 def _load_env() -> None:
-    """Load .env from the project root into os.environ (existing vars take priority)."""
+    """Load the legacy .env from the project root into os.environ (existing vars take priority).
+
+    DEPRECATED path: only used when app.config.toml is absent. The preferred source is
+    app.config.toml, read via webapp/config_file.py and merged explicitly in main()."""
     load_dotenv(BASE / '.env')
 
 
 def _configure_app(cfg: AppConfig) -> None:
     if not cfg.secret_key:
-        raise RuntimeError('AppConfig.secret_key is required (SECRET_KEY env var)')
+        raise RuntimeError('AppConfig.secret_key is required — set secret_key in app.config.toml '
+                           '(or SECRET_KEY in a legacy .env / the environment)')
     app.secret_key = cfg.secret_key
 
 
@@ -1194,14 +1199,17 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         prog='leaf-annotation', description='Run the leaf-annotation dev server.')
+    # Defaults are None here so we can distinguish "user passed a flag" from "fall back to the
+    # config file / env / built-in default", merged post-parse below (CLI > file > env > default).
     parser.add_argument(
-        '--data-dir', type=Path,
-        default=Path(os.environ['HT_DATA_DIR']) if os.environ.get('HT_DATA_DIR') else default_data_dir(),
-        help='Data dir for app.db/images/jsons/i18n (default $HT_DATA_DIR, else the NFS-safe XDG default).')
-    parser.add_argument('--port', type=int, default=int(os.environ.get('HT_PORT', '5000')),
-                        help='TCP port to bind (default 5000, or $HT_PORT).')
-    parser.add_argument('--host', default=os.environ.get('HT_HOST', '127.0.0.1'),
-                        help='Host/interface to bind (default 127.0.0.1, or $HT_HOST).')
+        '--data-dir', type=Path, default=None,
+        help='Data dir for app.db/images/jsons/i18n (default: app.config.toml data_dir, else '
+             '$HT_DATA_DIR, else the NFS-safe XDG default).')
+    parser.add_argument('--port', type=int, default=None,
+                        help='TCP port to bind (default: app.config.toml port, else $HT_PORT, else 5000).')
+    parser.add_argument('--host', default=None,
+                        help='Host/interface to bind (default: app.config.toml host, else $HT_HOST, '
+                             'else 127.0.0.1).')
     port_policy = parser.add_mutually_exclusive_group()
     port_policy.add_argument('--strict-port', dest='port_policy', action='store_const', const='strict',
                               help='Fail if --port is already taken (default).')
@@ -1218,20 +1226,43 @@ def main() -> None:
         help="Force-set the 'admin' user's password, overwriting an existing admin "
              '(unlike $ADMIN_PASSWORD, which only seeds admin on first boot).')
     args = parser.parse_args()
-    _load_env()
-    admin_password = args.admin_password or os.environ.get('ADMIN_PASSWORD')
+    file_cfg = load_file_config(BASE)
+    if file_cfg.source != 'toml':
+        _load_env()   # legacy: populate os.environ from .env (no-op if absent). Skipped when
+                      # app.config.toml is present so the TOML file is the single source.
+
+    def pick(cli_val, *env_keys, default=None):
+        """CLI flag > config file > env var(s) > built-in default. env_keys tried in order
+        against both the file (canonical ENV name) and os.environ."""
+        if cli_val is not None:
+            return cli_val
+        for key in env_keys:
+            fv = file_cfg.get(key)
+            if fv is not None:
+                return fv
+        for key in env_keys:
+            ev = os.environ.get(key)
+            if ev is not None:
+                return ev
+        return default
+
+    data_dir_val = pick(args.data_dir, 'HT_DATA_DIR')
+    data_dir = Path(data_dir_val) if data_dir_val is not None else default_data_dir()
+    host = pick(args.host, 'HT_HOST', default='127.0.0.1')
+    port = int(pick(args.port, 'PORT', 'HT_PORT', default=5000))
+    admin_password = args.admin_password or pick(None, 'ADMIN_PASSWORD')
     cfg = AppConfig(
-        data_dir=args.data_dir,
-        host=args.host,
-        port=args.port,
+        data_dir=data_dir,
+        host=host,
+        port=port,
         port_policy=args.port_policy,
         db_seed=args.seed,
         restore_source=args.restore_from,
-        secret_key=os.environ.get('SECRET_KEY'),
+        secret_key=pick(None, 'SECRET_KEY'),
         admin_password=admin_password,
         admin_password_force=bool(args.admin_password),
-        backup_dir=os.environ.get('BACKUP_DIR'),
-        backup_status_url=os.environ.get('BACKUP_STATUS_URL'),
+        backup_dir=pick(None, 'BACKUP_DIR'),
+        backup_status_url=pick(None, 'BACKUP_STATUS_URL'),
     )
     try:
         seed_data(cfg)
