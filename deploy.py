@@ -3,7 +3,9 @@
 
 Runs the stack as YOU + a shared group (APP_GROUP in .env), so data + backups are group-owned,
 never root — no UID typed or hardcoded, and no sudo needed (works even on a host you don't own,
-as long as you're in APP_GROUP). Auto-computes the build version. Stdlib only, no dependencies.
+as long as you're in APP_GROUP). Auto-computes the build version. No third-party dependencies
+(the one non-stdlib import, webapp.seed.free_port, is a sibling pure-stdlib module in this repo —
+no pip install/venv needed, since ROOT is already on sys.path when run as `./deploy.py`).
 
 Test is fully decoupled from prod: it does NOT require prod to be running, and it never copies
 prod's live volume. Test's data comes from --data-mode, not from prod.
@@ -29,6 +31,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from webapp.seed import free_port
 
 ROOT = Path(__file__).resolve().parent
 IMAGE = "leaf-annotation:latest"
@@ -227,6 +231,8 @@ def start_test(env, port, data_mode, branch):
         cleanup_worktree(worktree)
     subprocess.run(["docker", "rm", "-f", TEST_CT], capture_output=True)  # release the volume first
     _prep_test_data(data_mode, env, puid, pgid)
+    if port is None:
+        port = free_port()  # auto: a free host port, so multiple test envs don't collide
     admin_pw = env.get("ADMIN_PASSWORD")  # only takes effect if no admin exists yet (fresh 'reset'
     admin_flags = [] if not admin_pw else ["-e", f"ADMIN_PASSWORD={admin_pw}"]  # data); no-op on keep/restore
     sh(["docker", "run", "-d", "--rm", "--name", TEST_CT,
@@ -283,7 +289,9 @@ def main():
     ps = sub.add_parser("start", help="build + run prod, or a throwaway test copy")
     ps.add_argument("target", choices=["prod", "test"])
     ps.add_argument("--with-backup", action="store_true", help="prod: also run the backup sidecars")
-    ps.add_argument("--port", type=int, default=5001, help="test: host port (default 5001)")
+    ps.add_argument("--port", type=int, default=None,
+                    help="test: host port (default: auto-assigned free port, so multiple test "
+                         "envs don't collide); prod always uses .env's PORT")
     ps.add_argument("--data-mode", choices=["keep", "reset", "restore"], default=None,
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
                          "data), restore (populate from BACKUP_DIR). No default (wipe-guard). "
