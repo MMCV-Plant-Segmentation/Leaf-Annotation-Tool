@@ -54,16 +54,28 @@ globalStyle(`${field} input:focus`, {
   borderColor: 'transparent',
 });
 
+// BUG #25: the error/success message slots previously reserved a fixed minHeight
+// even when empty, leaving a dead vertical gap between the last input field and
+// the Save button. With minHeight:0 + an :empty rule, the slot collapses to zero
+// height when there is no message, so the button sits normally below the fields.
 export const error = style({
   color: vars.color.danger,
   fontSize: '0.85rem',
-  minHeight: '1.2em',
+  minHeight: 0,
+});
+globalStyle(`${error}:empty`, {
+  margin: 0,
+  padding: 0,
 });
 
 export const success = style({
   color: vars.status.pass,
   fontSize: '0.85rem',
-  minHeight: '1.2em',
+  minHeight: 0,
+});
+globalStyle(`${success}:empty`, {
+  margin: 0,
+  padding: 0,
 });
 
 export const submitBtn = style({
