@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Agent worktree manager — isolated git worktrees so multiple implementation agents
 # (Sonnet now; possibly non-Claude backends later) can run in PARALLEL without their
-# gates compiling each other's half-finished changes. Gitignored local tooling
-# (like scripts/gate.sh). See docs/plans/Plan — Subagent parallelism (worktrees).md.
+# gates compiling each other's half-finished changes. In-repo tooling.
+# See docs/plans/Plan — Subagent parallelism (worktrees).md.
 #
 # Usage (branch is a full conventional ref — task/<n>, feature/<n>, fix/<n>, …):
 #   scripts/worktree.sh add <branch>   # e.g. fix/undo-bug → ../worktrees/undo-bug on branch fix/undo-bug
@@ -16,7 +16,7 @@
 #     resolves `webapp` to THIS worktree (NOT main) — real backend isolation. uv's global
 #     wheel cache makes this quick.
 #   - The gate is already concurrency-safe (ephemeral free port + /tmp temp data dir), so
-#     N worktrees can each run `bash scripts/gate.sh` at once.
+#     N worktrees can each run `uv run python scripts/gate.py` at once.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"          # .../code
@@ -31,11 +31,8 @@ case "$cmd" in
     mkdir -p "$WT_ROOT"
     git -C "$REPO" worktree add "$dest" -b "$branch"
     ln -s "$REPO/webapp/frontend/node_modules" "$dest/webapp/frontend/node_modules"
-    # Gate tooling lives under the gitignored /scripts/, so it's absent from a fresh worktree.
-    # COPY it (don't symlink: gate.py resolves REPO from its own __file__, and a symlink would
-    # resolve back to main → the gate would run against main, not this worktree).
-    mkdir -p "$dest/scripts"
-    cp "$REPO/scripts/gate.sh" "$REPO/scripts/gate.py" "$dest/scripts/"
+    # scripts/ is tracked now, so `git worktree add` already checked out a real gate.py here
+    # (a real file, not a symlink — so gate.py's __file__→REPO resolves to THIS worktree). No copy needed.
     # Put the .venv on LOCAL disk, not the NFS worktree. A venv is thousands of tiny files;
     # materializing it on /deltos (NFS) is slow (>30s each, minutes for several) even though uv's
     # resolution is cached. Deterministic path under $TMPDIR keyed to the worktree dir, symlinked
