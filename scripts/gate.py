@@ -19,7 +19,7 @@ Usage:
   uv run python scripts/gate.py -v         # also tail each stage's log
   uv run python scripts/gate.py -q         # only the final summary line
 
-This file (and the scripts/gate.sh shim) are gitignored local tooling.
+Invoke directly with `uv run python scripts/gate.py`. Tracked in-repo (see .gitignore history).
 """
 from __future__ import annotations
 

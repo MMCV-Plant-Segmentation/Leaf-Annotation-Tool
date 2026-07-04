@@ -14,21 +14,21 @@ The standing workflow for the Opus↔Sonnet implementer loop. (Mechanics of the 
 
 ## Cadence
 1. Opus writes a task doc in `docs/` (TDD where possible) and briefs Sonnet.
-2. Sonnet implements the **full plan or the agreed range** autonomously, runs **`bash scripts/gate.sh`**
+2. Sonnet implements the **full plan or the agreed range** autonomously, runs **`uv run python scripts/gate.py`**
    as the final step, and reports the digest. Opus does **not** interrupt mid-plan.
 3. Opus **gates token-cheaply** — see *Gating* below. On green, Opus **commits** the phase.
 
 ## Gating (token-cheap)
-The gate is automated in **`scripts/gate.sh`** (now a thin shim → **`scripts/gate.py`**): backend
+The gate is automated in **`scripts/gate.py`** (run it with `uv run python scripts/gate.py`): backend
 suites (auto-discovered from `webapp/tests/test_*.py`) + tsc + lint + build + full Playwright (against a
 managed non-forking server), with verbose output in log files and only a compact digest on stdout — the
 default digest includes per-stage PASS/FAIL, **test counts**, and the **names of any failures**. `-v`
 tails each stage's log; `-q` prints only the summary. **Opus runs the gate, NOT Sonnet**
-(changed 2026-07-02): Sonnet reliably backgrounds `scripts/gate.sh` and stalls waiting for a completion
+(changed 2026-07-02): Sonnet reliably backgrounds `scripts/gate.py` and stalls waiting for a completion
 signal that never reaches it, and each warm resume re-bills Sonnet's whole context (50–130k tokens — the
 single biggest token drain we've seen). Sonnet instead runs only its OWN targeted tests (`uv run python3
 webapp/tests/<the-file-it-wrote>.py`, foreground) to self-check, then reports what it changed; Opus runs
-the one authoritative `bash scripts/gate.sh` in the worktree.
+the one authoritative `uv run python scripts/gate.py` in the worktree.
 
 **The gate is concurrency-safe** — it uses an **ephemeral port** (bind `:0`) and a **per-run temp dir**
 (its own `HT_DATA_DIR` / Playwright fixture dir / `storageState`), so two gates can run at the same time
@@ -39,11 +39,11 @@ Instead, Opus verifies cheaply:
 - **Review the test diff** to confirm Sonnet didn't weaken, delete, or trivialise existing tests, and
   that any new tests actually assert the intended behaviour. Reading a diff is far cheaper than
   re-running a server + suite. This is the "guarantee the tests weren't gutted" check.
-- **Run `bash scripts/gate.sh` in the worktree yourself** as the authoritative pass/fail (one bash
+- **Run `uv run python scripts/gate.py` in the worktree yourself** as the authoritative pass/fail (one bash
   call → compact digest; cheaper than a Sonnet stall-resume). Pair it with the test-diff review above.
 
 Keep the gate authoritative: anything Opus finds itself checking by hand twice should be **folded into
-`scripts/gate.sh` or the test suite** so it's covered automatically next time, not re-typed.
+`scripts/gate.py` or the test suite** so it's covered automatically next time, not re-typed.
 
 4. On green, Opus **commits** the gated phase onto the feature branch.
 
@@ -81,7 +81,7 @@ wander and read files it doesn't need.
 - **State the conventions every time** (the standing preamble): `uv run …` always (never bare
   `python3`); frontend is SolidJS + TypeScript + Vanilla Extract `.css.ts` with **no string class
   literals**; backend tests are **standalone scripts** (`uv run python3 webapp/tests/<name>.py`), not
-  pytest; **do NOT run `scripts/gate.sh`** — you reliably background it and stall (Opus runs the gate).
+  pytest; **do NOT run `scripts/gate.py`** — you reliably background it and stall (Opus runs the gate).
   Run only the specific `webapp/tests/<file>.py` you touched (foreground) to self-check, then report
   exactly what you changed; **don't commit** (Opus runs the gate, commits, and merges); keep
   `docs/SONNET_WORKLOG.md` updated; **never** read `reference/NautilusWebPortal`.
@@ -96,7 +96,7 @@ ballooned to ~289k tokens). Standing rules:
 - **Fresh agent per independent task.** Spin up a new Sonnet scoped to one task rather than warm-resuming
   one agent across many. **Warm-resume only for revisions on the *same* task** (cache is still warm).
 - **Front-load everything** in the task doc so the agent doesn't burn tokens searching — see above.
-- **Opus runs the gate, not Sonnet** (see *Gating*). Sonnet backgrounding `scripts/gate.sh` + stalling,
+- **Opus runs the gate, not Sonnet** (see *Gating*). Sonnet backgrounding `scripts/gate.py` + stalling,
   then a warm resume re-billing its whole context, was the single biggest token drain — removed by taking
   the full gate off Sonnet entirely.
 - **Opus does tiny fixes directly.** Dispatch overhead dwarfs a few-line change; don't spawn for those.
