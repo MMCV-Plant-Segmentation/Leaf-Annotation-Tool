@@ -2,7 +2,7 @@ import { type Component, For, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
 import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
-export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser';
+export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select';
 export type ViewBox = { x: number; y: number; w: number; h: number };
 
 export const TILE_COLORS: Record<string, string> = {
