@@ -206,3 +206,8 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   selection tool exists (see `Plan — Compound labels.md`), extend it to select MULTIPLE lesions — Ctrl+click to
   add/remove from the selection, and a rectangular click-and-drag marquee select while in select mode — so a
   batch of lesions can be re-labeled at once. Follows the single-select relabel flow. Logged 2026-07-04.
+- **Configurable tool keybinds (select / brush / pan / etc.).** Christian (2026-07-04): give the annotator
+  quick keys to swap between tools (e.g. select ⇄ brush ⇄ pan), and make them **user-configurable** from the
+  start — whenever we set a default keybind it should be rebindable (per-user setting), not hardcoded. NOT the
+  temporary space-held-for-pan (that ships with the Phase-2 selection tool); this is the persistent swap keys +
+  their config UI. Logged 2026-07-04.
