@@ -63,12 +63,14 @@ export const CanvasToolbar: Component<Props> = (props) => (
     <span class={styles.sep} />
     {/* BUGS #15: admin is a read-only viewer — no paint/erase/undo/redo/class tools. */}
     <Show when={!props.readOnly}>
-      <For each={(['pan', 'brush', 'eraser'] as Tool[])}>
+      <For each={(['select', 'pan', 'brush', 'eraser'] as Tool[])}>
         {(tl) => (
           <button class={props.tool() === tl ? styles.toolActive : styles.tool}
+            aria-pressed={props.tool() === tl}
             onClick={() => props.setTool(tl)}
-            title={tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (drag over strokes to delete them)' : 'Pan'}>
-            {tl === 'brush' ? 'brush' : tl === 'eraser' ? '✕ eraser' : 'pan'}
+            title={tl === 'select' ? t('canvas.select') : tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (drag over strokes to delete them)' : 'Pan'}
+            data-testid={`tool-${tl}`}>
+            {tl === 'select' ? t('canvas.select') : tl === 'brush' ? 'brush' : tl === 'eraser' ? '✕ eraser' : 'pan'}
           </button>
         )}
       </For>

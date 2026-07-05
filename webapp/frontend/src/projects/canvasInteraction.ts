@@ -13,7 +13,7 @@ export interface CanvasInteractionOpts {
   draft: Accessor<number[][]>;
   setDraft: Setter<number[][]>;
   commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => void;
-}
+  onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
   toImage: (clientX: number, clientY: number) => [number, number];
@@ -116,6 +116,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     }
 
     const tl = o.tool();
+    if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
     if (tl === 'brush' || tl === 'eraser') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
     // polygon/line: add a vertex (legacy tools, not shown in toolbar)
@@ -194,6 +195,5 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     else if (tl === 'line' && d.length >= 2) o.commit('line', d);
     o.setDraft([]);
   };
-
   return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
 }

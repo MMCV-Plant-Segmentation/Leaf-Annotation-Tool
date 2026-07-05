@@ -3,6 +3,8 @@ import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
 import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, LiveDraftOverlay } from './canvasShapes';
+import { SelectionHighlight } from './SelectionHighlight';
+import { hitTestAnnotation } from './lesionSelect';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
@@ -28,7 +30,8 @@ const CanvasScreen: Component = () => {
 
   const [imgIdx, setImgIdx] = createSignal(0);
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
-  const [tool, setTool] = createSignal<Tool>('pan');
+  const [tool, setTool] = createSignal<Tool>('select');
+  const [selId, setSelId] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal<number[][]>([]);
   const [selClass, setSelClass] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
@@ -43,7 +46,7 @@ const CanvasScreen: Component = () => {
   let svgRef: SVGSVGElement | undefined;
 
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
-  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); }));
+  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); setSelId(null); }));
 
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
@@ -73,6 +76,7 @@ const CanvasScreen: Component = () => {
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
     brushSize, setBrushSize, maxBrushSize,
     commit: (kind, points, passNo, strokeWidth) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth),
+    onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
   // Best-effort viewport (pan/zoom) telemetry — see viewportTelemetry.ts. No UI; feeds
@@ -88,7 +92,10 @@ const CanvasScreen: Component = () => {
       if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
     }
     // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
-    if (e.key === 'Escape') { setDraft([]); setTool('pan'); }
+    if (e.key === 'Escape') {
+      if (tool() === 'select') setSelId(null);
+      else { setDraft([]); setTool('pan'); }
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
     interaction.handleKeyDown(e);
   };
@@ -166,6 +173,9 @@ const CanvasScreen: Component = () => {
                 onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
                 <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label, a.labelColor)} />}</For>
+                <Show when={imgLoaded() && selId()}>{(id) =>
+                  <SelectionHighlight ann={im().annotations.find((a) => a.id === id())!} />
+                }</Show>
               </Show>
               <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
                 hover={interaction.hoverImg()} />
