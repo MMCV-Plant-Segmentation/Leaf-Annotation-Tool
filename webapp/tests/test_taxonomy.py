@@ -129,10 +129,14 @@ con = dbmod.get_db()
 raw2 = con.execute('SELECT classes_json FROM project WHERE id = ?', (pid2,)).fetchone()['classes_json']
 dbmod.close_db(con)
 stored = json.loads(raw2)
-assert isinstance(stored, list) and all(isinstance(s, dict) for s in stored), stored
-assert stored[0].get('name') == 'lesion', stored
-assert stored[0].get('color', '').startswith('#'), stored
-print('  ✓  write persists the upgraded object form to classes_json')
+# Taxonomy v2: the stored form is now the v2 object ({schema, groups, compounds}), not
+# the legacy flat list. A single-group project wraps the old labels into one 'Class' group
+# with one compound per label (each keeping its name + colour).
+assert isinstance(stored, dict) and stored.get('schema') == 'compound-v2', stored
+names = [c.get('name') for c in stored.get('compounds', [])]
+assert names == ['lesion', 'midrib', 'uncertain'], stored
+assert stored['compounds'][0].get('color', '').startswith('#'), stored
+print('  ✓  write persists the upgraded taxonomy-v2 object form to classes_json')
 
 
 # ── T3: new/empty project defaults to a single removable `unknown` label ────
@@ -155,19 +159,23 @@ print('  empty-list default =', c2)
 assert len(c2) == 1 and c2[0]['name'] == 'unknown', c2
 print('  ✓  explicit [] → single unknown')
 
-# (c) "unknown" is REMOVABLE: deleting it (writing []) leaves the stored column '[]',
-#     and a subsequent read re-seeds 'unknown' (project is never truly label-less).
+# (c) "unknown" is REMOVABLE: deleting it (writing an empty flat list) leaves the stored
+#     column with NO compounds, and a subsequent read re-seeds 'unknown' (the project is
+#     never truly label-less). Under taxonomy v2 an empty flat write is stored as the v2
+#     object with an empty compounds list (the legacy literal '[]' is gone; the read
+#     re-seed contract is what matters and is preserved).
 pid3 = _j(r)['id']
 r = client.patch(f'/api/projects/{pid3}', json={'classes': []})
 assert r.status_code == 200, _j(r)
 con = dbmod.get_db()
 raw3 = con.execute('SELECT classes_json FROM project WHERE id = ?', (pid3,)).fetchone()['classes_json']
 dbmod.close_db(con)
-assert json.loads(raw3) == [], raw3
+stored3 = json.loads(raw3)
+assert isinstance(stored3, dict) and stored3.get('compounds') == [], stored3
 re_read = _j(client.get(f'/api/projects/{pid3}'))['classes']
 print('  after deleting all, read-back =', re_read)
 assert len(re_read) == 1 and re_read[0]['name'] == 'unknown', re_read
-print('  ✓  unknown is removable (empty write stored; read re-seeds unknown)')
+print('  ✓  unknown is removable (empty write stores no compounds; read re-seeds unknown)')
 
 # (d) sanity: the module-level normalise_classes agrees (no hardcoded trio anywhere).
 seeded = taxonomy.normalise_classes(None)

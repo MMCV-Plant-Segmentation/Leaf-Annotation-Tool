@@ -269,5 +269,21 @@
   "detail.labels.remove": "Remove",
   "detail.labels.up": "Move up",
   "detail.labels.down": "Move down",
-  "detail.labels.namePlaceholder": "Label name"
+  "detail.labels.namePlaceholder": "Label name",
+  "detail.labels.groupsTitle": "Groups",
+  "detail.labels.compoundsTitle": "Compound labels",
+  "detail.labels.groupNamePlaceholder": "Group name",
+  "detail.labels.memberNamePlaceholder": "Member name",
+  "detail.labels.required": "required",
+  "detail.labels.addGroup": "Add group",
+  "detail.labels.addMember": "Add member",
+  "detail.labels.addCompound": "Add compound",
+  "detail.labels.compoundNamePlaceholder": "Compound name",
+  "detail.labels.saveCompound": "Save compound",
+  "detail.labels.invalidCompound": "Pick a member for every required group",
+  "detail.labels.pickNone": "— none —",
+  "detail.labels.deleteUsedConfirm": "The compound \"{name}\" is used by lesions. Delete it anyway? Lesions keep their colour.",
+  "canvas.legend": "Legend",
+  "detail.labels.deleteGroupConfirm": "Delete this group? Compounds using it become invalid and are removed; lesions keep their colour.",
+  "detail.labels.deleteMemberConfirm": "Delete this member? Compounds using it become invalid and are removed; lesions keep their colour."
 }

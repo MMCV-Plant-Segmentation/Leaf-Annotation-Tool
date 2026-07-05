@@ -60,14 +60,20 @@ def _project(con, project_id: str) -> dict | None:
 
 
 def _project_out(row: dict) -> dict:
-    """Shape a project row for JSON (parse + upgrade classes_json, normalise tiling_confirmed).
+    """Shape a project row for JSON (taxonomy v2: groups + compounds + flat classes).
 
-    `classes_json` is upgraded from the legacy string-array form to the canonical object
-    list (see webapp.taxonomy). The upgraded form is NOT persisted here — the next
-    project write that touches `classes` re-serialises it; reads stay lenient/lossless.
+    `classes_json` is upgraded from any legacy form (string-array / object-array) to the
+    canonical taxonomy-v2 shape (see webapp.taxonomy): `groups`, `compounds` (the valid
+    paintable palette), and `classes` (the compounds projected to the legacy flat
+    `{id,name,color,order}` list, kept so every existing call site keeps working). The
+    upgraded form is NOT persisted here — the next project write that touches the taxonomy
+    re-serialises it; reads stay lenient/lossless.
     """
     out = dict(row)
-    out['classes'] = taxonomy.normalise_classes(row.get('classes_json'))
+    tax = taxonomy.taxonomy_out(row.get('classes_json'))
+    out['classes'] = tax['classes']
+    out['groups'] = tax['groups']
+    out['compounds'] = tax['compounds']
     out.pop('classes_json', None)
     out['tiling_confirmed'] = bool(out.get('tiling_confirmed', 0))
     return out
@@ -383,11 +389,18 @@ def create_project():
     # component rule defines the leaf regardless, so 0 is a safe, no-surprise default.
     raw_threshold = body.get('black_threshold')
     threshold = int(raw_threshold) if raw_threshold is not None else 0
-    classes = taxonomy.coerce_classes(body.get('classes'))
-    if not classes:
-        # New/empty project → seed the single removable 'unknown' label (no more
-        # hardcoded ['lesion','midrib','uncertain'] FE fallback).
-        classes = taxonomy.normalise_classes('[]')
+    # Taxonomy v2: accept either a v2 body ({groups, compounds}) or the legacy flat
+    # `classes` list; both funnel through coerce_taxonomy -> dump_taxonomy. A new/empty
+    # project seeds the single removable 'unknown' compound (backed by one default
+    # group), so it behaves exactly like today's default - no hardcoded trio.
+    taxonomy_body = body.get('taxonomy') or body.get('classes')
+    if body.get('groups') is not None or body.get('compounds') is not None:
+        taxonomy_body = {'groups': body.get('groups') or [],
+                         'compounds': body.get('compounds') or []}
+    if taxonomy_body is None:
+        classes_json = taxonomy.dump_taxonomy(taxonomy.normalise_taxonomy('[]'))
+    else:
+        classes_json = taxonomy.dump_taxonomy(taxonomy.coerce_taxonomy(taxonomy_body))
     if tile_size < 8:
         return jsonify({'error': 'tile_size_px too small'}), 400
     pid = _uid()
@@ -398,7 +411,7 @@ def create_project():
                  (id, name, tile_size_px, black_threshold, classes_json,
                   created_by, created_by_user_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (pid, name, tile_size, threshold, taxonomy.dump_classes(classes),
+            (pid, name, tile_size, threshold, classes_json,
              _byline(), session.get('user_id'), _now()),
         )
         # Auto-add creator as an annotator so the project is immediately visible to them.
@@ -432,11 +445,19 @@ def update_project(project_id: str):
         if 'black_threshold' in body:
             sets.append('black_threshold = ?'); vals.append(int(body['black_threshold']))
             sets.append('tiling_confirmed = ?'); vals.append(1)
-        if 'classes' in body:
-            # Editor (any project member — same permission model as image/batch management,
-            # NOT admin-only) sends the canonical object list; coerce defensively + dump.
-            classes = taxonomy.coerce_classes(body['classes'])
-            sets.append('classes_json = ?'); vals.append(taxonomy.dump_classes(classes))
+        # Taxonomy v2: the editor sends a v2 object ({groups, compounds}); a legacy
+        # flat `classes` list still upgrades cleanly. Both funnel through coerce/dump.
+        # Member permission model unchanged (NOT admin-only).
+        if 'taxonomy' in body or 'groups' in body or 'compounds' in body or 'classes' in body:
+            if 'groups' in body or 'compounds' in body:
+                tax_body = {'groups': body.get('groups') or [],
+                            'compounds': body.get('compounds') or []}
+            elif 'taxonomy' in body:
+                tax_body = body['taxonomy']
+            else:
+                tax_body = body['classes']
+            classes_json = taxonomy.dump_taxonomy(taxonomy.coerce_taxonomy(tax_body))
+            sets.append('classes_json = ?'); vals.append(classes_json)
         if 'tiling_confirmed' in body:
             sets.append('tiling_confirmed = ?'); vals.append(1 if body['tiling_confirmed'] else 0)
         if 'tile_size_px' in body:
@@ -1026,7 +1047,10 @@ def get_batch(batch_id: str):
         proj = con.execute(
             'SELECT classes_json FROM project WHERE id = ?', (batch['project_id'],)
         ).fetchone()
-        classes = taxonomy.normalise_classes(proj['classes_json']) if proj else []
+        tax = taxonomy.taxonomy_out(proj['classes_json']) if proj else taxonomy.taxonomy_out(None)
+        classes = tax['classes']
+        groups = tax['groups']
+        compounds = tax['compounds']
         rows = con.execute(
             '''SELECT bt.id bt_id, t.id tile_id, t.project_image_id, t.x, t.y, t.w, t.h
                FROM batch_tile bt JOIN tile t ON t.id = bt.tile_id
@@ -1062,7 +1086,8 @@ def get_batch(batch_id: str):
             images.append(entry)
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
-            'status': batch['status'], 'classes': classes, 'images': images,
+            'status': batch['status'], 'classes': classes,
+            'groups': groups, 'compounds': compounds, 'images': images,
         })
     finally:
         _db.close_db(con)
@@ -1090,13 +1115,23 @@ def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: li
 def _annotation_out(row: dict) -> dict:
     """Shape an `annotation` (mask) row for JSON. kind='stroke' masks render from the
     stored fused `rings` (geometry_json); other kinds render from their own `points`
-    (never fused, so points_json is always the exact shape that was drawn)."""
+    (never fused, so points_json is always the exact shape that was drawn).
+
+    Taxonomy v2: a lesion carries a denormalised `labelSnapshot` ({name,color,
+    selections}) captured at assign time, plus a `labelColor` convenience so the FE
+    can paint a lesion in its compound's colour WITHOUT re-resolving the taxonomy
+    (a later preset edit/delete never orphans the colour). Legacy rows with no
+    snapshot fall back to label text only (labelColor None -> caller's default)."""
     is_mask = row['kind'] == 'stroke'
     rings = json.loads(row['geometry_json']) if (is_mask and row['geometry_json']) else []
     points = [] if is_mask else (json.loads(row['points_json']) if row['points_json'] else [])
+    snap_raw = row.get('label_snapshot') if isinstance(row, dict) else None
+    snapshot = json.loads(snap_raw) if snap_raw else None
+    label_color = snapshot.get('color') if snapshot else None
     return {
         'id': row['id'], 'kind': row['kind'], 'passNo': row['pass_no'],
         'points': points, 'rings': rings, 'label': row['label'],
+        'labelColor': label_color, 'labelSnapshot': snapshot,
         'viewport': json.loads(row['viewport_json']) if row['viewport_json'] else None,
         'annotator': row['annotator'], 'imageId': row['project_image_id'],
     }
@@ -1151,6 +1186,14 @@ def create_annotation(project_id: str):
         pass_no = body.get('passNo')
         viewport_json = json.dumps(body['viewport']) if body.get('viewport') else None
         hsv_json = json.dumps(body['hsvHist']) if body.get('hsvHist') else None
+        # Taxonomy v2: snapshot the compound (name/color/selections) this lesion is
+        # painted with, denormalised at assign time so a later preset edit/delete
+        # never orphans the lesion's meaning. None when the label matches no compound
+        # (lenient backend / legacy free-text) - the lesion keeps its bare label text.
+        proj_row = _project(con, project_id)
+        snapshot = taxonomy.snapshot_from_label(
+            proj_row.get('classes_json') if proj_row else None, label)
+        snapshot_json = json.dumps(snapshot) if snapshot else None
         now = _now()
         sid = _uid()
 
@@ -1192,10 +1235,10 @@ def create_annotation(project_id: str):
             con.execute(
                 '''INSERT INTO annotation
                      (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                      points_json, geometry_json, viewport_json, hsv_hist_json,
-                      created_at, updated_at, deleted_at)
-                   VALUES (?, ?, ?, ?, 'stroke', ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
-                (aid, project_id, image_id, annotator, pass_no, label,
+                      label_snapshot, points_json, geometry_json, viewport_json,
+                      hsv_hist_json, created_at, updated_at, deleted_at)
+                   VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+                (aid, project_id, image_id, annotator, pass_no, label, snapshot_json,
                  json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
             )
             _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now)
@@ -1240,10 +1283,10 @@ def create_annotation(project_id: str):
         con.execute(
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                  points_json, geometry_json, viewport_json, hsv_hist_json,
-                  created_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
-            (aid, project_id, image_id, annotator, kind, pass_no, label,
+                  label_snapshot, points_json, geometry_json, viewport_json,
+                  hsv_hist_json, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
+            (aid, project_id, image_id, annotator, kind, pass_no, label, snapshot_json,
              json.dumps(points), viewport_json, hsv_json, now, now),
         )
         _insert_stroke(con, sid, aid, kind, points, None, None, now)
@@ -1340,10 +1383,20 @@ def update_annotation(annotation_id: str):
         ).fetchall()]
         points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
         label = body.get('label', row['label'])
+        # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
+        # selections stay in sync with the newly-assigned compound (Phase 1 has no
+        # relabel UI, but the PATCH endpoint stays correct for any caller).
+        snapshot_json = row.get('label_snapshot')
+        if body.get('label') is not None:
+            proj_row = _project(con, row['project_id'])
+            snap = taxonomy.snapshot_from_label(
+                proj_row.get('classes_json') if proj_row else None, label)
+            snapshot_json = json.dumps(snap) if snap else None
         points_json = json.dumps(points)
         con.execute(
-            'UPDATE annotation SET points_json = ?, label = ?, updated_at = ? WHERE id = ?',
-            (points_json, label, _now(), annotation_id),
+            'UPDATE annotation SET points_json = ?, label = ?, label_snapshot = ?, '
+            'updated_at = ? WHERE id = ?',
+            (points_json, label, snapshot_json, _now(), annotation_id),
         )
         con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
                    (points_json, annotation_id))

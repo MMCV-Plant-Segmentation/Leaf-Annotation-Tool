@@ -106,3 +106,73 @@ export const err = style({
   color: vars.color.danger,
   fontSize: '0.82rem',
 });
+
+export const subTitle = style({
+  margin: '0.4rem 0 0.2rem',
+  fontSize: '0.85rem',
+  color: vars.color.textMuted,
+});
+
+export const groupBlock = style({
+  padding: '0.5rem',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: vars.radius.sm,
+  background: vars.color.bg,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.35rem',
+});
+
+export const memberRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.4rem',
+  paddingLeft: '1rem',
+});
+
+export const memberBullet = style({
+  color: vars.color.textMuted,
+});
+
+export const checkLabel = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.3rem',
+  fontSize: '0.8rem',
+  color: vars.color.textMuted,
+});
+
+export const pickerRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.5rem',
+  flexWrap: 'wrap',
+});
+
+export const pickerLabel = style({
+  fontSize: '0.8rem',
+  color: vars.color.textMuted,
+  minWidth: '7rem',
+});
+
+export const compoundName = style({
+  flex: '1 1 auto',
+  fontSize: '0.85rem',
+  color: vars.color.text,
+});
+
+export const swatches = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '0.3rem',
+  marginTop: '0.4rem',
+});
+
+export const swatchBtn = style({
+  width: '20px',
+  height: '20px',
+  padding: '0',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: '4px',
+  cursor: 'pointer',
+});

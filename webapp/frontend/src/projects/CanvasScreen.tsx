@@ -11,6 +11,7 @@ import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
+import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
 import * as styles from './CanvasScreen.css';
 
@@ -108,10 +109,11 @@ const CanvasScreen: Component = () => {
 
   const classOptions = (): Label[] => canvas()?.classes ?? [];
 
-  // Labels render in their configured colour (per-label colours, Option A). Annotations
-  // whose label is not in the configured set (lenient backend, legacy free-text) fall
-  // back to the canonical blue so existing data still reads.
-  const labelColor = (label: string | null): string => {
+  // Taxonomy v2: a lesion renders in its SNAPSHOT colour (captured at assign time) so a
+  // later preset edit/delete never orphans its colour. Lesions without a snapshot (legacy
+  // free-text) fall back to the matching compound's colour, then the canonical blue.
+  const labelColor = (label: string | null, snap?: string | null): string => {
+    if (snap) return snap;
     const match = (canvas()?.classes ?? []).find((c) => c.name === label);
     return match ? match.color : '#2563eb';
   };
@@ -163,7 +165,7 @@ const CanvasScreen: Component = () => {
               <CanvasTiles tiles={im().tiles} checkClass={styles.check}
                 onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
               <Show when={imgLoaded()}>
-                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label)} />}</For>
+                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label, a.labelColor)} />}</For>
               </Show>
               <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
                 hover={interaction.hoverImg()} />
@@ -172,6 +174,7 @@ const CanvasScreen: Component = () => {
         )}
       </Show>
 
+      <CanvasLegend annotations={image()?.annotations ?? []} classes={canvas()?.classes ?? []} />
       <CanvasHints vb={vb} />
     </div>
   );
