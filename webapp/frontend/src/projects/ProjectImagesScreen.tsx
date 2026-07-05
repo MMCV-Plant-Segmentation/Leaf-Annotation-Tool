@@ -133,7 +133,7 @@ const ProjectImagesScreen: Component = () => {
           </div>
 
           {/* ── Label taxonomy editor (any project member — not admin-only) ── */}
-          <LabelEditor projectId={id()} labels={p().classes} onSaved={reload} />
+          <LabelEditor projectId={id()} labels={p().classes} groups={p().groups ?? []} compounds={p().compounds ?? []} onSaved={reload} />
 
           {/* ── Secondary (de-emphasized): server-path import for dev/admin ── */}
           <Show when={currentUser()?.is_admin}>

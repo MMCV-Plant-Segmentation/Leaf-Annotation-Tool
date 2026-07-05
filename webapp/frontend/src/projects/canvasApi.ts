@@ -2,6 +2,7 @@
 // to keep it ≤200 lines. Re-exported from api.ts so `projectsApi.createAnnotation(...)`
 // etc. keep working unchanged for every existing caller.
 import type { Rect, Label } from './api';
+import type { Group, Compound, LabelSnapshot } from './taxonomy';
 import { jbody, jfetch } from './httpJson';
 
 export type CanvasTile = Rect & {
@@ -25,6 +26,8 @@ export type CanvasAnnotation = {
   points: number[][];
   rings: number[][][];
   label: string | null;
+  labelColor: string | null;
+  labelSnapshot: LabelSnapshot | null;
   viewport: Rect | null;
   annotator: string;
   imageId: string;
@@ -44,6 +47,8 @@ export type BatchCanvas = {
   seq: number;
   status: string;
   classes: Label[];
+  groups: Group[];
+  compounds: Compound[];
   images: CanvasImage[];
 };
 

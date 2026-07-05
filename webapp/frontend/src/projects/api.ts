@@ -10,6 +10,8 @@ export type ProjectSummary = {
   tile_size_px: number;
   black_threshold: number;
   classes: Label[];
+  groups: Group[];
+  compounds: Compound[];
   tiling_confirmed: boolean;
   created_by: string | null;
   created_at: string;
@@ -70,6 +72,7 @@ export type TilePreview = {
 };
 
 import { jbody, jfetch } from './httpJson';
+import type { Group, Compound } from './taxonomy';
 
 // Canvas annotation types + their API methods live in their own module (keeps this file
 // ≤200 lines) — re-exported here so every existing `projectsApi.foo(...)` / `import type
@@ -89,7 +92,7 @@ export const projectsApi = {
   get: (id: string) => jfetch<ProjectDetail>(`/api/projects/${id}`),
   create: (body: { name: string }) =>
     jfetch<ProjectSummary>('/api/projects', jbody('POST', body)),
-  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: Label[]; tiling_confirmed: boolean }>) =>
+  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: Label[]; groups: Group[]; compounds: Compound[]; tiling_confirmed: boolean }>) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', body)),
   updateTileSize: (id: string, tileSizePx: number) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', { tile_size_px: tileSizePx })),

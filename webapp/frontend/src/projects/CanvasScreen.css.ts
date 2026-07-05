@@ -161,3 +161,34 @@ export const sizeNumberInput = style({
   color: vars.color.text,
   fontSize: '0.8rem',
 });
+
+export const legend = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.6rem',
+  flexWrap: 'wrap',
+  padding: '0.3rem 0.6rem',
+  borderTop: `1px solid ${vars.color.border}`,
+  background: vars.color.surface,
+  fontSize: '0.8rem',
+});
+
+export const legendTitle = style({
+  color: vars.color.textMuted,
+  fontWeight: 600,
+});
+
+export const legendItem = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.3rem',
+  color: vars.color.text,
+});
+
+export const legendSwatch = style({
+  display: 'inline-block',
+  width: '12px',
+  height: '12px',
+  borderRadius: '3px',
+  border: `1px solid ${vars.color.border}`,
+});
