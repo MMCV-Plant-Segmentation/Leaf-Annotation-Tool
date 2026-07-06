@@ -53,13 +53,20 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // label-only patch on a `stroke` (painted) mask (see webapp/projects.py). Persists
   // the label + its denormalised colour/selections snapshot; the caller re-renders from
   // the returned annotation, so the lesion recolors immediately on the canvas + legend.
+  //
+  // Phase 2c: also pushes a `relabel` history entry (canvasHistory.ts) carrying the
+  // PRIOR label alongside the new one, so Ctrl+Z/Ctrl+Shift+Z can undo/redo it via the
+  // same label-only PATCH — no-op (re-picking the current label) pushes nothing.
   const relabel = async (annotationId: string, label: string) => {
+    const before = o.image()?.annotations.find((a) => a.id === annotationId)?.label ?? null;
+    if (before === label) return;
     try {
       const updated = await projectsApi.updateAnnotation(annotationId, { label });
       o.updateImg((im) => ({
         ...im,
         annotations: im.annotations.map((a) => a.id === annotationId ? { ...a, ...updated } : a),
       }));
+      o.history.push({ kind: 'relabel', annotationId, before, after: updated.label });
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : 'Relabel failed');
     }
