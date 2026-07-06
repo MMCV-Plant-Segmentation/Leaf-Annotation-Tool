@@ -1374,7 +1374,33 @@ def update_annotation(annotation_id: str):
         if not row or row['deleted_at']:
             return jsonify({'error': 'not found'}), 404
         if row['kind'] == 'stroke':
-            return jsonify({'error': 'a fused mask cannot be edited directly; erase and redraw'}), 422
+            # Compound labels Phase 2b (relabel): a LABEL-ONLY patch (no `points` key) on a
+            # fused mask is allowed — it re-labels the lesion in place without touching its
+            # geometry. Any attempt to also edit `points`/geometry on a stroke still 422s
+            # (see docstring): erase + redraw is still the only way to reshape a fused mask.
+            if 'points' in body or 'label' not in body:
+                return jsonify({'error': 'a fused mask cannot be edited directly; erase and redraw'}), 422
+            err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
+            if err:
+                return err
+            label = body.get('label')
+            proj_row = _project(con, row['project_id'])
+            snap = taxonomy.snapshot_from_label(
+                proj_row.get('classes_json') if proj_row else None, label)
+            snapshot_json = json.dumps(snap) if snap else None
+            con.execute(
+                'UPDATE annotation SET label = ?, label_snapshot = ?, updated_at = ? WHERE id = ?',
+                (label, snapshot_json, _now(), annotation_id),
+            )
+            tile_ids = [r['tile_id'] for r in con.execute(
+                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+            ).fetchall()]
+            _mark_tiles_dirty(con, tile_ids, row['annotator'])
+            con.commit()
+            out = _annotation_out(con.execute(
+                'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone())
+            out['tileIds'] = tile_ids
+            return jsonify(out)
         err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
         if err:
             return err

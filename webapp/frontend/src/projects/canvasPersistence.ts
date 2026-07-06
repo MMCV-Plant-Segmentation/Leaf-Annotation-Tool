@@ -48,6 +48,23 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
+  // Compound labels Phase 2b: re-label the selected lesion via the same PATCH endpoint
+  // point/line/polygon edits already use — now loosened server-side to also accept a
+  // label-only patch on a `stroke` (painted) mask (see webapp/projects.py). Persists
+  // the label + its denormalised colour/selections snapshot; the caller re-renders from
+  // the returned annotation, so the lesion recolors immediately on the canvas + legend.
+  const relabel = async (annotationId: string, label: string) => {
+    try {
+      const updated = await projectsApi.updateAnnotation(annotationId, { label });
+      o.updateImg((im) => ({
+        ...im,
+        annotations: im.annotations.map((a) => a.id === annotationId ? { ...a, ...updated } : a),
+      }));
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : 'Relabel failed');
+    }
+  };
+
   const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => {
     if (kind === 'erase') return void eraseStroke(points, strokeWidth ?? 1);
     const im = o.image(); const pid = o.getProjectId();
@@ -85,5 +102,5 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
-  return { commit };
+  return { commit, relabel };
 }
