@@ -121,14 +121,26 @@ two rules above so they aren't just honour-system:
   per-agent scoping is filed in `RAINYDAY.md`. **This is easy to forget** (it was skipped for the whole
   2026-07-02 fix batch) — hence the checklist below.
 
+## Orchestration scripts (Opus's tools — `~/projects/human_trainer/scripts/`)
+- **`status.sh`** — run it first each session (a fresh Opus resumes from it): derives "where things
+  stand" from git + docker (current branches, unmerged/in-flight branches, commits ahead of origin,
+  dirty trees, recent TASK_METRICS outcomes, live jail containers, whether a scope file is staged). No
+  hand-maintained state file to rot.
+- **`dispatch.sh`** — automates the dispatch checklist prep below (writes the scope file + appends the
+  metrics stub) and **guards the single-global-scope collision** (refuses a second concurrent
+  dispatch). `--clear` tears the scope file down after a run is accepted.
+
 ## Dispatch checklist (do EVERY spawn — don't skip)
-At the moment Opus fires a subagent, before the Agent call:
-1. **Write `.claude/agent_scope.json`** (generous directory globs for `write_allow`) so the guard
-   actually confines the agent's writes. Remove it once the run is merged/accepted.
+At the moment Opus fires a subagent, before the Agent call (mostly automated by `dispatch.sh`):
+1. **Write `.claude/agent_scope.json`** (generous directory globs for `write_allow`; `sandbox:true`
+   for a jailed run) so the guard confines the agent. Remove it once the run is merged/accepted
+   (`dispatch.sh --clear`).
 2. **Append a stub row to `docs/TASK_METRICS.md`** — date / task / branch / model, tokens+tools blank.
    Opus writes this at dispatch (dispatch is serial → no concurrency), NOT the subagent, which can't
    read its own counters.
-3. Dispatch (fresh Sonnet, one task; see Frugality).
+3. Dispatch a **fresh** subagent (one task; see Frugality). Pick the agent by role: `implementer`
+   (untrusted project work — leaf; jailed via guard Rule C once at parity, host + Rule B until then)
+   or `harness-maintainer` (trusted work ON the harness; host, real Docker — the one jail exception).
 
 On completion: **fill the stub's tokens/tool-uses from the notification `<usage>` block** (the only
 reliable source), and record the merge SHA + gate digest.
