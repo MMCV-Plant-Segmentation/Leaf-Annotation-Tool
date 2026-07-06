@@ -74,7 +74,11 @@ export const canvasApi = {
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
     strokeWidth?: number; outline?: number[][];
   }) => jfetch<CreateAnnotationResult>(`/api/projects/${projectId}/annotations`, jbody('POST', body)),
-  updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>
+  // `label: string | null` (not `?string`) so a relabel-undo/redo of a lesion whose
+  // prior label was null still sends the `label` key — JSON.stringify drops `undefined`
+  // properties but keeps explicit `null`, and the label-only PATCH branch (webapp/
+  // projects.py) requires the key present (see canvasHistory.ts `relabel` undo/redo).
+  updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string | null }) =>
     jfetch<CanvasAnnotation>(`/api/annotations/${annotationId}`, jbody('PATCH', body)),
   deleteAnnotation: (annotationId: string) =>
     jfetch<{ ok: boolean; tileStates: TileStateUpdate[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
