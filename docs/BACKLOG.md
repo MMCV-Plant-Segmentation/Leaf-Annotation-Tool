@@ -211,3 +211,9 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   start — whenever we set a default keybind it should be rebindable (per-user setting), not hardcoded. NOT the
   temporary space-held-for-pan (that ships with the Phase-2 selection tool); this is the persistent swap keys +
   their config UI. Logged 2026-07-04.
+
+- **Viewport behavior for undo/redo of off-screen edits.** Once all edit operations are undoable
+  (relabel included), an undo/redo may affect an annotation that is OUTSIDE the current viewport —
+  the user could undo something and see nothing change. Think through the right UX: should undo/redo
+  pan/zoom to reveal the affected annotation, flash a marker, be disallowed off-screen, or something
+  else? Design before building. Logged 2026-07-06 (Christian, alongside wiring relabel into undo/redo).
