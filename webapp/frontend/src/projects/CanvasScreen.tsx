@@ -1,4 +1,4 @@
-import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
+import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
@@ -8,6 +8,8 @@ import { hitTestAnnotation } from './lesionSelect';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
+import { createRelabelDropdown } from './relabelDropdown';
+import { createCanvasKeyboard } from './canvasKeyboard';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
@@ -33,7 +35,11 @@ const CanvasScreen: Component = () => {
   const [tool, setTool] = createSignal<Tool>('select');
   const [selId, setSelId] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal<number[][]>([]);
-  const [selClass, setSelClass] = createSignal('');
+  // Compound labels Phase 2b: `paintLabel` is the last compound the user MANUALLY chose
+  // for painting (the active brush label) — it drives actual paint commits and is what
+  // the drop-down restores to on deselect. See `dropdownLabel`/`pickDropdown` below for
+  // the drop-down's dual role (paint picker + relabel picker).
+  const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
   // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
@@ -63,9 +69,10 @@ const CanvasScreen: Component = () => {
     updateImg,
   );
 
-  const { commit } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass, vb, updateImg, history,
+  const { commit, relabel } = createCanvasPersistence({
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history,
   });
+  const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
 
   // BUGS #15: an admin viewing another user's annotations may look but must NOT add or
   // delete anything for that user. When isAdmin() is true, the commit handed to the canvas
@@ -83,25 +90,7 @@ const CanvasScreen: Component = () => {
   // future analysis of per-user "vision level" tile sizing.
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef });
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!isAdmin()) {
-      // Edit shortcuts only for the annotator who owns this work — never for an admin viewer.
-      if (e.key === 'Enter') interaction.finishDraft();
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
-      if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
-    }
-    // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
-    if (e.key === 'Escape') {
-      if (tool() === 'select') setSelId(null);
-      else { setDraft([]); setTool('pan'); }
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
-    interaction.handleKeyDown(e);
-  };
-  const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
-  onMount(() => { window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); });
-  onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
+  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
 
   const toggleTile = async (tile: import('./api').CanvasTile) => {
     if (!tile.annotatorTileId) return;
@@ -125,12 +114,11 @@ const CanvasScreen: Component = () => {
     return match ? match.color : '#2563eb';
   };
 
-  // Keep selClass valid against the project's labels. The backend is LENIENT (a label
-  // need not be configured), so an out-of-set selClass is preserved as a free-text
+  // Keep paintLabel valid against the project's labels. The backend is LENIENT (a label
+  // need not be configured), so an out-of-set paintLabel is preserved as a free-text
   // option rather than dropped — but when empty, default to the first configured label.
   createEffect(on(classOptions, (opts) => {
-    const cur = selClass();
-    if (!cur && opts.length) setSelClass(opts[0].name);
+    if (!paintLabel() && opts.length) setPaintLabel(opts[0].name);
   }));
 
   return (
@@ -142,7 +130,7 @@ const CanvasScreen: Component = () => {
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
         annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
-        selClass={selClass} setSelClass={setSelClass} classOptions={classOptions}
+        selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
         imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
         onBack={() => nav(-1)} onFit={fitImage}
         onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}

@@ -5,7 +5,7 @@
  * server always has the authoritative state. The stack is reset on image/batch change and
  * is never persisted across page reload.
  *
- * Three action kinds:
+ * Four action kinds:
  *  - 'draw'  — a plain create (point/line/polygon, or a brush stroke that fused with
  *    nothing). Undo/redo is a simple soft-delete/restore by id.
  *  - 'merge' — a brush stroke that FUSED with ≥1 existing live mask. The create minted a
@@ -16,11 +16,18 @@
  *    create request — since the originals are back exactly as they were, it re-derives
  *    the identical merge (new ids, so the stack entry is replaced with the fresh result).
  *  - 'erase' — a brush-eraser drag that soft-deleted whole annotations server-side already.
+ *  - 'relabel' — compound labels Phase 2c: a pure label change on an already-painted
+ *    lesion (see canvasPersistence.ts `relabel()`). No geometry moves and nothing is
+ *    created/deleted, so undo/redo don't need the merge-reverse machinery — both are just
+ *    the same label-only PATCH the forward op used, re-applying the `before`/`after`
+ *    label respectively. This is the template for making any future edit-op undoable:
+ *    capture enough on the action to redo the mutating call in either direction.
  *
  * Usage:
  *   const history = createCanvasHistory(getProjectId, updateCurrentImage);
  *   history.push({ kind: 'draw', ann });           // after a successful non-fusing commit
  *   history.push({ kind: 'merge', ... });           // after a fusing brush commit
+ *   history.push({ kind: 'relabel', ... });         // after a successful relabel PATCH
  *   history.erase(annsToDelete);                   // eraser tool — does mutate + push
  *   await history.undo();
  *   await history.redo();
@@ -41,7 +48,8 @@ export type HistoryAction =
   | { kind: 'draw'; ann: CanvasAnnotation }
   | { kind: 'merge'; ann: CanvasAnnotation; strokeId: string;
       consumedGroups: ConsumedGroup[]; redoBody: CreateAnnotationBody }
-  | { kind: 'erase'; anns: CanvasAnnotation[] };
+  | { kind: 'erase'; anns: CanvasAnnotation[] }
+  | { kind: 'relabel'; annotationId: string; before: string | null; after: string | null };
 
 /** Minimal view-update callback: receives a transform function over the current image. */
 type UpdateImg = (fn: (im: CanvasImage) => CanvasImage) => void;
@@ -60,6 +68,15 @@ function applyDelta(
     ],
     // BUGS #16: the server may have re-opened a completed tile this mutation touched.
     tiles: mergeTileStates(im.tiles, tileStates),
+  }));
+}
+
+/** Re-render a lesion in place after a label-only PATCH (relabel undo/redo): same id,
+ * fresh label/labelColor/labelSnapshot from the server response — no add/remove. */
+function applyRelabel(updateImg: UpdateImg, updated: CanvasAnnotation): void {
+  updateImg((im) => ({
+    ...im,
+    annotations: im.annotations.map((a) => (a.id === updated.id ? { ...a, ...updated } : a)),
   }));
 }
 
@@ -117,6 +134,11 @@ export function createCanvasHistory(
         consumedGroups: action.consumedGroups,
       });
       applyDelta(updateImg, r.resurrected, [action.ann.id], r.tileStates);
+    } else if (action.kind === 'relabel') {
+      // Pure label change — re-apply the PRIOR label via the same label-only PATCH the
+      // forward relabel used. No geometry, no /annotations/reverse needed.
+      const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.before });
+      applyRelabel(updateImg, updated);
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'restore', ids);
@@ -145,6 +167,10 @@ export function createCanvasHistory(
         ? { kind: 'merge', ann: fresh, strokeId: fresh.createdStrokeId,
             consumedGroups: fresh.consumedGroups, redoBody: action.redoBody }
         : a));
+    } else if (action.kind === 'relabel') {
+      // Re-apply the NEW label the forward relabel set — same label-only PATCH.
+      const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.after });
+      applyRelabel(updateImg, updated);
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'delete', ids);
