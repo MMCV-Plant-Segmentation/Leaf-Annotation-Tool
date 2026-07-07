@@ -5,7 +5,7 @@
  * Extracted from LabelEditor to keep each FE file under 200 lines. Pure presentation over
  * a draft `{groups, compounds}` signal owned by the parent; mutates via callbacks.
  */
-import { type Component, For } from 'solid-js';
+import { type Component, Index } from 'solid-js';
 import type { Group } from './taxonomy';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
@@ -66,56 +66,61 @@ export const GroupEditor: Component<Props> = (props) => {
       return { ...g, members: restamp(move(g.members, g.members.findIndex((m) => m.id === mid), dir)) };
     }));
 
+  // NB: <Index>, not <For>. renameGroup/renameMember replace the edited row object with a
+  // fresh reference on every keystroke; <For> reconciles by referential identity, so it
+  // would dispose+recreate that row's DOM (including the focused input) each keystroke —
+  // the input loses focus after one character. <Index> reconciles by POSITION and updates
+  // the same DOM node in place, so the input keeps focus while typing.
   return (
     <div class={styles.list}>
       <h4 class={styles.subTitle}>{t('detail.labels.groupsTitle')}</h4>
-      <For each={props.groups}>
+      <Index each={props.groups}>
         {(g, gi) => (
           <div class={styles.groupBlock} data-testid="group-row">
             <div class={styles.row}>
-              <input class={styles.name} type="text" value={g.name}
+              <input class={styles.name} type="text" value={g().name}
                 placeholder={t('detail.labels.groupNamePlaceholder')}
                 data-testid="group-name"
-                onInput={(e) => renameGroup(g.id, e.currentTarget.value)} />
+                onInput={(e) => renameGroup(g().id, e.currentTarget.value)} />
               <label class={styles.checkLabel}>
-                <input type="checkbox" checked={g.required}
+                <input type="checkbox" checked={g().required}
                   data-testid="group-required"
-                  onChange={() => toggleRequired(g.id)} />
+                  onChange={() => toggleRequired(g().id)} />
                 {t('detail.labels.required')}
               </label>
               <button class={styles.iconBtn} title={t('detail.labels.up')}
-                disabled={gi() === 0} onClick={() => moveGroup(g.id, -1)}>↑</button>
+                disabled={gi === 0} onClick={() => moveGroup(g().id, -1)}>↑</button>
               <button class={styles.iconBtn} title={t('detail.labels.down')}
-                disabled={gi() === props.groups.length - 1} onClick={() => moveGroup(g.id, 1)}>↓</button>
+                disabled={gi === props.groups.length - 1} onClick={() => moveGroup(g().id, 1)}>↓</button>
               <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
                 title={t('detail.labels.remove')} data-testid="group-remove"
-                onClick={() => removeGroup(g.id)}>✕</button>
+                onClick={() => removeGroup(g().id)}>✕</button>
             </div>
-            <For each={g.members}>
+            <Index each={g().members}>
               {(m, mi) => (
                 <div class={styles.memberRow} data-testid="member-row">
                   <span class={styles.memberBullet}>·</span>
-                  <input class={styles.name} type="text" value={m.name}
+                  <input class={styles.name} type="text" value={m().name}
                     placeholder={t('detail.labels.memberNamePlaceholder')}
                     data-testid="member-name"
-                    onInput={(e) => renameMember(g.id, m.id, e.currentTarget.value)} />
+                    onInput={(e) => renameMember(g().id, m().id, e.currentTarget.value)} />
                   <button class={styles.iconBtn} title={t('detail.labels.up')}
-                    disabled={mi() === 0} onClick={() => moveMember(g.id, m.id, -1)}>↑</button>
+                    disabled={mi === 0} onClick={() => moveMember(g().id, m().id, -1)}>↑</button>
                   <button class={styles.iconBtn} title={t('detail.labels.down')}
-                    disabled={mi() === g.members.length - 1} onClick={() => moveMember(g.id, m.id, 1)}>↓</button>
+                    disabled={mi === g().members.length - 1} onClick={() => moveMember(g().id, m().id, 1)}>↓</button>
                   <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
                     title={t('detail.labels.remove')} data-testid="member-remove"
-                    onClick={() => removeMember(g.id, m.id)}>✕</button>
+                    onClick={() => removeMember(g().id, m().id)}>✕</button>
                 </div>
               )}
-            </For>
+            </Index>
             <button class={styles.addBtn} data-testid="member-add"
-              onClick={() => addMember(g.id)}>
+              onClick={() => addMember(g().id)}>
               {t('detail.labels.addMember')}
             </button>
           </div>
         )}
-      </For>
+      </Index>
       <button class={styles.addBtn} data-testid="group-add" onClick={addGroup}>
         {t('detail.labels.addGroup')}
       </button>
