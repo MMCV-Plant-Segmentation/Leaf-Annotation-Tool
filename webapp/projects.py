@@ -1459,6 +1459,52 @@ def create_viewport_events(project_id: str):
         _db.close_db(con)
 
 
+@projects_bp.get('/api/projects/<project_id>/images/<image_id>/viewport-events')
+@admin_required
+def list_viewport_events(project_id: str, image_id: str):
+    """Admin-only: return `viewport_event` rows for a project + image so the client can
+    compute the viewport-attention heatmap overlay.
+
+    Each row is one sampled canvas viewport (the SVG viewBox in IMAGE coordinates: pan =
+    x,y; zoom = w,h; smaller w*h = more zoomed in). Rows are ordered by (user_id,
+    client_ts) so the client can compute per-user dwell (Delta-t) between consecutive
+    samples from the SAME user on this image.
+
+    Optional `?user_id=<byline>` filters to a single annotator. Admin-only (auth.
+    admin_required) - this is analysis data, not part of the annotator workflow.
+
+    Response: {events: [{id, userId, clientTs, receivedAt, x, y, w, h, cssW, cssH, dpr}, ...]}.
+    """
+    user_filter = (request.args.get('user_id') or '').strip()
+    con = _db.get_db()
+    try:
+        if user_filter:
+            rows = con.execute(
+                'SELECT * FROM viewport_event WHERE project_id = ? AND image_id = ? AND user_id = ? ORDER BY user_id, client_ts, id',
+                (project_id, image_id, user_filter),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                'SELECT * FROM viewport_event WHERE project_id = ? AND image_id = ? ORDER BY user_id, client_ts, id',
+                (project_id, image_id),
+            ).fetchall()
+        return jsonify({
+            'events': [
+                {
+                    'id': r['id'],
+                    'userId': r['user_id'],
+                    'clientTs': r['client_ts'],
+                    'receivedAt': r['received_at'],
+                    'x': r['x'], 'y': r['y'], 'w': r['w'], 'h': r['h'],
+                    'cssW': r['css_w'], 'cssH': r['css_h'], 'dpr': r['dpr'],
+                }
+                for r in rows
+            ]
+        })
+    finally:
+        _db.close_db(con)
+
+
 @projects_bp.patch('/api/annotations/<annotation_id>')
 @login_required
 def update_annotation(annotation_id: str):
