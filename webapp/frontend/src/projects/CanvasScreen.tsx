@@ -10,6 +10,7 @@ import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
 import { createRelabelDropdown } from './relabelDropdown';
 import { createCanvasKeyboard } from './canvasKeyboard';
+import { createTileToggle } from './tileComplete';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
@@ -104,16 +105,7 @@ const CanvasScreen: Component = () => {
         () => image()?.height ?? 0)
     : null;
 
-  const toggleTile = async (tile: import('./api').CanvasTile) => {
-    if (!tile.annotatorTileId) return;
-    const next = tile.state === 'completed' ? 'assigned' : 'completed';
-    await projectsApi.setTileState(tile.annotatorTileId, next);
-    setCanvas((c) => c && ({
-      ...c,
-      images: c.images.map((im, i) => i === imgIdx()
-        ? { ...im, tiles: im.tiles.map((tl) => tl.tileId === tile.tileId ? { ...tl, state: next } : tl) } : im),
-    }));
-  };
+  const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas);
 
   const classOptions = (): Label[] => canvas()?.classes ?? [];
 
@@ -137,6 +129,9 @@ const CanvasScreen: Component = () => {
     <div class={styles.wrap} data-screen="canvas">
       <Show when={!annotator()}>
         <div class={styles.banner}>{t('canvas.noAnnotator')}</div>
+      </Show>
+      <Show when={tileErr()}>
+        <div class={styles.banner} data-testid="tile-error" role="alert">{tileErr()}</div>
       </Show>
       <CanvasToolbar
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
