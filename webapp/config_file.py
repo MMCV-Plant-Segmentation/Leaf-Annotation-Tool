@@ -10,11 +10,12 @@ Required-ness is likewise validated by the entrypoint AFTER merging file + CLI (
 express "required unless the file supplies it"), e.g. create_app() raising when no secret_key
 resolves, and deploy.py's --data-mode wipe-guard.
 
-Back-compat (robust over cheap — do NOT silently break an existing .env-based prod):
+Resolution:
   - app.config.toml present            → use it (source='toml').
-  - only legacy .env present           → read it, with a one-time deprecation warning
-                                         (source='env').
-  - both present                       → app.config.toml wins.
+  - only a legacy .env present         → HARD FAIL with a migration hint. The .env fallback
+                                         was deprecated and is now removed; silently reading a
+                                         stale .env hid config drift, so we refuse instead.
+  - both present                       → app.config.toml wins (the .env is ignored, not an error).
   - neither                            → empty (source=None); the entrypoint falls back to
                                          its own env/defaults exactly as before.
 
@@ -51,9 +52,6 @@ _TOML_TO_ENV = {
     'compose_project_name': 'COMPOSE_PROJECT_NAME',
 }
 
-_warned = False
-
-
 class FileConfig:
     """A resolved config file (or the absence of one). `.get(ENV_NAME)` returns the value or
     None; `.as_env()` returns the whole mapping for feeding a subprocess/compose environment."""
@@ -69,16 +67,6 @@ class FileConfig:
 
     def as_env(self) -> dict[str, str]:
         return dict(self._values)
-
-
-def _parse_env(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, val = line.split('=', 1)
-            out[key.strip()] = val.strip()
-    return out
 
 
 def _parse_toml(path: Path) -> dict[str, str]:
@@ -99,16 +87,16 @@ def _parse_toml(path: Path) -> dict[str, str]:
 
 def load_file_config(root: Path) -> FileConfig:
     """Resolve the stack config file under `root` (the repo/deploy dir). See module docstring."""
-    global _warned
     toml_path = root / CONFIG_FILENAME
     env_path = root / LEGACY_ENV_FILENAME
     if toml_path.exists():
         return FileConfig(_parse_toml(toml_path), 'toml', toml_path)
     if env_path.exists():
-        if not _warned:
-            print(f'[config] WARNING: reading legacy {LEGACY_ENV_FILENAME} — this is deprecated; '
-                  f'migrate to {CONFIG_FILENAME} (copy {CONFIG_FILENAME}.example and fill it in).',
-                  file=sys.stderr)
-            _warned = True
-        return FileConfig(_parse_env(env_path), 'env', env_path)
+        # Legacy .env is no longer read — fail loudly with a migration hint instead of silently
+        # honouring a deprecated file (a stale .env quietly overriding intent was the footgun).
+        sys.exit(
+            f'[config] ERROR: found a legacy {LEGACY_ENV_FILENAME} but no {CONFIG_FILENAME}. '
+            f'The {LEGACY_ENV_FILENAME} fallback has been removed — migrate to {CONFIG_FILENAME}: '
+            f'copy {CONFIG_FILENAME}.example and fill it in (a 1:1 key rename — lowercase the keys, '
+            f'quote strings), or run  ./deploy.py create-config  to generate one.')
     return FileConfig({}, None, None)

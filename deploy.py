@@ -234,8 +234,8 @@ def _restore_test_volume(env, puid, pgid):
     volume. Mirrors compose.yaml's one-shot `restore` service, retargeted at TEST_VOL."""
     backup_dir = env.get("BACKUP_DIR")
     if not backup_dir:
-        die("--data-mode restore needs BACKUP_DIR set in .env (the host backup root: "
-            "<BACKUP_DIR>/db is the litestream replica, <BACKUP_DIR>/files is the file mirror) — "
+        die("--data-mode restore needs backup_dir set in app.config.toml (the host backup root: "
+            "<backup_dir>/db is the litestream replica, <backup_dir>/files is the file mirror) — "
             "test restores from BACKUP, never from prod's live volume.")
     db_backup = Path(backup_dir) / "db"
     files_backup = Path(backup_dir) / "files"
@@ -369,7 +369,7 @@ def create_config():
     while not admin:
         admin = getpass.getpass("admin_password can't be empty: ")
     lines = [
-        "# app.config.toml — config for the Leaf Annotation stack (replaces .env).",
+        "# app.config.toml — config for the Leaf Annotation stack.",
         "# GITIGNORED; contains secrets. CLI flags override these values.",
         "",
         f"port = {int(port)}",

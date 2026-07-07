@@ -1,55 +1,36 @@
 # app.config.toml — configuration for the Leaf Annotation stack.
-#
-# This file REPLACES the old .env. Copy it to `app.config.toml` (same dir, repo root) and fill
-# it in. `app.config.toml` is GITIGNORED and MAY contain secrets (secret_key, admin_password) —
-# same posture as the .env it replaces. Never commit the real file; only this .example.
-#
-#   cp app.config.toml.example app.config.toml   &&   $EDITOR app.config.toml
-#   # ...or generate one interactively (fills in a random secret_key for you):
-#   ./deploy.py create-config
-#
-# Precedence everywhere: CLI flag  >  this file  >  built-in default.
-# Every key below is also settable as a CLI flag on `deploy.py` / `leaf-annotation`.
-#
-# MIGRATING FROM .env: this is a 1:1 key rename into TOML syntax — lowercase the keys and quote
-# string values. e.g.  SECRET_KEY=abc123  ->  secret_key = "abc123"  ;  PORT=5000 -> port = 5000.
-# A legacy .env is still read as a DEPRECATED fallback when this file is absent (with a warning);
-# if both exist, app.config.toml wins.
+# Copy this to `app.config.toml` (same dir) and fill it in. The real file is GITIGNORED and MAY
+# hold secrets (secret_key, admin_password); only this .example is committed.
+#   cp app.config.toml.example app.config.toml     # ...or: ./deploy.py create-config
 
-# ── App runtime (maps to webapp/config.py AppConfig) ─────────────────────────
 # Port the app listens on / is published from.
 port = 5000
 
 # Bind host for the dev server (`leaf-annotation`). Prod (granian/Docker) binds 0.0.0.0 itself.
 # host = "127.0.0.1"
 
-# Data dir (app.db + images/jsons/i18n). MUST stay on local disk, never NFS (SQLite locking).
-# In Docker this is /data (a named volume); for native dev, omit to use the XDG default
-# (~/.local/share/leaf-annotation).
-# data_dir = "/data"
-
-# Flask session secret. REQUIRED for the app to boot. Generate: python -c "import secrets;print(secrets.token_urlsafe(32))"
+# Flask session secret. REQUIRED to boot. Generate: python -c "import secrets;print(secrets.token_urlsafe(32))"
 secret_key = "CHANGE-ME-generate-a-random-32+-char-string"
 
 # Seeds the 'admin' user on FIRST boot only (never overwrites an existing admin — use the
 # `--admin-password` CLI flag for that). REQUIRED on a fresh deployment.
 admin_password = "CHANGE-ME"
 
-# Optional. Display-only path shown in the admin settings panel. The backup itself is the
-# litestream/lsyncd compose sidecars (deploy.py start prod --with-backup), not this value.
-# backup_dir = "/deltos/e/leaf-annotation-tool/backup"
+# Host backup root. Used by `deploy.py start prod --with-backup` (the litestream/lsyncd sidecars)
+# and by `--data-mode restore`; also shown in the admin settings panel. Set it to wherever this
+# host keeps <root>/db (litestream replica) + <root>/files (file mirror).
+# backup_dir = "/path/to/backup"
 
 # Optional. Override the backup-status sidecar URL polled by GET /api/sync-status.
 # backup_status_url = "http://backup-status:8098/status"
 
-# ── Deploy orchestration (deploy.py / Docker) ────────────────────────────────
 # Shared unix group that co-owns data + backups (so any member can run/restore). REQUIRED for
 # `deploy.py start prod`. Not used by native dev.
-app_group = "rss-sys-kazict"
+app_group = "your-shared-group"
 
 # Docker Compose project name (container/volume prefix).
 compose_project_name = "leaf-annotation-tool"
 
-# NOTE: the per-run MODE knobs (--data-mode / --seed, --strict-port/--auto-port, --restore-from,
-# --branch) are intentionally CLI-ONLY, not file keys — they express run intent, and the
-# --data-mode wipe-guard in particular must not be silently pre-answered by a config file.
+# NOTE: the per-run MODE knobs (--data-mode/--seed, --strict-port/--auto-port, --restore-from,
+# --branch) are CLI-ONLY, not file keys — they express run intent, and the --data-mode wipe-guard
+# must not be silently pre-answered by a config file.

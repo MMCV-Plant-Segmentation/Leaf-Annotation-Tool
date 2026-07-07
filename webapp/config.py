@@ -53,8 +53,10 @@ class AppConfig:
                     password instead of only seeding on first boot. Set by an explicit
                     `--admin-password` CLI flag (operator intent), never by the env-sourced
                     ADMIN_PASSWORD default.
-    backup_dir      Host path where DB/file backups land (display-only in the admin
-                    settings panel); None/'' means "not configured" for this instance.
+    backup_dir      Host backup root. deploy.py uses it for real — the litestream/lsyncd
+                    sidecars (start prod --with-backup) and --data-mode restore both read it
+                    (as BACKUP_DIR); the webapp only DISPLAYS it in the admin settings panel
+                    (read-only there). None/'' means "not configured" for this instance.
     backup_status_url
                     URL of the `backup-status` sidecar polled by GET /api/sync-status.
                     None means "use sync_status.py's compose-network default".
