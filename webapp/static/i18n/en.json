@@ -286,5 +286,11 @@
   "detail.labels.deleteUsedConfirm": "The compound \"{name}\" is used by lesions. Delete it anyway? Lesions keep their colour.",
   "canvas.legend": "Legend",
   "detail.labels.deleteGroupConfirm": "Delete this group? Compounds using it become invalid and are removed; lesions keep their colour.",
-  "detail.labels.deleteMemberConfirm": "Delete this member? Compounds using it become invalid and are removed; lesions keep their colour."
+  "detail.labels.deleteMemberConfirm": "Delete this member? Compounds using it become invalid and are removed; lesions keep their colour.",
+  "heatmap.toggle": "Viewport attention",
+  "heatmap.empty": "No viewport telemetry recorded for this image yet.",
+  "heatmap.summary": "{count} samples · dwell × zoom-closeness",
+  "heatmap.min": "min",
+  "heatmap.max": "max",
+  "heatmap.ramp": "attention: low → high"
 }

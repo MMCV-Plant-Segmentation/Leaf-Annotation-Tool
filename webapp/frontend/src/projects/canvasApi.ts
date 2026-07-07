@@ -102,11 +102,30 @@ export const canvasApi = {
    * Best-effort by design: callers swallow rejections, never surface them to the user. */
   postViewportEvents: (projectId: string, body: { imageId: string; events: ViewportSample[] }) =>
     jfetch<{ ok: boolean; count: number }>(`/api/projects/${projectId}/viewport-events`, jbody('POST', body)),
+
+  /** Admin-only: fetch the recorded viewport telemetry rows for an image so the client
+   *  can compute the viewport-attention heatmap overlay. Rows are ordered by
+   *  (user_id, client_ts) for per-user consecutive-pair dwell. Optional userId filter. */
+  listViewportEvents: (projectId: string, imageId: string, userId?: string) =>
+    jfetch<{ events: ViewportEventRow[] }>(
+      `/api/projects/${projectId}/images/${imageId}/viewport-events`
+      + (userId ? `?user_id=${encodeURIComponent(userId)}` : '')),
 };
 
 /** One captured canvas viewport sample — wire shape for postViewportEvents. See
  * viewportTelemetry.ts for how samples are gathered/batched. */
 export type ViewportSample = {
   clientTs: string; x: number; y: number; w: number; h: number;
+  cssW: number; cssH: number; dpr: number;
+};
+
+/** One recorded viewport telemetry row, as returned by the admin-only
+ * GET .../viewport-events endpoint (see listViewportEvents). */
+export type ViewportEventRow = {
+  id: number;
+  userId: string;
+  clientTs: string;
+  receivedAt: string;
+  x: number; y: number; w: number; h: number;
   cssW: number; cssH: number; dpr: number;
 };

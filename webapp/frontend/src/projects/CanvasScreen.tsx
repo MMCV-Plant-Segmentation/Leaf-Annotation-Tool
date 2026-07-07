@@ -17,6 +17,7 @@ import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasHints } from './CanvasHints';
 import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
+import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
 import * as styles from './CanvasScreen.css';
 
 const CanvasScreen: Component = () => {
@@ -91,6 +92,17 @@ const CanvasScreen: Component = () => {
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
+
+  // Admin-only viewport-attention HEATMAP overlay (dwell x zoom-closeness). The math
+  // lives in viewportHeatmap.ts; the SVG layer + control panel in ViewportHeatmapOverlay.
+  // Non-admin annotators never get this — it's analysis data, gated admin-only backend-side.
+  const heat = isAdmin()
+    ? createViewportHeatmap(
+        () => canvas()?.projectId ?? '',
+        () => image()?.imageId ?? '',
+        () => image()?.width ?? 0,
+        () => image()?.height ?? 0)
+    : null;
 
   const toggleTile = async (tile: import('./api').CanvasTile) => {
     if (!tile.annotatorTileId) return;
@@ -167,7 +179,9 @@ const CanvasScreen: Component = () => {
               </Show>
               <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
                 hover={interaction.hoverImg()} />
+              {heat && <ViewportHeatmapLayer heat={heat} />}
             </svg>
+            {heat && <ViewportHeatmapPanel heat={heat} />}
           </div>
         )}
       </Show>
