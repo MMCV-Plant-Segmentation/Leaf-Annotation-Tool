@@ -217,3 +217,13 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   the user could undo something and see nothing change. Think through the right UX: should undo/redo
   pan/zoom to reveal the affected annotation, flash a marker, be disallowed off-screen, or something
   else? Design before building. Logged 2026-07-06 (Christian, alongside wiring relabel into undo/redo).
+
+- **Quarantine/excise the legacy non-Kobalte system.** Thought fully quarantined, but it isn't: the
+  static `webapp/static/index.html` still loads `<script src="/static/compare.js">` and
+  `<script src="/static/app.js">`, and the new SolidJS app mounts INSIDE the legacy `#setup-screen`
+  shell (`position:fixed; z-index:200`) alongside the legacy `#compare-screen`/`#analyze-screen` DOM
+  + `legacy.css`. That shell's z-index:200 is what made a new Kobalte portal dropdown render behind
+  it (the LabelPicker click-intercept bug, fixed 2026-07-08 by bumping the portal z-index above the
+  shell — a workaround, not a cure). Task: migrate the remaining legacy screens (compare/analyze) to
+  Solid or fully isolate them, drop the legacy JS/CSS/DOM shell, and mount the app at the document
+  root so no legacy stacking context can clobber new UI. Logged 2026-07-08 (Christian).
