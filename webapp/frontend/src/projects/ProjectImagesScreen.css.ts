@@ -171,6 +171,15 @@ export const progressLabel = style({
   whiteSpace: 'nowrap',
 });
 
+// Distinct "preparing/hashing…" phase text shown while the client digests files
+// client-side (before any network activity) — see imageImportProgress.ts's `phase`.
+export const phaseLabel = style({
+  fontSize: '0.8rem',
+  fontStyle: 'italic',
+  color: vars.color.accent,
+  whiteSpace: 'nowrap',
+});
+
 export const summary = style({
   fontSize: '0.82rem',
   color: vars.color.textMuted,

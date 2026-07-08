@@ -6,18 +6,19 @@
  * Progress/streaming state lives in `imageImportProgress.ts` (extracted to keep this
  * file ≤200 lines). Both upload + import flows feed the same `ImportEvent` stream.
  */
-import { type Component, createResource, createSignal, ErrorBoundary, Show } from 'solid-js';
+import { type Component, createResource, createSignal, ErrorBoundary, onCleanup, Show } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, imageUrls, streamImport } from './api';
 import { uploadWithPreflight } from './preflightHash';
 import { createImportProgress } from './imageImportProgress';
 import { currentUser } from '../auth';
 import { t } from '../i18n/catalog';
+import { debounce } from '../shared/lazyLoad';
 import LazyImageGrid, { type LazyImageItem } from '../shared/LazyImageGrid';
 import Lightbox from '../shared/Lightbox';
 import ProjectNotFound from './ProjectNotFound';
 import SelectedFilesList from './SelectedFilesList';
-import LabelEditor from './LabelEditor';
+import ServerPathImportSection from './ServerPathImportSection';
 import * as styles from './ProjectImagesScreen.css';
 
 const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.tif,.tiff';
@@ -30,7 +31,7 @@ const ProjectImagesScreen: Component = () => {
   const reload = () => void refetch();
 
   const prog = createImportProgress();
-  const { busy, total, done, errs, summary, pct, setBusy, setSummary } = prog;
+  const { busy, phase, total, done, errs, summary, pct, setBusy, setSummary } = prog;
 
   const [boxId, setBoxId] = createSignal<string | null>(null);
   const [selectedFiles, setSelectedFiles] = createSignal<File[]>([]);
@@ -41,16 +42,29 @@ const ProjectImagesScreen: Component = () => {
   let fileInputRef!: HTMLInputElement;
 
   const boxImage = () => project()?.images.find((im) => im.id === boxId()) ?? null;
-  const onEvent = (ev: Parameters<typeof prog.onEvent>[0]) =>
+
+  // Newly-stored images appear PROGRESSIVELY instead of only after the whole upload
+  // finishes: debounce a refetch on each successfully-uploaded file so the grid grows
+  // while the upload is still running (a final refetch after doUpload still guarantees
+  // consistency even if the last debounced call was dropped).
+  const debouncedReload = debounce(reload, 500);
+  onCleanup(() => debouncedReload.cancel());
+
+  const onEvent = (ev: Parameters<typeof prog.onEvent>[0]) => {
     prog.onEvent(ev, () => alreadyPresent().size);
+    if (ev.type === 'file' && ev.ok) debouncedReload();
+  };
 
   const doUpload = async () => {
     const files = selectedFiles();
     if (!files.length || busy()) return;
-    setBusy(true); prog.reset();
+    setBusy(true); prog.start(files.length);
     try {
-      await uploadWithPreflight(id(), files, onEvent,
-        (found) => setAlreadyPresent(new Set(found)));
+      await uploadWithPreflight(id(), files, onEvent, (found) => {
+        setAlreadyPresent(new Set(found));
+        prog.fastForward(found.length);
+        if (found.length) debouncedReload();
+      });
       setSelectedFiles([]); setAlreadyPresent(new Set<File>());
       if (fileInputRef) fileInputRef.value = '';
       void refetch();
@@ -132,27 +146,20 @@ const ProjectImagesScreen: Component = () => {
             </button>
           </div>
 
-          {/* ── Label taxonomy editor (any project member — not admin-only) ── */}
-          <LabelEditor projectId={id()} labels={p().classes} groups={p().groups ?? []} compounds={p().compounds ?? []} onSaved={reload} />
-
           {/* ── Secondary (de-emphasized): server-path import for dev/admin ── */}
           <Show when={currentUser()?.is_admin}>
-            <div class={styles.serverPathSection} data-testid="serverPathSection">
-              <span class={styles.serverPathLabel}>{t('detail.images.serverPathSection')}</span>
-              <div class={styles.importRow}>
-                <input type="text" placeholder={t('detail.images.importPlaceholder')}
-                  value={path()} data-testid="import-path"
-                  onInput={(e) => setPath(e.currentTarget.value)} />
-                <button disabled={busy()} onClick={() => void doImport()}>
-                  {busy() ? t('detail.images.importing') : t('detail.images.import')}
-                </button>
-              </div>
-            </div>
+            <ServerPathImportSection path={path} setPath={setPath} busy={busy}
+              onImport={() => void doImport()} />
           </Show>
 
           {/* ── Shared progress UI (reused by both flows) ── */}
           <Show when={busy() || total() > 0}>
             <div class={styles.progressWrap} data-testid="import-progress">
+              <Show when={phase() === 'hashing'}>
+                <span class={styles.phaseLabel} data-testid="import-phase-label">
+                  {t('detail.images.hashing')}
+                </span>
+              </Show>
               <div class={styles.progressTrack}>
                 <div class={styles.progressBar} style={{ width: `${pct()}%` }}
                   data-testid="import-progress-bar" />

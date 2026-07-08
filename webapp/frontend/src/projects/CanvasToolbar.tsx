@@ -3,6 +3,7 @@ import type { Accessor } from 'solid-js';
 import type { Tool } from './canvasShapes';
 import type { Label } from './api';
 import { AnnotatorPicker } from './AnnotatorPicker';
+import { LabelPicker } from './LabelPicker';
 import { t } from '../i18n/catalog';
 import * as styles from './CanvasScreen.css';
 
@@ -98,18 +99,10 @@ export const CanvasToolbar: Component<Props> = (props) => (
       <button class={styles.tool} disabled={!props.canRedo()} onClick={props.onRedo}
         data-testid="redo-btn" title="Redo (Ctrl+Shift+Z / Ctrl+Y)">{t('canvas.redo')}</button>
       <span class={styles.sep} />
-      <label class={styles.classPick}>{t('canvas.class')}
-        <select onChange={(e) => props.setSelClass(e.currentTarget.value)} value={props.selClass()}>
-          <For each={props.classOptions()}>{(c) => <option value={c.name}>{c.name}</option>}</For>
-          {/* Lenient backend: keep an out-of-set selClass selectable as free text. */}
-          <Show when={props.selClass() && !props.classOptions().some((c) => c.name === props.selClass())}>
-            <option value={props.selClass()}>{props.selClass()}</option>
-          </Show>
-        </select>
-        <Show when={props.classOptions().find((c) => c.name === props.selClass())}>
-          {(c) => <span class={styles.swatch} style={{ background: c().color }} aria-hidden="true" />}
-        </Show>
-      </label>
+      <span class={styles.classPick}>{t('canvas.class')}
+        <LabelPicker value={props.selClass} onChange={props.setSelClass}
+          options={props.classOptions} ariaLabel={t('canvas.class')} testId="class-picker" />
+      </span>
     </Show>
     <button class={styles.tool} onClick={props.onFit}>{t('canvas.fit')}</button>
     <Show when={props.imgCount > 1}>

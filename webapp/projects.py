@@ -26,7 +26,7 @@ from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
 from . import db as _db
-from . import imaging, tiling
+from . import imaging, tile_cache, tiling
 from .auth import admin_required, login_required
 from . import taxonomy
 
@@ -1064,16 +1064,6 @@ def create_batch(project_id: str):
         if not images:
             return jsonify({'error': 'project has no images'}), 400
 
-        # Build candidate pool across all images; exclude positions already tiled (= used by
-        # a previous batch, since tiles are only created at batch time).
-        pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
-        for im in images:
-            bb = tiling.Rect(im['leaf_x'], im['leaf_y'], im['leaf_w'], im['leaf_h'])
-            img = imaging.get_image(im['image_hash'], im['image_ext'])
-            for t in tiling.surviving_tiles(
-                img, bb, proj['tile_size_px'], im['origin_y'], proj['black_threshold']
-            ):
-                pool[(im['id'], t.x, t.y)] = (im, t)
         used = {
             (r['project_image_id'], r['x'], r['y'])
             for r in con.execute(
@@ -1082,6 +1072,34 @@ def create_batch(project_id: str):
                    WHERE pi.project_id = ?''', (project_id,)
             ).fetchall()
         }
+
+        # Build candidate pool across images; exclude positions already tiled (= used by
+        # a previous batch, since tiles are only created at batch time).
+        #
+        # PERF (task #4 root cause): the per-image work here — imaging.get_image (decode)
+        # + tiling.surviving_tiles (full-resolution connected-component pixel analysis) —
+        # used to run for EVERY project image on EVERY batch-creation call, regardless of
+        # the requested `size` or whether tile_size/black_threshold had changed since the
+        # last call. tile_cache.get_or_compute_tiles memoizes that per (image, tile_size,
+        # threshold), so repeat batch creations become cheap in-memory lookups. On top of
+        # that, images are scanned in RANDOM order and scanning stops early once the
+        # unused-candidate pool comfortably exceeds what this call could ever need — so
+        # even a cold first-ever batch on a huge project only pays for a bounded sample of
+        # images, not a full-project sweep.
+        POOL_TARGET = max(size * 20, 200)
+        shuffled = list(images)
+        random.shuffle(shuffled)
+        pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
+        unused = 0
+        for im in shuffled:
+            for t in tile_cache.get_or_compute_tiles(im, proj['tile_size_px'], proj['black_threshold']):
+                key = (im['id'], t.x, t.y)
+                if key not in pool:
+                    pool[key] = (im, t)
+                    if key not in used:
+                        unused += 1
+            if unused >= POOL_TARGET:
+                break
         picked = tiling.sample_positions(list(pool.keys()), used, size)
         if not picked:
             return jsonify({'error': 'no unused tiles left to sample'}), 409

@@ -4,6 +4,10 @@
  *   I2. Dedup: re-uploading same files shows aggregate skipped count
  *   I3. Admin gate: server-path section hidden for non-admin, visible for admin
  *   I4. Invite logout: visiting an invite URL while logged in as admin clears the session
+ *   I5. Progress total reflects the SELECTED file count immediately (before hashing
+ *       resolves) and a distinct "hashing/preparing" phase is visible.
+ *   I6. A new+already-present mix still reaches 100% (skipped files fast-forward `done`).
+ *   I7. The grid populates progressively during upload, not only after it finishes.
  */
 import { test, expect } from '@playwright/test';
 import path from 'path';
@@ -164,4 +168,107 @@ test('I4: visiting invite URL while logged in as admin clears the session', asyn
   // Navigating to a protected page should redirect to /login.
   await page.goto('/');
   await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
+});
+
+// ── I5: total shows the SELECTED count immediately + a hashing phase ────────────
+
+test('I5: total is "N" immediately and a hashing/preparing phase is visible', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: 'ProgressPhase e2e' } });
+  const { id } = (await projResp.json()) as { id: string };
+  await page.goto(`/projects/${id}/images`);
+  await expect(page.getByTestId('upload-btn')).toBeVisible();
+
+  // Client-side hashing of 3 tiny fixture PNGs is near-instant; delay the probe
+  // round-trip so the transient "hashing" phase has time to be observed.
+  await page.route('**/images/probe', async (route) => {
+    await new Promise((r) => setTimeout(r, 600));
+    await route.continue();
+  });
+
+  await page.locator('[data-testid="import-files"]').setInputFiles(uniquePngs(FLAT_DIR, 'images-i5', 3));
+  await page.click('[data-testid="upload-btn"]');
+
+  // Total reflects the SELECTED count immediately — no "0/0" silent phase.
+  await expect(page.getByTestId('import-progress-label')).toContainText('/ 3', { timeout: 2000 });
+  await expect(page.getByTestId('import-phase-label')).toBeVisible({ timeout: 2000 });
+
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+});
+
+// ── I6: a new+already-present mix still reaches 100% ────────────────────────────
+
+test('I6: new+already-present mix reaches 100% and summarizes both', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: 'MixProgress e2e' } });
+  const { id } = (await projResp.json()) as { id: string };
+  await page.goto(`/projects/${id}/images`);
+  await expect(page.getByTestId('upload-btn')).toBeVisible();
+
+  const preExisting = uniquePngs(FLAT_DIR, 'images-i6-pre', 2);
+  await page.locator('[data-testid="import-files"]').setInputFiles(preExisting);
+  await page.click('[data-testid="upload-btn"]');
+  await expect(page.getByTestId('import-summary')).toContainText('Imported 2', { timeout: 15000 });
+
+  // Re-upload the 2 already-present files alongside 1 genuinely new one.
+  const fresh = uniquePngs(FLAT_DIR, 'images-i6-fresh', 1);
+  await page.locator('[data-testid="import-files"]').setInputFiles([...preExisting, ...fresh]);
+  await page.click('[data-testid="upload-btn"]');
+
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+  const summaryText = await page.getByTestId('import-summary').textContent();
+  expect(summaryText).toContain('Imported 1');
+  expect(summaryText).toContain('skipped 2');
+
+  // The bar reaches exactly 100% width (not stalled short by the dedup skips).
+  const width = await page.getByTestId('import-progress-bar')
+    .evaluate((el) => (el as HTMLElement).style.width);
+  expect(width).toBe('100%');
+});
+
+// ── I7: the grid populates progressively during upload ──────────────────────────
+
+test('I7: the grid refetches progressively during upload, not just once at the end', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: 'Progressive e2e' } });
+  const { id } = (await projResp.json()) as { id: string };
+  await page.goto(`/projects/${id}/images`);
+  await expect(page.getByTestId('upload-btn')).toBeVisible();
+
+  // Slow each upload POST down so successive per-file completions are spread out in
+  // wall-clock time — otherwise all 4 concurrent uploads would land in one lump.
+  await page.route('**/images/upload', async (route) => {
+    await new Promise((r) => setTimeout(r, 300));
+    await route.continue();
+  });
+
+  // Count GETs to the project-detail endpoint from AFTER the initial page load only.
+  let getCount = 0;
+  page.on('request', (req) => {
+    if (req.method() === 'GET' && req.url().endsWith(`/api/projects/${id}`)) getCount += 1;
+  });
+
+  // 8 files vs. a 4-concurrent upload pool -> multiple per-file completions spread
+  // over time, giving the debounced mid-upload reload real windows to fire.
+  await page.locator('[data-testid="import-files"]').setInputFiles(uniquePngs(FLAT_DIR, 'images-i7', 8));
+  await page.click('[data-testid="upload-btn"]');
+
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 20000 });
+  await expect(page.getByTestId('lazy-image-grid').locator('li')).toHaveCount(8, { timeout: 5000 });
+
+  // More than the ONE final refetch after completion — proves a reload also fired
+  // WHILE the upload was still running (the debounced mid-upload reload).
+  await expect.poll(() => getCount, { timeout: 3000 }).toBeGreaterThan(1);
+});
+
+// ── I8: the label editor lives on the hub, not the Images screen ────────────────
+
+test('I8: label editor is reachable from the project hub and absent from the Images screen', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: 'LabelHub e2e' } });
+  const { id } = (await projResp.json()) as { id: string };
+
+  await page.goto(`/projects/${id}`);
+  await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('label-edit')).toBeVisible();
+
+  await page.goto(`/projects/${id}/images`);
+  await expect(page.getByTestId('upload-btn')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('label-editor')).toHaveCount(0);
 });

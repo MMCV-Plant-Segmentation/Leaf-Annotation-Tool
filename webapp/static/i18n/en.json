@@ -202,6 +202,7 @@
   "detail.images.filesMore": "+ {n} more",
   "detail.images.upload": "Upload",
   "detail.images.uploading": "Uploading…",
+  "detail.images.hashing": "Preparing files (hashing to skip duplicates)…",
   "detail.images.serverPathSection": "Import from server path (dev/admin only)",
   "detail.images.importPlaceholder": "folder or file path (recursive)",
   "detail.images.import": "Import",
