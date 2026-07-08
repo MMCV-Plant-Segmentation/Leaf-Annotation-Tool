@@ -12,7 +12,7 @@
  * actual canvas interaction (BUGS #15: admin's canvas is a read-only viewer with no
  * class picker, so relabelling can only be exercised as a genuine annotator).
  */
-import { test, expect, type Page, type Browser } from '@playwright/test';
+import { test, expect, type Page, type Browser, type Locator } from '@playwright/test';
 
 const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
 const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
@@ -91,13 +91,24 @@ async function setupRelabelCanvas(page: Page, browser: Browser):
   return { p, okColor, dangerColor };
 }
 
+// The class picker is a custom Kobalte Select (colour-coded rows — a native <select>
+// can't reliably colour its own <option> chrome), not a native <select>. Its CURRENT
+// value shows as text in the trigger button; PICKING opens it (click) then clicks the
+// matching option (role="option", from Kobalte's Listbox — full keyboard/ARIA support).
+const classPickerValue = (toolbar: Locator) => toolbar.getByTestId('class-picker');
+
+async function pickClass(p: Page, toolbar: Locator, name: string) {
+  await toolbar.getByTestId('class-picker').click();
+  await p.getByRole('option', { name }).click();
+}
+
 test('select a painted lesion, relabel via the paint drop-down, recolor, restore on deselect', async ({ page, browser }) => {
   const { p, okColor, dangerColor } = await setupRelabelCanvas(page, browser);
   const toolbar = p.getByTestId('canvas-toolbar');
-  const classSelect = toolbar.locator('select');
+  const classSelect = classPickerValue(toolbar);
 
   // Paint a stroke labelled 'ok' (the drop-down defaults to the first compound).
-  await expect(classSelect).toHaveValue('ok', { timeout: 5000 });
+  await expect(classSelect).toContainText('ok', { timeout: 5000 });
   await p.getByTestId('tool-brush').click();
   p.on('dialog', (d) => void d.dismiss());
   const canvasSvg = p.locator('svg').first();
@@ -119,10 +130,10 @@ test('select a painted lesion, relabel via the paint drop-down, recolor, restore
   await p.mouse.click(cx - 15, cy - 15);
 
   // Drop-down auto-syncs to the selected lesion's current label ('ok').
-  await expect(classSelect).toHaveValue('ok');
+  await expect(classSelect).toContainText('ok');
 
   // Pick 'danger' in the SAME drop-down → relabels + recolors the selected lesion.
-  await classSelect.selectOption('danger');
+  await pickClass(p, toolbar, 'danger');
   await expect(lesion).toHaveAttribute('stroke', new RegExp(dangerColor, 'i'));
 
   // Persists across a reload.
@@ -133,5 +144,5 @@ test('select a painted lesion, relabel via the paint drop-down, recolor, restore
   // Deselect (Escape) → drop-down restores to the last MANUALLY-chosen paint label
   // ('ok'), not left showing the relabel pick.
   await p.keyboard.press('Escape');
-  await expect(classSelect).toHaveValue('ok');
+  await expect(classSelect).toContainText('ok');
 });

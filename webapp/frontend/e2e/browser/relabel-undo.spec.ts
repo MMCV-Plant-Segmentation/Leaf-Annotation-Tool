@@ -11,7 +11,7 @@
  * the UI/API, then a fresh REAL (non-admin) annotator does the canvas interaction (BUGS
  * #15: admin's canvas is a read-only viewer with no class picker).
  */
-import { test, expect, type Page, type Browser } from '@playwright/test';
+import { test, expect, type Page, type Browser, type Locator } from '@playwright/test';
 
 const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
 const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
@@ -119,6 +119,15 @@ function tileAnchors(tiles: { x: number; y: number; w: number; h: number }[]): [
   return [centre(tiles[best[0]]), centre(tiles[best[1]])];
 }
 
+// The class picker is a custom Kobalte Select (colour-coded rows — a native <select>
+// can't reliably colour its own <option> chrome), not a native <select>. Its CURRENT
+// value shows as text in the trigger button; PICKING opens it (click) then clicks the
+// matching option (role="option", from Kobalte's Listbox — full keyboard/ARIA support).
+async function pickClass(p: Page, toolbar: Locator, name: string) {
+  await toolbar.getByTestId('class-picker').click();
+  await p.getByRole('option', { name }).click();
+}
+
 /** A short brush drag starting at (cx - 15, cy - 15), producing one painted lesion.
  * Returns the drag's START point — guaranteed to lie ON the stroke's own path (unlike
  * some arbitrary point near it), so it's the one safe coordinate to click for selecting
@@ -147,10 +156,10 @@ function imgToScreen(box: { x: number; y: number; width: number; height: number 
 test('relabel undo/redo via Ctrl+Z/Ctrl+Shift+Z, interleaved with a paint undo, persists', async ({ page, browser }) => {
   const { p, okColor, dangerColor, tiles } = await setupCanvas(page, browser);
   const toolbar = p.getByTestId('canvas-toolbar');
-  const classSelect = toolbar.locator('select');
+  const classSelect = toolbar.getByTestId('class-picker');
   p.on('dialog', (d) => void d.dismiss());
 
-  await expect(classSelect).toHaveValue('ok', { timeout: 5000 });
+  await expect(classSelect).toContainText('ok', { timeout: 5000 });
   await p.getByTestId('tool-brush').click();
   // A generously wide brush so a selection click anywhere near the drag path is
   // comfortably inside the mask — the default (~10% of a tile's diagonal) left almost
@@ -185,24 +194,24 @@ test('relabel undo/redo via Ctrl+Z/Ctrl+Shift+Z, interleaved with a paint undo, 
   // stroke, which made this click intermittently miss the lesion).
   await p.getByTestId('tool-select').click();
   await p.mouse.click(startAx, startAy);
-  await expect(classSelect).toHaveValue('ok');
-  await classSelect.selectOption('danger');
+  await expect(classSelect).toContainText('ok');
+  await pickClass(p, toolbar, 'danger');
   await expect(lesionA).toHaveAttribute('stroke', new RegExp(dangerColor, 'i'));
 
   // Ctrl+Z reverts the relabel: colour AND the (still-selected) drop-down go back to 'ok'.
   await p.keyboard.press('Control+z');
   await expect(lesionA).toHaveAttribute('stroke', new RegExp(okColor, 'i'));
-  await expect(classSelect).toHaveValue('ok');
+  await expect(classSelect).toContainText('ok');
 
   // Ctrl+Shift+Z re-applies it.
   await p.keyboard.press('Control+Shift+z');
   await expect(lesionA).toHaveAttribute('stroke', new RegExp(dangerColor, 'i'));
-  await expect(classSelect).toHaveValue('danger');
+  await expect(classSelect).toContainText('danger');
 
   // Deselect (restores the drop-down to the remembered paint label 'ok'), then paint a
   // SECOND lesion — pushing a `draw` history entry ON TOP of the relabel entry.
   await p.keyboard.press('Escape');
-  await expect(classSelect).toHaveValue('ok');
+  await expect(classSelect).toContainText('ok');
   await p.getByTestId('tool-brush').click();
   await paintStroke(p, bx, by);
   await expect(p.locator('svg path[stroke]')).toHaveCount(2, { timeout: 5000 });

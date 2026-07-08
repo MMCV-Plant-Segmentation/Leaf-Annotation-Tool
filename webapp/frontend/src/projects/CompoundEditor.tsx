@@ -66,8 +66,7 @@ export const CompoundEditor: Component<Props> = (props) => {
       <For each={props.compounds}>
         {(c) => (
           <div class={styles.row} data-testid="compound-row">
-            <span class={styles.color} style={{ background: c.color }} aria-hidden="true" />
-            <span class={styles.compoundName}>{c.name}</span>
+            <span class={styles.compoundName} style={{ color: c.color }}>{c.name}</span>
             <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
               title={t('detail.labels.remove')} data-testid="compound-remove"
               onClick={() => remove(c.id, c.name)}>✕</button>
