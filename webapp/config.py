@@ -33,6 +33,15 @@ class AppConfig:
     """Orthogonal knobs, sensible defaults. See docs/plans/Plan — Entrypoint +
     environment consolidation.md for the rationale.
 
+    Strictness policy (Christian, 2026-07-08 — "strict is good unless it's a setting we want to
+    hide"): the ONE key whose silent default would be dangerous is `secret_key`, and it is already
+    strict — create_app() raises if it's unset (no baked-in session secret). `data_dir` is the
+    deliberately-hidden setting (safe local-XDG default, kept OUT of the example config so no one
+    points SQLite at NFS). The remaining defaults are either dev/gate conveniences (host/port) or
+    genuinely optional (admin_password, backup_dir/backup_status_url = None means "not configured").
+    So "make it strict" is already satisfied where it matters; the harmless defaults stay — forcing
+    every test/tool AppConfig(...) to spell out host/port would be churn with no safety gain.
+
     data_dir        Where app.db + images/jsons/i18n live. Must stay on local disk.
     host / port     Bind address for the dev/gate Flask server (Granian owns its own
                     socket in prod; still recorded here for uniformity / logging).
