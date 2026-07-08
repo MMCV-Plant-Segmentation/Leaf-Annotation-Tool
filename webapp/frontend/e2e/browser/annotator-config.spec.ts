@@ -18,6 +18,7 @@
  */
 
 import { test, expect, type Page, type Browser } from '@playwright/test';
+import { uniquePngs } from './uploadFixtures';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -225,11 +226,8 @@ test('upload via file picker shows per-file progress and final count', async ({ 
   const pid = await createProject(page, `Upload ${Date.now()}`);
   await page.goto(`/projects/${pid}/images`);
 
-  const files = [
-    `${FIXTURE_FLAT}/upload0.png`,
-    `${FIXTURE_FLAT}/upload1.png`,
-    `${FIXTURE_FLAT}/upload2.png`,
-  ];
+  // Bytes unique to THIS test — global dedup would skip images another test already uploaded.
+  const files = uniquePngs(FIXTURE_FLAT, 'annotcfg-upload', 3);
 
   await page.getByTestId('import-files').setInputFiles(files);
   await page.getByTestId('upload-btn').click();
@@ -245,10 +243,8 @@ test('re-uploading same files skips them (dedup)', async ({ page }) => {
   const pid = await createProject(page, `Dedup ${Date.now()}`);
   await page.goto(`/projects/${pid}/images`);
 
-  const files = [
-    `${FIXTURE_FLAT}/upload0.png`,
-    `${FIXTURE_FLAT}/upload1.png`,
-  ];
+  // Bytes unique to THIS test, reused so the second upload is the dedup path.
+  const files = uniquePngs(FIXTURE_FLAT, 'annotcfg-dedup', 2);
 
   // First upload
   await page.getByTestId('import-files').setInputFiles(files);

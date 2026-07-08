@@ -7,13 +7,10 @@
  */
 import { test, expect } from '@playwright/test';
 import path from 'path';
+import { uniquePngs } from './uploadFixtures';
 
 const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
-const FLAT_IMAGES = [
-  path.join(FIXTURE_DIR, 'flat-images', 'upload0.png'),
-  path.join(FIXTURE_DIR, 'flat-images', 'upload1.png'),
-  path.join(FIXTURE_DIR, 'flat-images', 'upload2.png'),
-];
+const FLAT_DIR = path.join(FIXTURE_DIR, 'flat-images');
 
 // ── I1: Parallel per-file upload (≤4 concurrent) ─────────────────────────────
 
@@ -34,7 +31,8 @@ test('I1: parallel upload — 3 files → 3 POSTs (one per file) + aggregate imp
     }
   });
 
-  await page.locator('[data-testid="import-files"]').setInputFiles(FLAT_IMAGES);
+  // Bytes unique to THIS test — global dedup would otherwise skip images another test uploaded.
+  await page.locator('[data-testid="import-files"]').setInputFiles(uniquePngs(FLAT_DIR, 'images-i1', 3));
   await page.click('[data-testid="upload-btn"]');
 
   // Progress label and summary must appear.
@@ -58,14 +56,17 @@ test('I2: dedup — re-uploading same files shows skipped=3', async ({ page }) =
   await page.goto(`/projects/${id}/images`);
   await expect(page.getByTestId('upload-btn')).toBeVisible();
 
+  // Bytes unique to THIS test, reused across both uploads so the SECOND is the dedup path.
+  const files = uniquePngs(FLAT_DIR, 'images-i2', 3);
+
   // First upload — all imported.
-  await page.locator('[data-testid="import-files"]').setInputFiles(FLAT_IMAGES);
+  await page.locator('[data-testid="import-files"]').setInputFiles(files);
   await page.click('[data-testid="upload-btn"]');
   await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
   await expect(page.getByTestId('import-summary')).toContainText('Imported 3');
 
   // Second upload — all skipped (same bytes).
-  await page.locator('[data-testid="import-files"]').setInputFiles(FLAT_IMAGES);
+  await page.locator('[data-testid="import-files"]').setInputFiles(files);
   await page.click('[data-testid="upload-btn"]');
   await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
   const summary2 = await page.getByTestId('import-summary').textContent();
