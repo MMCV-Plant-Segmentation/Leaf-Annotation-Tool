@@ -1,0 +1,20 @@
+# glm-harness config for jailed subagent dispatches TARGETING this repo. `dispatch.sh` auto-loads it
+# via --config. All harness config for a dispatch lives here or in CLI flags — there are no scope
+# files. (This is the leaf repo's config; it names no secrets, so it's committed — unlike the
+# harness's OWN glm-harness.toml, which is gitignored because it may name a private model/endpoint.)
+
+# The subagent_type this jail confines: cc_hook_runtime confines ONLY tool calls whose PreToolUse
+# `agent_type` matches this, so a host `harness-maintainer` (or any other type) runs unconfined even
+# while a jail is up. Required — a dispatch with no agent_type hard-fails rather than confine no one.
+agent_type = "implementer"
+
+# Managed custom tool: the jailed implementer SELF-GATES by running `gate` (its own process group,
+# timeout, guaranteed server/browser cleanup via DockerJail.run_custom_tool) instead of running
+# uv/npm/node/scripts/gate.py directly — which it can't in-jail (those toolchains are owned by the
+# runner uid, not the agent uid).
+[[tools]]
+name = "gate"
+description = "Run the full project gate (backend tests + tsc/lint/build + Playwright) with a managed server/browser lifecycle. Use THIS to self-check — never start a server or run uv/npm/node/scripts/gate.py yourself."
+command = "uv run python scripts/gate.py"
+cwd = "."
+timeout_s = 1800
