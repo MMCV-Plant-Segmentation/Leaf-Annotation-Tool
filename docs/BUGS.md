@@ -211,3 +211,12 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
 30. **Controls UX: replace the bottom tooltip bar with a "show controls" popup.** Instead of covering the
     page bottom with tooltips, a small "click here to see controls" affordance opening a closable, more
     vertical popup with the same content. UX proposal.
+
+## Test flakiness (2026-07-09)
+31. **Freehand-paint Playwright tests flake under load.** A jailed Sonnet running the full gate 3× saw
+    `370/371` each time but a *different* single test failing each run — always in the mouse-drag-
+    freehand-paint family (`relabel.spec.ts`'s paint/relabel, `relabel-undo.spec.ts`'s undo/redo). Did
+    NOT reproduce on the host (clean `371/0`), so it's simulated-pointer-event timing under a loaded
+    box, not a product regression. Revisit: stabilize the paint gesture in these specs (settle/wait on
+    the committed stroke rather than a fixed drag), or add a retry only for the paint-gesture step.
+    Surfaced during the shared-canvas-viewer refactor (`b904fa5`); merge-mode's own spec was stable.
