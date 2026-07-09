@@ -524,6 +524,7 @@ def get_project(project_id: str):
             b['tileCount'] = con.execute(
                 'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (b['id'],)
             ).fetchone()['c']
+            b['mergeReady'] = _merge_ready(con, b['id'])
         out['batches'] = batches
         out['progress'] = _progress(con, project_id, batches)
         return jsonify(out)
@@ -1146,6 +1147,22 @@ def create_batch(project_id: str):
 
 # ── batch / canvas read ───────────────────────────────────────────────────────
 
+def _merge_ready(con, batch_id: str) -> bool:
+    """MERGE Phase 1 gate: a batch is merge-ready when EVERY annotator_tile for it
+    (all its batch_tiles × all its roster annotators) has state='completed'. A batch
+    with no annotator_tile rows at all (no tiles or no roster) is never ready."""
+    row = con.execute(
+        '''SELECT COUNT(*) total,
+                  SUM(CASE WHEN at.state = 'completed' THEN 1 ELSE 0 END) done
+           FROM annotator_tile at
+           JOIN batch_tile bt ON bt.id = at.batch_tile_id
+           WHERE bt.batch_id = ?''', (batch_id,)
+    ).fetchone()
+    total = row['total'] or 0
+    done = row['done'] or 0
+    return total > 0 and total == done
+
+
 @projects_bp.get('/api/batches/<batch_id>')
 @login_required
 def get_batch(batch_id: str):
@@ -1202,9 +1219,86 @@ def get_batch(batch_id: str):
             images.append(entry)
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
-            'status': batch['status'], 'classes': classes,
-            'groups': groups, 'compounds': compounds, 'images': images,
+            'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
+            'classes': classes, 'groups': groups, 'compounds': compounds, 'images': images,
         })
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode (Phase 1: gate + blind pooled read) ────────────────────────────
+
+@projects_bp.post('/api/batches/<batch_id>/enter-merge')
+@login_required
+def enter_merge(batch_id: str):
+    """Advance a merge-ready batch to status='merge'. Idempotent when already in merge;
+    409 when not yet merge-ready (every annotator_tile must be 'completed' — see
+    _merge_ready)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if batch['status'] == 'merge':
+            return jsonify({'ok': True, 'status': 'merge'})
+        if not _merge_ready(con, batch_id):
+            return jsonify({'error': 'batch is not merge-ready — every tile must be '
+                                      'completed by every annotator'}), 409
+        con.execute("UPDATE batch SET status = 'merge' WHERE id = ?", (batch_id,))
+        con.commit()
+        return jsonify({'ok': True, 'status': 'merge'})
+    finally:
+        _db.close_db(con)
+
+
+def _pooled_annotations(con, image_id: str, active_tile_ids: list[str]) -> list:
+    """Every LIVE annotation from EVERY annotator on this image that intersects an
+    active tile — the merge-mode pooled read. Unlike _visible_annotations, this is
+    cross-annotator BY DESIGN (that's the whole point of merge mode); blindness (all
+    marks render identically, one colour, outline-only) is enforced client-side by
+    MergeCanvasScreen, never by hiding whose mark is whose here — the merger is a
+    project member and the data isn't secret, just visually anonymised."""
+    if not active_tile_ids:
+        return []
+    qmarks = ','.join('?' * len(active_tile_ids))
+    rows = con.execute(
+        f'''SELECT DISTINCT a.* FROM annotation a
+            JOIN annotation_tile atl ON atl.annotation_id = a.id
+            WHERE a.project_image_id = ? AND a.deleted_at IS NULL
+              AND atl.tile_id IN ({qmarks})''',
+        (image_id, *active_tile_ids),
+    ).fetchall()
+    return [_annotation_out(r) for r in rows]
+
+
+@projects_bp.get('/api/batches/<batch_id>/merge-annotations')
+@login_required
+def batch_merge_annotations(batch_id: str):
+    """All non-deleted annotations from ALL annotators that intersect this batch's
+    tiles — the pooled, blind read MergeCanvasScreen renders (Phase 1: read-only)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT t.id tile_id, t.project_image_id FROM batch_tile bt
+               JOIN tile t ON t.id = bt.tile_id
+               WHERE bt.batch_id = ?''', (batch_id,)
+        ).fetchall()
+        tiles_by_image: dict[str, list[str]] = {}
+        for r in rows:
+            tiles_by_image.setdefault(r['project_image_id'], []).append(r['tile_id'])
+        out = []
+        for image_id, tile_ids in tiles_by_image.items():
+            out.extend(_pooled_annotations(con, image_id, tile_ids))
+        return jsonify({'annotations': out})
     finally:
         _db.close_db(con)
 

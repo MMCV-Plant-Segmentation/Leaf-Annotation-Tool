@@ -92,15 +92,19 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string }> = (props) => {
+// MERGE Phase 1: `blind` renders EVERY mark identically — one caller-supplied colour,
+// outline-only, no fill — so a merger can't tell whose mark is whose (see
+// MergeCanvasScreen.tsx). Everything else about the shape (which SVG primitive, its
+// geometry) is unchanged; only the paint changes.
+export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string; blind?: boolean }> = (props) => {
   const color = () => props.color ?? '#2563eb';
-  const fill = () => withAlpha(color(), 0.55);
+  const fill = () => props.blind ? 'none' : withAlpha(color(), 0.55);
   return (
     <Show when={props.ann.kind === 'stroke'} fallback={
       <Show when={props.ann.kind === 'point'} fallback={
         <Show when={props.ann.kind === 'line'} fallback={
           <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill={withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
+            fill={props.blind ? 'none' : withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
             vector-effect="non-scaling-stroke" />
         }>
           <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
@@ -109,7 +113,8 @@ export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string 
         </Show>
       }>
         <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
-          fill={color()} vector-effect="non-scaling-stroke" />
+          fill={props.blind ? 'none' : color()} stroke={props.blind ? color() : undefined}
+          stroke-width={props.blind ? '2' : undefined} vector-effect="non-scaling-stroke" />
       </Show>
     }>
       <Show when={props.ann.rings.length > 0}>
