@@ -1,0 +1,199 @@
+/**
+ * MERGE Phase 1 — batch-completion gate + the read-only blind pooled viewer.
+ *
+ * Covers (from the task spec):
+ *  (a) The Merge button is ABSENT on the batches list until every annotator has
+ *      completed every tile in the batch, then appears.
+ *  (b) Entering merge renders pooled marks from >1 annotator, all one colour
+ *      and outline-only (blind — fill="none").
+ *  (c) Tile-by-tile navigation works (the counter + prev/next buttons).
+ *  (d) The merge view is read-only (no drawing toolbar, no paint gesture effect).
+ *
+ * Two fresh (non-admin) annotators each paint one stroke and mark every one of
+ * their assigned tiles complete — mirrors annotator-config.spec.ts / relabel.spec.ts's
+ * setup pattern (admin creates the project/roster/batch, a genuine annotator identity
+ * does the canvas interaction).
+ */
+import { test, expect, type Page, type Browser } from '@playwright/test';
+
+const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
+const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
+
+async function createProject(page: Page, name: string): Promise<string> {
+  await page.goto('/projects');
+  await page.fill('form input[type="text"]', name);
+  await page.click('button:text("Create project")');
+  await expect(page).toHaveURL(/\/projects\/[a-f0-9-]{36}/);
+  return page.url().split('/projects/')[1].split('?')[0];
+}
+
+async function importImages(page: Page, pid: string) {
+  await page.goto(`/projects/${pid}/images`);
+  await page.fill('[data-testid="import-path"]', FIXTURE_NESTED);
+  await page.click('button:text("Import")');
+  await expect(page.getByTestId('import-summary')).toBeVisible({ timeout: 15000 });
+}
+
+async function confirmTiling(page: Page, pid: string) {
+  await page.goto(`/projects/${pid}/tiling`);
+  await page.getByRole('button', { name: /save.*default/i }).click();
+  await expect(page.getByRole('button', { name: /save.*default/i })).toBeEnabled({ timeout: 5000 });
+}
+
+async function loginAsFreshUser(browser: Browser, username: string, invite: string): Promise<Page> {
+  const pw = 'TestPass99!';
+  const anonCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const anonPage = await anonCtx.newPage();
+  const acceptResp = await anonPage.request.post(`/api/invite/${invite}`, { data: { password: pw, confirm: pw } });
+  expect(acceptResp.ok()).toBeTruthy();
+  await anonCtx.close();
+
+  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const p = await ctx.newPage();
+  await p.goto('/login');
+  await p.fill('#login-username', username);
+  await p.fill('#login-password', pw);
+  await p.click('button[type=submit]');
+  await expect(p.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
+  return p;
+}
+
+/** Paint one brush stroke near the canvas centre (± offsetX so two annotators' strokes
+ * land at visibly distinct spots on the same tile). */
+type Tile = { x: number; y: number; w: number; h: number };
+
+/** Seed a stroke via the API placed INSIDE `tile` (quadrant 1 or 3, so two annotators' marks are
+ * distinguishable) — this reliably creates the `annotation_tile` link the pooled merge read
+ * requires, unlike screen-space painting where the image-coordinate geometry may miss the tile. */
+async function seedStroke(p: Page, pid: string, imageId: string, tile: Tile, annotator: string, quad: 1 | 3) {
+  const px = tile.x + Math.floor(quad === 1 ? tile.w / 4 : (3 * tile.w) / 4);
+  const py = tile.y + Math.floor(quad === 1 ? tile.h / 4 : (3 * tile.h) / 4);
+  const r = await p.request.post(`/api/projects/${pid}/annotations`, {
+    data: {
+      imageId, annotator, kind: 'stroke', points: [[px, py], [px + 15, py + 15]],
+      label: 'lesion', strokeWidth: 10, viewport: { x: tile.x, y: tile.y, w: tile.w, h: tile.h },
+    },
+  });
+  expect(r.status()).toBe(201);
+}
+
+/** Mark every tile-complete circle done on the current image, then walk forward
+ * through any further images (batch size=2 may span 1 or 2 images) doing the same. */
+async function completeEveryTile(p: Page) {
+  for (;;) {
+    const circles = p.locator('[data-testid="tile-complete"]');
+    const n = await circles.count();
+    for (let i = 0; i < n; i++) {
+      const c = circles.nth(i);
+      if ((await c.getAttribute('fill')) !== '#16a34a') {
+        await c.dispatchEvent('pointerdown');
+        await expect(c).toHaveAttribute('fill', '#16a34a', { timeout: 3000 });
+      }
+    }
+    const nextBtn = p.getByRole('button', { name: /img ›/i });
+    if ((await nextBtn.count()) === 0 || (await nextBtn.isDisabled())) break;
+    await nextBtn.click();
+  }
+}
+
+test('merge gate button + blind pooled read-only viewer @full', async ({ page, browser }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+
+  // ── Setup: project, 2-annotator roster, images, tiling, a 2-tile batch ──────
+  const pid = await createProject(page, `MergeMode ${Date.now()}`);
+
+  const uA = `mergeA-${Date.now()}`;
+  const respA = await page.request.post('/api/users', { data: { username: uA } });
+  const userA = await respA.json() as { id: number; invite: { token: string } };
+  await page.request.post(`/api/projects/${pid}/annotators`, { data: { user_id: userA.id } });
+
+  const uB = `mergeB-${Date.now()}`;
+  const respB = await page.request.post('/api/users', { data: { username: uB } });
+  const userB = await respB.json() as { id: number; invite: { token: string } };
+  await page.request.post(`/api/projects/${pid}/annotators`, { data: { user_id: userB.id } });
+
+  await importImages(page, pid);
+  await confirmTiling(page, pid);
+
+  await page.goto(`/projects/${pid}/batches`);
+  await page.locator('input[type="number"]').fill('2');
+  await page.getByRole('button', { name: /create batch/i }).click();
+  await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
+
+  // ── (a) Merge button ABSENT before any tile is completed ────────────────────
+  await expect(page.getByTestId('enter-merge-btn')).toHaveCount(0);
+  await expect(page.getByTestId('continue-merge-btn')).toHaveCount(0);
+
+  await page.getByRole('button', { name: /open canvas/i }).first().click();
+  await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}$/, { timeout: 5000 });
+  const canvasUrl = page.url();
+
+  // ── Annotator A seeds a mark (in tile 0) + completes every assigned tile ─────
+  const batchId = canvasUrl.match(/batches\/([a-f0-9-]{36})/)![1];
+  const pA = await loginAsFreshUser(browser, uA, userA.invite.token);
+  await pA.goto(canvasUrl);
+  await expect(pA.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+  const cvA = await pA.request.get(`/api/batches/${batchId}?annotator=${uA}`).then((r) => r.json());
+  const img0 = cvA.images[0] as { imageId: string; tiles: Tile[] };
+  const tile0 = img0.tiles[0];
+  await seedStroke(pA, pid, img0.imageId, tile0, uA, 1);
+  await completeEveryTile(pA);
+
+  // ── Merge button still absent: B has not completed anything yet ─────────────
+  await page.goto(`/projects/${pid}/batches`);
+  await expect(page.getByTestId('enter-merge-btn')).toHaveCount(0);
+
+  // ── Annotator B seeds a distinguishably-placed mark (same tile 0) + completes ─
+  const pB = await loginAsFreshUser(browser, uB, userB.invite.token);
+  await pB.goto(canvasUrl);
+  await expect(pB.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+  await seedStroke(pB, pid, img0.imageId, tile0, uB, 3);
+  await completeEveryTile(pB);
+
+  // ── (a) Merge button now VISIBLE — every annotator_tile is completed ────────
+  await page.goto(`/projects/${pid}/batches`);
+  const mergeBtn = page.getByTestId('enter-merge-btn');
+  await expect(mergeBtn).toBeVisible({ timeout: 5000 });
+  await mergeBtn.click();
+  await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}\/merge$/, { timeout: 5000 });
+
+  // ── (b) Pooled marks from BOTH annotators, one colour, outline-only (blind) ─
+  await expect(page.getByTestId('merge-toolbar')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('merge-blind-badge')).toBeVisible();
+  const marks = page.locator('svg path[stroke]');
+  await expect(marks).toHaveCount(2, { timeout: 10000 });
+  for (const i of [0, 1]) {
+    await expect(marks.nth(i)).toHaveAttribute('stroke', '#0ea5e9');
+    await expect(marks.nth(i)).toHaveAttribute('fill', 'none');
+  }
+
+  // ── (c) Tile-by-tile navigation ──────────────────────────────────────────────
+  const counter = page.getByTestId('merge-tile-counter');
+  await expect(counter).toHaveText('tile 1 / 2');
+  await expect(page.getByTestId('merge-tile-prev')).toBeDisabled();
+  await expect(page.getByTestId('merge-tile-next')).toBeEnabled();
+
+  await page.getByTestId('merge-tile-next').click();
+  await expect(counter).toHaveText('tile 2 / 2');
+  await expect(page.getByTestId('merge-tile-next')).toBeDisabled();
+  await expect(page.getByTestId('merge-tile-prev')).toBeEnabled();
+
+  await page.getByTestId('merge-tile-prev').click();
+  await expect(counter).toHaveText('tile 1 / 2');
+
+  // ── (d) Read-only: no drawing toolbar, and a drag gesture creates no new mark ─
+  await expect(page.getByTestId('tool-brush')).toHaveCount(0);
+  await expect(page.getByTestId('tool-eraser')).toHaveCount(0);
+  await expect(page.getByTestId('tool-select')).toHaveCount(0);
+
+  const svg = page.locator('svg').first();
+  const box = await svg.boundingBox();
+  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
+  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 40, cy + 40);
+  await page.mouse.up();
+  // Still exactly the 2 pooled marks — the drag only pans the (read-only) viewport.
+  await expect(page.locator('svg path[stroke]')).toHaveCount(2);
+});
