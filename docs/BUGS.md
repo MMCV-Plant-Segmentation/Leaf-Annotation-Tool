@@ -239,3 +239,22 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
       mechanism to **cycle through the marks under the cursor** (e.g. repeated click / modifier-click
       steps down the stack) to make a precise selection. 2a's click just takes the topmost; this
       cycling is the real refinement to build here.
+
+## Process / infra (2026-07-09)
+33. **Log server-side errors durably for after-the-fact investigation.** The `/overview` 500 vanished
+    into the void — we root-caused it by reading code + the backup dir, but a persisted error log would
+    have pointed straight at the `FileNotFoundError` in `image_overview`. Add an app-level exception
+    handler / logging config that records uncaught exceptions + 5xx with traceback + request context
+    (endpoint, method, user, args) to a DURABLE sink — a rotating file under the data dir (survives
+    container restarts) and/or a proper log driver, not just ephemeral stdout. Pairs with the
+    `/overview` 500→404 hardening (a missing blob should 404, not log as a 500 — only genuine errors
+    log). Keep it out of the response body (no stack traces to clients).
+34. **Gate merges to `main`: only from `test/integration`, and require a version bump.** prod deploys
+    from `main` (or a `main`-derived tag), so `main` must only ever receive code that passed through
+    `test/integration` testing, and every such merge must bump the version (`webapp/version.py` / the
+    versioning system) so releases are traceable. This is exactly the "deploy from a validated release
+    line" discipline the 2026-07-09 prod-deploy discussion needed. Enforcement notes: git can't natively
+    restrict a merge's SOURCE, so this needs a check, not just a convention — e.g. a CI/pre-merge script
+    that fails if `main`'s new commit isn't a merge from `test/integration` OR if `version.py` is
+    unchanged vs the previous `main`; pair with GitHub branch protection (require PR + the check) once
+    there's CI. (Feature branches → `test/integration` → validated → `main` + bump → tag → deploy.)
