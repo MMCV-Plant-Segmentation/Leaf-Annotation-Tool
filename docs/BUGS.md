@@ -258,3 +258,7 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     that fails if `main`'s new commit isn't a merge from `test/integration` OR if `version.py` is
     unchanged vs the previous `main`; pair with GitHub branch protection (require PR + the check) once
     there's CI. (Feature branches → `test/integration` → validated → `main` + bump → tag → deploy.)
+    Locally this is a **pre-push hook** — same pattern as the orchestrator repo's own pre-push guard
+    (block a `main` push that isn't from `test/integration` or lacks a version bump). Local hooks are
+    bypassable (`--no-verify`) + per-clone, so treat the hook as the ergonomic guard and CI/branch-
+    protection as the real enforcement.
