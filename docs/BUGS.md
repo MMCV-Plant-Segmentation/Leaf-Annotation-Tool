@@ -222,12 +222,20 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     Surfaced during the shared-canvas-viewer refactor (`b904fa5`); merge-mode's own spec was stable.
 
 ## Merge tool refinements (2026-07-09)
-32. **The merge grouping "brush" should be a LASSO (select-by-enclosure).** Christian's observation:
-    grouping marks into a candidate object is really a lasso — you draw a closed gesture *around* the
-    marks you want, and everything ENCLOSED (point-in-polygon) is selected. Phase 2a ships it as a
+32. **The merge grouping "brush" should be a LASSO (select-by-enclosure), + cycle through stacked marks.**
+    Christian's observation: grouping marks into a candidate object is really a lasso — you draw a closed
+    gesture *around* the marks you want, and everything ENCLOSED is selected. Phase 2a ships it as a
     paint-over brush (marks whose area the stroke *touches* join the CO); refine it to a proper lasso
-    (enclosure test) — a more natural + precise "circle these" gesture. Pure FE-interaction change: the
-    CO data model (a CO = its member marks) is identical, so it's an isolated swap of the grouping
-    gesture. Open question when we do it: does the lasso REPLACE the grouping brush, or do we keep both
-    (brush = fast rough touch, lasso = precise enclose)? Leave the rectangular select (on the select
-    tool) as-is regardless.
+    (enclosure) — a more natural + precise "circle these" gesture. Open question when we do it: does the
+    lasso REPLACE the grouping brush, or do we keep both (brush = fast rough touch, lasso = precise
+    enclose)? Leave the rectangular select (on the select tool) as-is regardless.
+    - **NOT purely FE.** The membership geometry (which marks a stroke/lasso covers) is computed on the
+      BE with **shapely** — the same buffered-area `.intersects()` pattern already in `projects.py`/
+      `app.py` for annotation↔tile intersection — not reimplemented in FE JS. So the FE change is the
+      *gesture* (draw a lasso loop instead of a brush stroke) + sending its geometry; the BE resolution
+      is shared. (2a already routes brush membership through the BE per this — see the corrected spec.)
+    - **Overlapping-mark selection matters more than first thought (this is why the tool matters).**
+      Marks routinely stack on top of each other, so a click can't unambiguously pick one — we need a
+      mechanism to **cycle through the marks under the cursor** (e.g. repeated click / modifier-click
+      steps down the stack) to make a precise selection. 2a's click just takes the topmost; this
+      cycling is the real refinement to build here.
