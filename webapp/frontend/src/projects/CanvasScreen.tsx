@@ -1,8 +1,8 @@
-import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on } from 'solid-js';
+import { type Component, createEffect, createMemo, createResource, createSignal, Show, on } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasImage, type Label } from './api';
+import { projectsApi, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, LiveDraftOverlay } from './canvasShapes';
+import { type Tool, type ViewBox, LiveDraftOverlay } from './canvasShapes';
 import { SelectionHighlight } from './SelectionHighlight';
 import { hitTestAnnotation } from './lesionSelect';
 import { createCanvasInteraction } from './canvasInteraction';
@@ -15,11 +15,15 @@ import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
 import { CanvasToolbar } from './CanvasToolbar';
+import { CanvasStage } from './CanvasStage';
 import { CanvasHints } from './CanvasHints';
 import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
 import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
 import * as styles from './CanvasScreen.css';
+
+// Annotate enables the full tool set (unchanged behavior) — see canvasToolRegistry.ts.
+const ANNOTATE_TOOLS: Tool[] = ['select', 'pan', 'brush', 'eraser'];
 
 const CanvasScreen: Component = () => {
   const params = useParams();
@@ -134,6 +138,7 @@ const CanvasScreen: Component = () => {
         <div class={styles.banner} data-testid="tile-error" role="alert">{tileErr()}</div>
       </Show>
       <CanvasToolbar
+        tools={ANNOTATE_TOOLS}
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
         annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
@@ -145,41 +150,21 @@ const CanvasScreen: Component = () => {
         canUndo={history.canUndo} canRedo={history.canRedo}
       />
 
-      <Show when={image()} fallback={<div class={styles.stage}>{t('common.loading')}</div>}>
-        {(im) => (
-          <div class={styles.stage}>
-            <svg ref={svgRef} class={styles.svg}
-              viewBox={`${vb().x} ${vb().y} ${vb().w} ${vb().h}`}
-              preserveAspectRatio="xMidYMid meet"
-              onWheel={interaction.onWheel}
-              onPointerDown={interaction.onPointerDown}
-              onPointerMove={interaction.onPointerMove}
-              onPointerUp={interaction.onPointerUp}
-              onPointerLeave={interaction.onPointerLeave}
-              classList={{
-                [styles.panning]: tool() === 'pan',
-                [styles.spacePanning]: interaction.isSpaceDown() && tool() !== 'pan',
-                [styles.erasing]: tool() === 'eraser',
-              }}
-            >
-              <image href={imageUrls.overview(im().imageId)} x="0" y="0"
-                width={im().width} height={im().height} />
-              <CanvasTiles tiles={im().tiles} checkClass={styles.check}
-                onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
-              <Show when={imgLoaded()}>
-                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label, a.labelColor)} />}</For>
-                <Show when={imgLoaded() && selId()}>{(id) =>
-                  <SelectionHighlight ann={im().annotations.find((a) => a.id === id())!} />
-                }</Show>
-              </Show>
-              <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
-                hover={interaction.hoverImg()} />
-              {heat && <ViewportHeatmapLayer heat={heat} />}
-            </svg>
-            {heat && <ViewportHeatmapPanel heat={heat} />}
-          </div>
-        )}
-      </Show>
+      <CanvasStage
+        setSvgRef={(el) => { svgRef = el; }}
+        vb={vb} image={image} imgLoaded={imgLoaded} tool={tool} interaction={interaction}
+        onTileToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)}
+        annotations={image()?.annotations ?? []}
+        annotationColor={(a) => labelColor(a.label, a.labelColor)}
+        panel={heat ? <ViewportHeatmapPanel heat={heat} /> : undefined}
+      >
+        <Show when={imgLoaded() && selId()}>{(id) =>
+          <SelectionHighlight ann={image()!.annotations.find((a) => a.id === id())!} />
+        }</Show>
+        <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
+          hover={interaction.hoverImg()} />
+        {heat && <ViewportHeatmapLayer heat={heat} />}
+      </CanvasStage>
 
       <CanvasLegend annotations={image()?.annotations ?? []} classes={canvas()?.classes ?? []} />
       <CanvasHints vb={vb} />

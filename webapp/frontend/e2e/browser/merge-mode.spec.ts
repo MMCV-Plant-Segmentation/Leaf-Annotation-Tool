@@ -6,8 +6,10 @@
  *      completed every tile in the batch, then appears.
  *  (b) Entering merge renders pooled marks from >1 annotator, all one colour
  *      and outline-only (blind — fill="none").
- *  (c) Tile-by-tile navigation works (the counter + prev/next buttons).
- *  (d) The merge view is read-only (no drawing toolbar, no paint gesture effect).
+ *  (c) Merge shares CanvasScreen's nav model (whole image, tiles overlaid,
+ *      navigate IMAGE-by-image) — the old tile-by-tile counter/prev/next is gone.
+ *  (d) The merge toolbar only enables the `pan` tool (no select/brush/eraser) and
+ *      the view is read-only (no paint gesture effect).
  *
  * Two fresh (non-admin) annotators each paint one stroke and mark every one of
  * their assigned tiles complete — mirrors annotator-config.spec.ts / relabel.spec.ts's
@@ -134,6 +136,7 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
   await pA.goto(canvasUrl);
   await expect(pA.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
   const cvA = await pA.request.get(`/api/batches/${batchId}?annotator=${uA}`).then((r) => r.json());
+  const imageCount = (cvA.images as unknown[]).length;
   const img0 = cvA.images[0] as { imageId: string; tiles: Tile[] };
   const tile0 = img0.tiles[0];
   await seedStroke(pA, pid, img0.imageId, tile0, uA, 1);
@@ -167,21 +170,31 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
     await expect(marks.nth(i)).toHaveAttribute('fill', 'none');
   }
 
-  // ── (c) Tile-by-tile navigation ──────────────────────────────────────────────
-  const counter = page.getByTestId('merge-tile-counter');
-  await expect(counter).toHaveText('tile 1 / 2');
-  await expect(page.getByTestId('merge-tile-prev')).toBeDisabled();
-  await expect(page.getByTestId('merge-tile-next')).toBeEnabled();
+  // ── (c) Shared IMAGE nav model — tile-by-tile counter/prev/next is gone. The
+  // batch's images (whole image, tiles overlaid) are what's paged; a 2-tile batch
+  // may still be a single image (both tiles on one image) or span two, so branch
+  // on how many images the batch actually has (see `imageCount`, captured above).
+  if (imageCount > 1) {
+    await expect(page.getByTestId('img-prev')).toBeDisabled();
+    await expect(page.getByTestId('img-next')).toBeEnabled();
 
-  await page.getByTestId('merge-tile-next').click();
-  await expect(counter).toHaveText('tile 2 / 2');
-  await expect(page.getByTestId('merge-tile-next')).toBeDisabled();
-  await expect(page.getByTestId('merge-tile-prev')).toBeEnabled();
+    await page.getByTestId('img-next').click();
+    await expect(page.getByTestId('img-next')).toBeDisabled();
+    await expect(page.getByTestId('img-prev')).toBeEnabled();
 
-  await page.getByTestId('merge-tile-prev').click();
-  await expect(counter).toHaveText('tile 1 / 2');
+    await page.getByTestId('img-prev').click();
+    await expect(page.getByTestId('img-prev')).toBeDisabled();
+  } else {
+    // Single-image batch: the shared toolbar only shows image nav when there's
+    // more than one image (imgCount > 1) — same gate CanvasScreen uses.
+    await expect(page.getByTestId('img-prev')).toHaveCount(0);
+    await expect(page.getByTestId('img-next')).toHaveCount(0);
+  }
 
-  // ── (d) Read-only: no drawing toolbar, and a drag gesture creates no new mark ─
+  // ── (d) Merge tools = PAN ONLY (Phase 1 — no grouping/erase/select-CO tools) ──
+  // and the view is read-only: no drawing toolbar, and a drag gesture creates no
+  // new mark (a drag only pans the read-only viewport).
+  await expect(page.getByTestId('tool-pan')).toBeVisible();
   await expect(page.getByTestId('tool-brush')).toHaveCount(0);
   await expect(page.getByTestId('tool-eraser')).toHaveCount(0);
   await expect(page.getByTestId('tool-select')).toHaveCount(0);
