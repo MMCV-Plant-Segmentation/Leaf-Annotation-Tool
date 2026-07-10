@@ -78,6 +78,24 @@ app = Flask(__name__, static_folder=str(STATIC))
 app.register_blueprint(auth_bp)
 app.register_blueprint(projects_bp)
 
+
+@app.after_request
+def _log_client_error(response):
+    """Log every client-visible /api 4xx/5xx with its error message.
+
+    Without this an API error is only an anonymous status code in the werkzeug access line —
+    the actual message (returned to the client) never reaches the server log. That's exactly
+    why the "annotation must intersect at least one tile" 422 (BUGS #31) stayed invisible: a
+    failing test then failed on a downstream symptom instead of the real cause. Bound at import
+    on the module-level `app` (like the routes), so it's active on every server path + in tests.
+    """
+    if response.status_code >= 400 and request.path.startswith('/api/'):
+        data = response.get_json(silent=True)
+        msg = (data.get('error') or data.get('message') or '') if isinstance(data, dict) else ''
+        app.logger.warning('%s %s -> %s%s', request.method, request.path,
+                            response.status_code, f': {msg}' if msg else '')
+    return response
+
 _img_cache:      dict[str, Image.Image] = {}
 _overview_cache: dict[str, bytes]       = {}
 
