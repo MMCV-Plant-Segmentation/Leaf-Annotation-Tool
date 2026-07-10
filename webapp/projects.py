@@ -1446,6 +1446,11 @@ def create_viewport_events(project_id: str):
     user_id = session.get('username') or ''
     if not (image_id and user_id and isinstance(events, list) and events):
         return jsonify({'error': 'imageId, events required'}), 400
+    if session.get('username') == 'admin':
+        # Admins are read-only when viewing an annotator's canvas — never record telemetry
+        # "as" admin. AFTER body-validation so a malformed admin body still 400s like a
+        # non-admin's. Keep this guard confined to THIS endpoint; see docstring above.
+        return jsonify({'ok': True, 'count': 0}), 201
     con = _db.get_db()
     try:
         err = _member_or_403(con, project_id)
@@ -1889,7 +1894,10 @@ def image_overview(image_id: str):
             return err
     finally:
         _db.close_db(con)
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     return send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
 
 
@@ -1911,7 +1919,10 @@ def image_crop(image_id: str):
         w, h = int(request.args['w']), int(request.args['h'])
     except (KeyError, ValueError):
         return jsonify({'error': 'x, y, w, h required'}), 400
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     return send_file(_bytesio(imaging.crop_png(img, x, y, w, h)), mimetype='image/png')
 
 

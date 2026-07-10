@@ -25,6 +25,10 @@ export interface ViewportTelemetryOpts {
   vb: Accessor<ViewBox>;
   /** The SVG canvas element, for its CSS pixel size (clientWidth/Height) at capture time. */
   getSvg: () => SVGSVGElement | undefined;
+  /** True while the session is admin — admins are read-only, so their navigation is
+   *  never sampled or POSTed (the backend also guards this, but skipping client-side
+   *  avoids buffering + flushing work that would be a no-op). */
+  isAdmin: Accessor<boolean>;
 }
 
 const SETTLE_MS = 400;
@@ -49,7 +53,7 @@ export function createViewportTelemetry(o: ViewportTelemetryOpts): void {
 
   const sample = () => {
     try {
-      if (!curImageId) return;
+      if (o.isAdmin() || !curImageId) return;
       const s = capture();
       if (s) buffer.push(s);
     } catch { /* fail-quiet: telemetry must never disrupt annotation UX */ }
@@ -57,6 +61,7 @@ export function createViewportTelemetry(o: ViewportTelemetryOpts): void {
 
   const flush = (useBeacon = false) => {
     try {
+      if (o.isAdmin()) { buffer = []; return; }
       if (buffer.length === 0 || !curProjectId || !curImageId) { buffer = []; return; }
       const body = { imageId: curImageId, events: buffer };
       buffer = [];
