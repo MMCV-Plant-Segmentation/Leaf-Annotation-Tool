@@ -138,7 +138,10 @@ def _poly_rings(poly) -> list:
     if poly is None or poly.is_empty or poly.geom_type != 'Polygon':
         return []
     def coords(ring):
-        return [[round(float(pt[0])), round(float(pt[1]))] for pt in ring.coords]
+        # Keep sub-pixel precision (BUGS #37): the FE maps client→image px as floats via the
+        # CTM, so snapping to whole pixels loses accuracy and collapses a <1px-wide (thin/
+        # vertical) stroke's two edges onto one column → a zero-area path that vanishes.
+        return [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in ring.coords]
     return [coords(poly.exterior)]
 
 
