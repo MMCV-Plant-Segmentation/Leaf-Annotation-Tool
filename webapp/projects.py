@@ -1584,6 +1584,119 @@ def dissolve_candidate_object(coid: str):
         _db.close_db(con)
 
 
+# ── merge mode Phase 2a: erasures ─────────────────────────────────────────────
+# An erasure = a per-merger "this mark is not a lesion / an error" vote on a
+# pooled mark — a recoverable TOGGLE (delete the row to un-erase; recovery beyond
+# undo/redo), scoped to the merger who cast it (see
+# alembic/versions/0006_co_erasure.py). The source annotation is NEVER touched
+# — erasure lives in its own table so un-erase always restores the mark from
+# provenance. Mirrors the CO endpoints above (member-gated; per-merger visibility).
+
+
+def _annotation_is_pooled_in_batch(con, batch_id: str, annotation_id: str) -> bool:
+    """True iff `annotation_id` is a pooled mark of this batch — a live
+    annotation that intersects any of the batch's active tiles. Same scoping as
+    `_pooled_annotations` / `_pooled_annotation_ids_for_image`, generalised
+    across every image in the batch (an erasure POST identifies a mark by id
+    only — no imageId in the payload)."""
+    row = con.execute(
+        '''SELECT 1 FROM annotation a
+           JOIN annotation_tile atl ON atl.annotation_id = a.id
+           JOIN batch_tile bt ON bt.tile_id = atl.tile_id
+           WHERE bt.batch_id = ? AND a.id = ? AND a.deleted_at IS NULL
+           LIMIT 1''',
+        (batch_id, annotation_id),
+    ).fetchone()
+    return row is not None
+
+
+@projects_bp.get('/api/batches/<batch_id>/erasures')
+@login_required
+def list_erasures(batch_id: str):
+    """That merger's erasures for this batch — the pooled-annotation ids they've
+    toggled off. Per-merger isolation: another merger's erasures never appear
+    here (co_erasure rows are keyed by (batch, merger, annotation))."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT annotation_id FROM co_erasure
+               WHERE batch_id = ? AND merger = ?
+               ORDER BY created_at ASC''',
+            (batch_id, merger),
+        ).fetchall()
+        return jsonify({'erasedIds': [r['annotation_id'] for r in rows]})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/erasures')
+@login_required
+def create_erasure(batch_id: str):
+    """Cast an erasure vote on a pooled mark for the acting merger. The mark
+    must be a pooled mark of this batch (rejected 422 otherwise). Idempotent:
+    a repeat erase of the same mark is a no-op — the
+    UNIQUE (batch, merger, annotation) constraint dedupes so we never surface
+    a 500 on a second erase."""
+    body = request.json or {}
+    annotation_id = body.get('annotationId')
+    if not annotation_id:
+        return jsonify({'error': 'annotationId required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if not _annotation_is_pooled_in_batch(con, batch_id, annotation_id):
+            return jsonify({'error': 'annotationId is not a pooled mark of this batch'}), 422
+        merger = session.get('username') or ''
+        con.execute(
+            '''INSERT OR IGNORE INTO co_erasure
+                 (id, batch_id, merger, annotation_id, created_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (_uid(), batch_id, merger, annotation_id, _now()),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'annotationId': annotation_id}), 201
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/erasures/<annotation_id>')
+@login_required
+def delete_erasure(batch_id: str, annotation_id: str):
+    """Un-erase (recoverable toggle) — drop the acting merger's erasure row on
+    this mark. Idempotent: deleting a non-existent erasure is a no-op 204 (so
+    an undo replaying against a stale state can't spuriously 404)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        con.execute(
+            '''DELETE FROM co_erasure
+               WHERE batch_id = ? AND merger = ? AND annotation_id = ?''',
+            (batch_id, merger, annotation_id),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
 def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str]) -> list:
     """This annotator's non-deleted annotations on this image that intersect an active tile.
 
