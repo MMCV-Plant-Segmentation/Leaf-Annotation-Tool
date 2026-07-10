@@ -227,3 +227,13 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   shell — a workaround, not a cure). Task: migrate the remaining legacy screens (compare/analyze) to
   Solid or fully isolate them, drop the legacy JS/CSS/DOM shell, and mount the app at the document
   root so no legacy stacking context can clobber new UI. Logged 2026-07-08 (Christian).
+
+- **Replace seeded/synthetic test data with hard-coded fixtures (parameterized).** The e2e fixture
+  (`webapp/frontend/e2e/fixtures/seed.py`) generates *synthetic* images at fixed sizes, and batch
+  composition used to be random (now seeded deterministically from `(project_id, seq)` — see
+  `test_batch_determinism.py`). Determinism removed the flake, but the test *data* is still
+  procedurally generated. Switch to a small set of **hard-coded, checked-in fixture images/annotations**
+  (real content, known geometry) so tests assert against ground truth, and **parameterize** over that
+  set (e.g. several leaf shapes/sizes, edge/black-threshold cases, thin/vertical strokes) to get broad
+  coverage without procedural randomness. Removes the last source of "it depends what got generated"
+  from the suite. Logged 2026-07-10 (Christian, after the #31 RNG-flake root-cause).
