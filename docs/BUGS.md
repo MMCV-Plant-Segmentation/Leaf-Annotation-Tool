@@ -286,11 +286,18 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     422 — that turned out to be a separate test-robustness flake (see #31). This fix DOES benefit merge
     (pooled marks are these same BE rings). Original notes: keep points float end-to-end; the pipeline
     is FE perfect-freehand outline → `outline_json` → `buffer(0)`/`_footprint` → `_poly_rings` → rings.
-38. **Space+drag pan doesn't work while the eraser tool is active.** The hold-space temporary-pan
-    override works for other tools but not the eraser — the eraser's pointer handling swallows it.
-39. **Accidental right-click leaves the eraser "hanging around."** A right-click while erasing leaves
-    the eraser in a stuck state (stray preview / mid-stroke). Christian: "perhaps unavoidable?" — at
-    least suppress the context menu / reset the gesture on right-click / pointercancel.
+38. **Space+drag pan doesn't work while the eraser tool is active.** ✅ **NOT REPRODUCIBLE on
+    current code (2026-07-10)** — a prod-only artifact of older code. In the current
+    `canvasInteraction.ts` the space-pan guard (`spaceDown() && !strokeInProgress`) runs BEFORE the
+    tool dispatch and is tool-agnostic, so space+drag pans correctly under eraser/group/brush.
+    Verified + guarded by a regression test (`canvasBrush.spec.ts`: "space+drag pans while the
+    {eraser,group,brush} tool is active" — space down → pointer-drag pans and drafts/commits nothing).
+    If it recurs on a current-code deploy it's a DOM/CSS-layer issue (the unit test bypasses the DOM)
+    — escalate to a browser repro then.
+39. **Accidental right-click leaves the eraser "hanging around."** _(BACKLOG — Christian, 2026-07-10.)_
+    A right-click while erasing leaves the eraser in a stuck state (stray preview / mid-stroke).
+    Christian: "perhaps unavoidable?" — at least suppress the context menu / reset the gesture on
+    right-click / pointercancel. Deferred behind higher-priority HANDOFF work.
 
 ## Accessibility (Christian, 2026-07-10) — need UX design
 40. **Line / polygon tool on the FIRST identity pass** for users with reduced eye-hand coordination:
