@@ -238,11 +238,10 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   coverage without procedural randomness. Removes the last source of "it depends what got generated"
   from the suite. Logged 2026-07-10 (Christian, after the #31 RNG-flake root-cause).
 
-- **Chimera masks — preserve polyline editability when a polyline fuses with a brush stroke.** The
-  polyline click-brush (a11y #40) reuses the brush stroke pipeline and fuses on overlap. Rule for v1
-  (Christian, 2026-07-10): polyline + polyline → result stays an editable polyline; polyline +
-  non-polyline (freehand brush) → collapses to a plain fused mask, LOSING the polyline's editable
-  vertices. The proper solution is a **chimera**: a single fused annotation that keeps editable
-  clicked-vertices for its polyline-derived portion while carrying the freehand geometry for the rest —
-  mixed-provenance geometry with partial vertex-editability. Design the data model (per-segment
-  provenance?) + the editing UX for it. Deferred until the basic polyline tool ships. Logged 2026-07-10.
+- ~~**Chimera masks — preserve polyline editability when a polyline fuses with a brush stroke.**~~
+  **DISSOLVED 2026-07-10 by the computed-from-strokes reframe.** Christian: brush and polyline are two
+  input modes over the SAME data; a mask's shape is COMPUTED (and cached) from its member strokes, each
+  stroke keeping its own provenance. So a mask can hold mixed polyline+freehand member strokes natively
+  — the polyline strokes stay editable, the freehand ones don't, and the shape recomputes from all of
+  them. No special "chimera" representation is needed. (Superseded; see root `docs/plans/Plan — Polyline
+  click-brush tool (a11y #40).md`.)
