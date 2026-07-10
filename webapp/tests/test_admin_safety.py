@@ -103,6 +103,10 @@ r = admin.post(f'/api/projects/{pid}/viewport-events', json={'imageId': image_id
 assert r.status_code in (200, 201), jj(r)
 assert jj(r).get('count') == 0, f'admin telemetry must NOT be recorded, got count={jj(r).get("count")}'
 
+# A MALFORMED admin body still 400s — validation runs BEFORE the admin no-op (not a blanket early return).
+r = admin.post(f'/api/projects/{pid}/viewport-events', json={'imageId': image_id})  # events missing
+assert r.status_code == 400, f'admin malformed body must 400 (validate before no-op), got {r.status_code}'
+
 # alice must be a project member to record — add her, then she records.
 r = admin.post(f'/api/projects/{pid}/annotators', json={'user_id': 2})
 assert r.status_code == 201, jj(r)
