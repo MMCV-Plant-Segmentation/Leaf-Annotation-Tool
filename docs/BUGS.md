@@ -270,3 +270,30 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     app today), so it's deferred. Build the menu later; keep the buttons for now.
 36. **Better names for the merge tools.** `group` / `select` / `eraser` are placeholder names; revisit
     for something clearer once the interaction is settled (Christian, 2026-07-10).
+
+## Testing round — brush fidelity + a11y (Christian, 2026-07-10)
+37. **Small-brush geometry: no sub-pixel accuracy + vertical lines vanish.** (a) Stroke points appear
+    to be quantized to integer image pixels — but the SVG can render at higher resolution than the
+    image, so there's no reason to snap to pixel boundaries; keep points as floats end-to-end. (b) A
+    straight VERTICAL stroke disappears entirely — a degenerate (zero-horizontal-extent) path whose
+    outline/buffer collapses to zero area, so the BE returns no rings → nothing renders. **This is the
+    FE-draws-vs-BE-sends-back discrepancy (top priority) and almost certainly the root cause of the
+    `relabel.spec` `POST /annotations` 422 I mis-labelled as the #31 flake** (a small/degenerate stroke
+    fails the BE's buffered-area "must intersect a tile" / valid-geometry check). Fixing it should also
+    settle that flake. **Affects merge too** — pooled marks are these same BE rings, and the grouping
+    brush sends a stroke the BE resolves. Investigate the FE perfect-freehand outline → `outline_json`
+    → `ShapelyPolygon(outline).buffer(0)` → rings pipeline; ensure a thin/vertical/tiny stroke still
+    yields a valid non-empty area and sub-pixel coords survive.
+38. **Space+drag pan doesn't work while the eraser tool is active.** The hold-space temporary-pan
+    override works for other tools but not the eraser — the eraser's pointer handling swallows it.
+39. **Accidental right-click leaves the eraser "hanging around."** A right-click while erasing leaves
+    the eraser in a stuck state (stray preview / mid-stroke). Christian: "perhaps unavoidable?" — at
+    least suppress the context menu / reset the gesture on right-click / pointercancel.
+
+## Accessibility (Christian, 2026-07-10) — need UX design
+40. **Line / polygon tool on the FIRST identity pass** for users with reduced eye-hand coordination:
+    place points (not freehand-drag), **edit points after the fact**, and **add points along an
+    existing path**. A real point-based drawing+editing tool — needs UX design before building.
+41. **Contextual help.** The bottom help strip should show CONTEXT-dependent shortcuts (what's usable
+    in the current tool/mode); clicking it opens a popup help page showing BOTH global and
+    context-dependent help. Needs UX design (and pairs with the deferred controls-popup, #30).
