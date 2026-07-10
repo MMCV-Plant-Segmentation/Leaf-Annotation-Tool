@@ -1440,16 +1440,17 @@ def create_viewport_events(project_id: str):
     Body: {imageId, events: [{clientTs, x, y, w, h, cssW, cssH, dpr}, ...]}.
     Response: {ok: true, count: N}.
     """
-    if session.get('username') == 'admin':
-        # Admins are read-only when viewing an annotator's canvas — never record telemetry
-        # "as" admin. (Keep this guard confined to THIS endpoint; see docstring above.)
-        return jsonify({'ok': True, 'count': 0}), 201
     body = request.json or {}
     image_id = body.get('imageId')
     events = body.get('events') or []
     user_id = session.get('username') or ''
     if not (image_id and user_id and isinstance(events, list) and events):
         return jsonify({'error': 'imageId, events required'}), 400
+    if session.get('username') == 'admin':
+        # Admins are read-only when viewing an annotator's canvas — never record telemetry
+        # "as" admin. AFTER body-validation so a malformed admin body still 400s like a
+        # non-admin's. Keep this guard confined to THIS endpoint; see docstring above.
+        return jsonify({'ok': True, 'count': 0}), 201
     con = _db.get_db()
     try:
         err = _member_or_403(con, project_id)
