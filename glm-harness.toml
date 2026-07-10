@@ -18,3 +18,14 @@ description = "Run the full project gate (backend tests + tsc/lint/build + Playw
 command = "uv run python scripts/gate.py"
 cwd = "."
 timeout_s = 1800
+
+# Fast pre-check for iterating: backend + tsc/lint/build, SKIPS the slow Playwright stage. Same
+# managed lifecycle + same runner (which owns the toolchain the agent uid can't exec). Reuses
+# gate.py --no-e2e so it can't drift from the real gate. Use `check` while iterating, `gate` before
+# reporting Done.
+[[tools]]
+name = "check"
+description = "Fast self-check: backend tests + tsc/lint/build, skipping the slow Playwright e2e. Use THIS while iterating; run the full `gate` before you report Done. Never run uv/npm/node/scripts/gate.py yourself — the jail won't let the agent uid exec them."
+command = "uv run python scripts/gate.py --no-e2e"
+cwd = "."
+timeout_s = 600

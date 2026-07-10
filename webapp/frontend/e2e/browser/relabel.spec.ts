@@ -61,7 +61,7 @@ async function loginAsFreshUser(browser: Browser, username: string, invite: stri
  * canvas interaction. Returns the annotator's page + the compounds' colours (fetched
  * from the API so assertions don't hardcode the default palette). */
 async function setupRelabelCanvas(page: Page, browser: Browser):
-  Promise<{ p: Page; okColor: string; dangerColor: string }> {
+  Promise<{ p: Page; okColor: string; dangerColor: string; tiles: { x: number; y: number; w: number; h: number }[] }> {
   const pid = await createProject(page, `Relabel ${Date.now()}`);
   await page.request.patch(`/api/projects/${pid}`, { data: { classes: ['ok', 'danger'] } });
 
@@ -79,16 +79,44 @@ async function setupRelabelCanvas(page: Page, browser: Browser):
   await page.getByRole('button', { name: /open canvas/i }).first().click();
   await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}/, { timeout: 5000 });
   const canvasUrl = page.url();
+  const batchId = canvasUrl.split('/batches/')[1].split('?')[0];
 
   const proj = await (await page.request.get(`/api/projects/${pid}`)).json() as
     { classes: { name: string; color: string }[] };
   const okColor = proj.classes.find((c) => c.name === 'ok')!.color.toLowerCase();
   const dangerColor = proj.classes.find((c) => c.name === 'danger')!.color.toLowerCase();
 
+  // The batch samples RANDOM tile positions (create_batch shuffles + samples), so only some
+  // tiles exist — a paint must land inside one or the server 422s "must intersect at least
+  // one tile". Fetch the real server-assigned tiles for image 0 so the paint can anchor to a
+  // guaranteed tile centre instead of guessing at the SVG centre (the BUGS #31 flake).
+  const batch = await (await page.request.get(
+    `/api/batches/${batchId}?annotator=${encodeURIComponent(username)}`)).json() as
+    { images: { tiles: { x: number; y: number; w: number; h: number }[] }[] };
+  const tiles = batch.images[0].tiles;
+
   const p = await loginAsFreshUser(browser, username, user.invite.token);
   await p.goto(canvasUrl);
   await expect(p.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
-  return { p, okColor, dangerColor };
+  return { p, okColor, dangerColor, tiles };
+}
+
+/** Centre of the first real, server-assigned tile (image-space) — a paint anchored here is
+ * guaranteed to intersect a tile, unlike a guessed fraction of the image. */
+function tileCentre(tiles: { x: number; y: number; w: number; h: number }[]): [number, number] {
+  const t = tiles[0];
+  return [t.x + t.w / 2, t.y + t.h / 2];
+}
+
+/** Map an image-space point to screen coords given the <svg> box + its `viewBox`. The SVG uses
+ * `preserveAspectRatio="xMidYMid meet"`, so the image is letterboxed within the box — this is
+ * NOT a plain box.width/imgWidth scale. Robust across the fixture's 3 differently-sized images. */
+function imgToScreen(box: { x: number; y: number; width: number; height: number }, viewBox: string, imgX: number, imgY: number): [number, number] {
+  const [, , vbW, vbH] = viewBox.split(' ').map(Number);
+  const scale = Math.min(box.width / vbW, box.height / vbH);
+  const offsetX = box.x + (box.width - vbW * scale) / 2;
+  const offsetY = box.y + (box.height - vbH * scale) / 2;
+  return [offsetX + imgX * scale, offsetY + imgY * scale];
 }
 
 // The class picker is a custom Kobalte Select (colour-coded rows — a native <select>
@@ -103,19 +131,28 @@ async function pickClass(p: Page, toolbar: Locator, name: string) {
 }
 
 test('select a painted lesion, relabel via the paint drop-down, recolor, restore on deselect', async ({ page, browser }) => {
-  const { p, okColor, dangerColor } = await setupRelabelCanvas(page, browser);
+  const { p, okColor, dangerColor, tiles } = await setupRelabelCanvas(page, browser);
   const toolbar = p.getByTestId('canvas-toolbar');
   const classSelect = classPickerValue(toolbar);
 
   // Paint a stroke labelled 'ok' (the drop-down defaults to the first compound).
   await expect(classSelect).toContainText('ok', { timeout: 5000 });
   await p.getByTestId('tool-brush').click();
+  // Wide brush so the later select-click at the drag's start point is comfortably inside the
+  // mask — the default (~10% of a tile's diagonal) left almost no hit-test margin.
+  const brushInput = p.getByTestId('brush-size-input');
+  await brushInput.fill('50');
+  await brushInput.press('Tab');
   p.on('dialog', (d) => void d.dismiss());
   const canvasSvg = p.locator('svg').first();
   await expect(canvasSvg).toBeVisible({ timeout: 10000 });
   const box = await canvasSvg.boundingBox();
-  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
-  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
+  const viewBox = await canvasSvg.getAttribute('viewBox');
+  if (!box || !viewBox) throw new Error('canvas svg missing boundingBox/viewBox');
+  // Anchor at a REAL server-assigned tile centre (mapped image→screen) so the paint always
+  // intersects a tile — see setupRelabelCanvas (BUGS #31: the SVG-centre guess flaked on the
+  // RNG seeds where no sampled tile covered the centre).
+  const [cx, cy] = imgToScreen(box, viewBox, ...tileCentre(tiles));
   await p.mouse.move(cx - 15, cy - 15);
   await p.mouse.down();
   for (let i = 1; i <= 5; i++) await p.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);

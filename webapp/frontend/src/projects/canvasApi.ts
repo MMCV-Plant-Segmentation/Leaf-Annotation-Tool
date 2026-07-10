@@ -46,11 +46,27 @@ export type BatchCanvas = {
   projectId: string;
   seq: number;
   status: string;
+  /** MERGE Phase 1 gate: true once every annotator_tile in the batch is 'completed'. */
+  mergeReady: boolean;
   classes: Label[];
   groups: Group[];
   compounds: Compound[];
   images: CanvasImage[];
 };
+
+/** One pooled mark from the merge-annotations read — same shape as CanvasAnnotation,
+ * just fetched cross-annotator (see MergeCanvasScreen.tsx). */
+export type MergeAnnotations = { annotations: CanvasAnnotation[] };
+
+/** MERGE Phase 2a: a merger's candidate-object row (the lesion-hypothesis identity — the
+ * `<g data-testid="candidate-object">` hull is a FE display concern computed from the
+ * live members' geometry, not persisted here). See webapp/projects.py list/create. */
+export type CandidateObject = { id: string; imageId: string; memberIds: string[] };
+export type CandidateObjects = { candidateObjects: CandidateObject[] };
+
+/** MERGE Phase 2a: this merger's erasures (per-merger toggles that flag a pooled mark
+ * as not-a-lesion — recoverable, survives reload). See webapp/projects.py list. */
+export type Erasures = { erasedIds: string[] };
 
 /** One fuse-set member a brush create/merge consumed — carries enough to repoint its
  * strokes back on undo (see canvasHistory.ts's `merge` action). */
@@ -68,6 +84,41 @@ export type CreateAnnotationResult = CanvasAnnotation & {
 export const canvasApi = {
   batchCanvas: (batchId: string, annotator: string) =>
     jfetch<BatchCanvas>(`/api/batches/${batchId}?annotator=${encodeURIComponent(annotator)}`),
+
+  /** MERGE Phase 1: batch structure (images/tiles) with no per-annotator annotations —
+   * MergeCanvasScreen pairs this with mergeAnnotations() for the pooled, blind read. */
+  mergeBatch: (batchId: string) => jfetch<BatchCanvas>(`/api/batches/${batchId}`),
+
+  /** MERGE Phase 1: every non-deleted annotation from every annotator, scoped to this
+   * batch's tiles — the pooled read rendered one-colour/outline-only (blind). */
+  mergeAnnotations: (batchId: string) =>
+    jfetch<MergeAnnotations>(`/api/batches/${batchId}/merge-annotations`),
+
+  /** Advance a merge-ready batch to status='merge'. Idempotent; 409 if not ready. */
+  enterMerge: (batchId: string) =>
+    jfetch<{ ok: boolean; status: string }>(`/api/batches/${batchId}/enter-merge`, jbody('POST', {})),
+
+  // ── MERGE Phase 2a: candidate-object + erasure endpoints (see webapp/projects.py) ──
+  listCandidateObjects: (batchId: string, merger: string) =>
+    jfetch<CandidateObjects>(
+      `/api/batches/${batchId}/candidate-objects?merger=${encodeURIComponent(merger)}`),
+  createCandidateObject: (batchId: string, body: {
+    imageId: string; brushPath?: number[][]; brushWidth?: number; memberIds?: string[];
+  }) => jfetch<CandidateObject>(
+    `/api/batches/${batchId}/candidate-objects`, jbody('POST', body)),
+  patchCandidateObject: (coid: string, body: { addIds?: string[]; removeIds?: string[] }) =>
+    jfetch<CandidateObject>(`/api/candidate-objects/${coid}`, jbody('PATCH', body)),
+  dissolveCandidateObject: (coid: string) =>
+    jfetch<null>(`/api/candidate-objects/${coid}`, { method: 'DELETE' }),
+
+  listErasures: (batchId: string, merger: string) =>
+    jfetch<Erasures>(`/api/batches/${batchId}/erasures?merger=${encodeURIComponent(merger)}`),
+  createErasure: (batchId: string, annotationId: string) =>
+    jfetch<{ ok: boolean; annotationId: string }>(
+      `/api/batches/${batchId}/erasures`, jbody('POST', { annotationId })),
+  deleteErasure: (batchId: string, annotationId: string) =>
+    jfetch<null>(
+      `/api/batches/${batchId}/erasures/${encodeURIComponent(annotationId)}`, { method: 'DELETE' }),
 
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
