@@ -34,12 +34,17 @@ export interface ViewportHeatmap {
 
 /** Owns the telemetry fetch + attention grid + admin controls state. Returns accessors
  *  for the two presentational pieces below. Swallows fetch errors (the heatmap is a
- *  bonus overlay — it must never block the admin's read-only canvas view). */
+ *  bonus overlay — it must never block the admin's read-only canvas view).
+ *
+ *  `annotatorId` is the SELECTED / "viewing as" annotator (see annotatorSelect.ts), NOT
+ *  the admin's own session — admin telemetry is never recorded (create_viewport_events
+ *  skips admin server-side), so keying the read to the admin would always be empty. */
 export function createViewportHeatmap(
   projectId: Accessor<string>,
   imageId: Accessor<string>,
   imageWidth: Accessor<number>,
   imageHeight: Accessor<number>,
+  annotatorId: Accessor<string | undefined>,
 ): ViewportHeatmap {
   const [show, setShow] = createSignal(false);
   const [lo, setLo] = createSignal(0);
@@ -47,13 +52,13 @@ export function createViewportHeatmap(
 
   const [rows] = createResource(
     () => {
-      const p = projectId(); const i = imageId();
-      return (p && i) ? `${p}|${i}` : undefined;
+      const p = projectId(); const i = imageId(); const u = annotatorId();
+      return (p && i && u) ? `${p}|${i}|${u}` : undefined;
     },
     async (key: string) => {
-      const sep = key.indexOf('|');
+      const [p, i, u] = key.split('|');
       try {
-        return (await canvasApi.listViewportEvents(key.slice(0, sep), key.slice(sep + 1))).events;
+        return (await canvasApi.listViewportEvents(p, i, u)).events;
       } catch {
         return [] as ViewportEventRow[];
       }
