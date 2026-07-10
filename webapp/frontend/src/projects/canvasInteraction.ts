@@ -29,8 +29,7 @@ export interface CanvasInteraction {
   finishDraft: () => void;
 }
 
-// Pointer/zoom/draft controller for the annotation canvas. Pure closure over the
-// supplied signals — keeps CanvasScreen focused on data + composition.
+// Pointer/zoom/draft controller for the annotation canvas — pure closure over the signals.
 export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInteraction {
   // Space-bar pan state (reactive so SVG cursor can respond)
   const [spaceDown, setSpaceDown] = createSignal(false);
@@ -80,8 +79,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
     if (strokeInProgress) return;  // §D: pan + size-scroll locked mid-stroke
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && !e.shiftKey) {
-      // Brush/eraser mode plain scroll → adjust size (§B); eraser shares the brush's size control
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && !e.shiftKey) {
+      // Brush/eraser/group mode plain scroll → adjust size (§B); merge-group shares the control.
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }
@@ -118,7 +117,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     const tl = o.tool();
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
-    if (tl === 'brush' || tl === 'eraser') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
+    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
     // polygon/line: add a vertex (legacy tools, not shown in toolbar)
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);
   };
@@ -158,7 +157,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       lastPanClient = { x: e.clientX, y: e.clientY };
       return;
     }
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
       o.setDraft((d) => [...d, [ix, iy]]);
     }
@@ -168,11 +167,12 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     touches.delete(e.pointerId);
     if (touches.size < 2) pinchStart = null;
 
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
-      // Commit (1-point click still works). Eraser is the same gesture, kind 'erase' —
-      // CanvasScreen's commit() routes that to the delete-by-intersection endpoint.
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
+      // Commit (1-point click ok). kind='erase'=CanvasScreen delete-by-intersection;
+      // 'group'=MergeCanvasScreen POST candidate-object (server resolves); 'stroke'=brush create.
       const pts = o.draft().map(([x, y]) => [Math.round(x), Math.round(y)]);
-      o.commit(o.tool() === 'eraser' ? 'erase' : 'stroke', pts, 1, o.brushSize());
+      const kind = ({eraser: 'erase', group: 'group'} as const)[o.tool() as 'eraser' | 'group'] ?? 'stroke';
+      o.commit(kind, pts, 1, o.brushSize());
       o.setDraft([]);
       strokeInProgress = false;
     }

@@ -304,5 +304,10 @@
   "heatmap.summary": "{count} samples · dwell × zoom-closeness",
   "heatmap.min": "min",
   "heatmap.max": "max",
-  "heatmap.ramp": "attention: low → high"
+  "heatmap.ramp": "attention: low → high",
+  "canvas.group": "group",
+  "canvas.groupTitle": "Group (drag over marks to make a candidate object)",
+  "mergeCanvas.group": "Group",
+  "mergeCanvas.ungroup": "Ungroup",
+  "mergeCanvas.dissolve": "Dissolve"
 }

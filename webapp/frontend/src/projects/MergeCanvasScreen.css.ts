@@ -13,3 +13,15 @@ export const blindBadge = style({
   textTransform: 'uppercase',
   letterSpacing: '0.03em',
 });
+
+// MERGE Phase 2a: the merge selection action bar (Group / Ungroup / Dissolve). Shown
+// only when a mark or CO is selected (right-click context menu is deferred, BUGS #35).
+export const actionBar = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.4rem',
+  padding: '0.35rem 0.5rem',
+  background: vars.color.surface,
+  borderTop: `1px solid ${vars.color.border}`,
+  borderBottom: `1px solid ${vars.color.border}`,
+});
