@@ -2,7 +2,7 @@ import { type Component, For, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
 import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
-export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select';
+export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select' | 'group';
 export type ViewBox = { x: number; y: number; w: number; h: number };
 
 export const TILE_COLORS: Record<string, string> = {
@@ -92,37 +92,42 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// MERGE Phase 1: `blind` renders EVERY mark identically — one caller-supplied colour,
-// outline-only, no fill — so a merger can't tell whose mark is whose (see
-// MergeCanvasScreen.tsx). Everything else about the shape (which SVG primitive, its
-// geometry) is unchanged; only the paint changes.
-export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string; blind?: boolean }> = (props) => {
+// `blind` renders marks outline-only (Phase 1). Phase 2a `erased` flags a mark VISIBLE but
+// dotted + faded with data-erased="true" (a recovery toggle), via a shared `<g>` wrapper.
+export const AnnotationShape: Component<{
+  ann: CanvasAnnotation; color?: string; blind?: boolean; erased?: boolean;
+}> = (props) => {
   const color = () => props.color ?? '#2563eb';
   const fill = () => props.blind ? 'none' : withAlpha(color(), 0.55);
   return (
-    <Show when={props.ann.kind === 'stroke'} fallback={
-      <Show when={props.ann.kind === 'point'} fallback={
-        <Show when={props.ann.kind === 'line'} fallback={
-          <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill={props.blind ? 'none' : withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
-            vector-effect="non-scaling-stroke" />
+    <g data-erased={props.erased ? 'true' : undefined}
+       stroke-dasharray={props.erased ? '4 3' : undefined}
+       opacity={props.erased ? 0.4 : undefined}
+       pointer-events="all">
+      <Show when={props.ann.kind === 'stroke'} fallback={
+        <Show when={props.ann.kind === 'point'} fallback={
+          <Show when={props.ann.kind === 'line'} fallback={
+            <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
+              fill={props.blind ? 'none' : withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
+              vector-effect="non-scaling-stroke" />
+          }>
+            <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
+              fill="none" stroke={color()} stroke-width="2"
+              vector-effect="non-scaling-stroke" />
+          </Show>
         }>
-          <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="none" stroke={color()} stroke-width="2"
-            vector-effect="non-scaling-stroke" />
+          <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
+            fill={props.blind ? 'none' : color()} stroke={props.blind ? color() : undefined}
+            stroke-width={props.blind ? '2' : undefined} vector-effect="non-scaling-stroke" />
         </Show>
       }>
-        <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
-          fill={props.blind ? 'none' : color()} stroke={props.blind ? color() : undefined}
-          stroke-width={props.blind ? '2' : undefined} vector-effect="non-scaling-stroke" />
+        <Show when={props.ann.rings.length > 0}>
+          <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
+            fill={fill()} stroke={color()} stroke-width="1.5"
+            vector-effect="non-scaling-stroke" />
+        </Show>
       </Show>
-    }>
-      <Show when={props.ann.rings.length > 0}>
-        <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
-          fill={fill()} stroke={color()} stroke-width="1.5"
-          vector-effect="non-scaling-stroke" />
-      </Show>
-    </Show>
+    </g>
   );
 };
 

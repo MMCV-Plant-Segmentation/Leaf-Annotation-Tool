@@ -27,6 +27,10 @@ export type Props = {
   /** Per-mark colour. Annotate passes a per-label colour fn; merge passes a constant
    * blind colour (see MergeCanvasScreen). */
   annotationColor: (ann: CanvasAnnotation) => string;
+  /** MERGE Phase 2a: per-mark erased flag — the mark stays VISIBLE but its `<g>` gets
+   * `data-erased="true"` + dotted stroke + reduced opacity (see AnnotationShape). Undef
+   * on the annotate side; merge feeds this from its erasures resource. */
+  annotationErased?: (ann: CanvasAnnotation) => boolean;
   /** MERGE Phase 1: render every mark identically (outline-only, no fill) so a merger
    * can't tell whose mark is whose — see AnnotationShape's `blind` prop. */
   blind?: boolean;
@@ -68,7 +72,8 @@ export const CanvasStage: Component<Props> = (props) => (
           <CanvasTiles tiles={im().tiles} checkClass={styles.check} onToggle={props.onTileToggle} />
           <Show when={props.imgLoaded()}>
             <For each={props.annotations}>
-              {(a) => <AnnotationShape ann={a} color={props.annotationColor(a)} blind={props.blind} />}
+              {(a) => <AnnotationShape ann={a} color={props.annotationColor(a)} blind={props.blind}
+                erased={props.annotationErased?.(a)} />}
             </For>
           </Show>
           {props.children}

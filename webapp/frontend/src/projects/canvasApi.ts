@@ -58,6 +58,16 @@ export type BatchCanvas = {
  * just fetched cross-annotator (see MergeCanvasScreen.tsx). */
 export type MergeAnnotations = { annotations: CanvasAnnotation[] };
 
+/** MERGE Phase 2a: a merger's candidate-object row (the lesion-hypothesis identity — the
+ * `<g data-testid="candidate-object">` hull is a FE display concern computed from the
+ * live members' geometry, not persisted here). See webapp/projects.py list/create. */
+export type CandidateObject = { id: string; imageId: string; memberIds: string[] };
+export type CandidateObjects = { candidateObjects: CandidateObject[] };
+
+/** MERGE Phase 2a: this merger's erasures (per-merger toggles that flag a pooled mark
+ * as not-a-lesion — recoverable, survives reload). See webapp/projects.py list. */
+export type Erasures = { erasedIds: string[] };
+
 /** One fuse-set member a brush create/merge consumed — carries enough to repoint its
  * strokes back on undo (see canvasHistory.ts's `merge` action). */
 export type ConsumedGroup = { annotationId: string; strokeIds: string[] };
@@ -87,6 +97,28 @@ export const canvasApi = {
   /** Advance a merge-ready batch to status='merge'. Idempotent; 409 if not ready. */
   enterMerge: (batchId: string) =>
     jfetch<{ ok: boolean; status: string }>(`/api/batches/${batchId}/enter-merge`, jbody('POST', {})),
+
+  // ── MERGE Phase 2a: candidate-object + erasure endpoints (see webapp/projects.py) ──
+  listCandidateObjects: (batchId: string, merger: string) =>
+    jfetch<CandidateObjects>(
+      `/api/batches/${batchId}/candidate-objects?merger=${encodeURIComponent(merger)}`),
+  createCandidateObject: (batchId: string, body: {
+    imageId: string; brushPath?: number[][]; brushWidth?: number; memberIds?: string[];
+  }) => jfetch<CandidateObject>(
+    `/api/batches/${batchId}/candidate-objects`, jbody('POST', body)),
+  patchCandidateObject: (coid: string, body: { addIds?: string[]; removeIds?: string[] }) =>
+    jfetch<CandidateObject>(`/api/candidate-objects/${coid}`, jbody('PATCH', body)),
+  dissolveCandidateObject: (coid: string) =>
+    jfetch<null>(`/api/candidate-objects/${coid}`, { method: 'DELETE' }),
+
+  listErasures: (batchId: string, merger: string) =>
+    jfetch<Erasures>(`/api/batches/${batchId}/erasures?merger=${encodeURIComponent(merger)}`),
+  createErasure: (batchId: string, annotationId: string) =>
+    jfetch<{ ok: boolean; annotationId: string }>(
+      `/api/batches/${batchId}/erasures`, jbody('POST', { annotationId })),
+  deleteErasure: (batchId: string, annotationId: string) =>
+    jfetch<null>(
+      `/api/batches/${batchId}/erasures/${encodeURIComponent(annotationId)}`, { method: 'DELETE' }),
 
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];

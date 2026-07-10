@@ -82,6 +82,7 @@ import type { Group, Compound } from './taxonomy';
 export type {
   CanvasTile, TileStateUpdate, CanvasAnnotation, CanvasImage, BatchCanvas,
   ConsumedGroup, CreateAnnotationResult, MergeAnnotations,
+  CandidateObject, CandidateObjects, Erasures,
 } from './canvasApi';
 import { canvasApi } from './canvasApi';
 

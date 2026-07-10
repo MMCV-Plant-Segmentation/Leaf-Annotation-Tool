@@ -191,22 +191,11 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
     await expect(page.getByTestId('img-next')).toHaveCount(0);
   }
 
-  // ── (d) Merge tools = PAN ONLY (Phase 1 — no grouping/erase/select-CO tools) ──
-  // and the view is read-only: no drawing toolbar, and a drag gesture creates no
-  // new mark (a drag only pans the read-only viewport).
+  // ── (d) The merge toolset is present and the pooled marks stay BLIND. (Phase 2a made
+  // the merge view no longer read-only/pan-only — it has group/select/eraser; the full
+  // grouping + erasure interactions live in merge-grouping.spec.ts. Here we only confirm
+  // the toolset exists and the marks remain one-colour / outline-only.)
   await expect(page.getByTestId('tool-pan')).toBeVisible();
-  await expect(page.getByTestId('tool-brush')).toHaveCount(0);
-  await expect(page.getByTestId('tool-eraser')).toHaveCount(0);
-  await expect(page.getByTestId('tool-select')).toHaveCount(0);
-
-  const svg = page.locator('svg').first();
-  const box = await svg.boundingBox();
-  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
-  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
-  await page.mouse.move(cx, cy);
-  await page.mouse.down();
-  await page.mouse.move(cx + 40, cy + 40);
-  await page.mouse.up();
-  // Still exactly the 2 pooled marks — the drag only pans the (read-only) viewport.
-  await expect(page.locator('svg path[stroke]')).toHaveCount(2);
+  await expect(page.getByTestId('tool-group')).toBeVisible();
+  await expect(page.locator('svg path[stroke="#0ea5e9"]')).toHaveCount(2);
 });
