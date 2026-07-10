@@ -113,8 +113,8 @@ print(f'  batch in merge mode; pooled marks: A={mark_a[:8]} (q1), B={mark_b[:8]}
 # ── CO1: data model exists ────────────────────────────────────────────────────
 print('\n── CO1: candidate_object + co_membership tables ──')
 con = db.get_db()
-co_cols = {r[1] for r in con.execute("PRAGMA table_info(candidate_object)").fetchall()}
-mem_cols = {r[1] for r in con.execute("PRAGMA table_info(co_membership)").fetchall()}
+co_cols = {r['name'] for r in con.execute("PRAGMA table_info(candidate_object)").fetchall()}
+mem_cols = {r['name'] for r in con.execute("PRAGMA table_info(co_membership)").fetchall()}
 db.close_db(con)
 assert {'id', 'batch_id', 'project_image_id', 'merger', 'deleted_at'} <= co_cols, f'candidate_object cols: {co_cols}'
 assert {'candidate_object_id', 'annotation_id'} <= mem_cols, f'co_membership cols: {mem_cols}'
