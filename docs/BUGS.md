@@ -262,3 +262,11 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     (block a `main` push that isn't from `test/integration` or lacks a version bump). Local hooks are
     bypassable (`--no-verify`) + per-clone, so treat the hook as the ergonomic guard and CI/branch-
     protection as the real enforcement.
+
+## Merge tool refinements (2026-07-10)
+35. **Right-click context menu for CO actions (group / ungroup / dissolve).** For Phase 2a these
+    actions land as plain buttons (a merge-toolbar action area). Christian would prefer a right-click
+    context menu on marks / a CO's hull — but that's entirely new UI (no context-menu primitive in the
+    app today), so it's deferred. Build the menu later; keep the buttons for now.
+36. **Better names for the merge tools.** `group` / `select` / `eraser` are placeholder names; revisit
+    for something clearer once the interaction is settled (Christian, 2026-07-10).
