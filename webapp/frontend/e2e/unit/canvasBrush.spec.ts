@@ -160,6 +160,26 @@ test.describe('createCanvasInteraction', () => {
     expect(cx.isSpaceDown()).toBe(false);
   });
 
+  // ── BUGS #38 — space+drag pan must work while the ERASER tool is active ──────
+  // Regression guard: the space-pan gesture must take priority over the eraser's own
+  // pointer handling (space down → pointer-drag pans, and does NOT draft/commit an erase).
+  // The same must hold for the group (merge) tool, which shares the eraser's draw path.
+  for (const tool of ['eraser', 'group', 'brush'] as const) {
+    test(`space+drag pans while the ${tool} tool is active (no stroke drafted)`, async () => {
+      const { cx, vb, draft, committed } = await makeInteraction({ tool });
+      cx.handleKeyDown(kbEvent(' ') as KeyboardEvent);
+      expect(cx.isSpaceDown()).toBe(true);
+      cx.onPointerDown(ptrEvent(100, 300, 1) as unknown as PointerEvent);
+      cx.onPointerMove(ptrEvent(200, 300, 1) as unknown as PointerEvent);
+      // The viewport panned by the drag delta (CTM a=1 → 100px client = 100 image units)…
+      expect(vb().x).toBe(-100);
+      // …and NO erase/paint stroke was started while space-panning.
+      expect(draft()).toHaveLength(0);
+      cx.onPointerUp(ptrEvent(200, 300, 1) as unknown as PointerEvent);
+      expect(committed).toHaveLength(0);
+    });
+  }
+
   // ── #7 — CTM-based coordinate mapping (letterbox) ──────────────────────────
   test('toImage maps screen coords to image coords accounting for letterbox y-offset', async () => {
     const { cx } = await makeInteraction();
