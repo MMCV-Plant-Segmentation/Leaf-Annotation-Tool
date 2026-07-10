@@ -1090,9 +1090,18 @@ def create_batch(project_id: str):
         # unused-candidate pool comfortably exceeds what this call could ever need — so
         # even a cold first-ever batch on a huge project only pays for a bounded sample of
         # images, not a full-project sweep.
+        # Deterministic per-batch RNG: the image scan order and the tile sample are a pure
+        # function of (project_id, seq), so batch composition is reproducible in prod AND tests
+        # and is safe under the concurrent test server (no shared process-global RNG state
+        # consumed in nondeterministic order — the BUGS #31 flake root cause). seq is the next
+        # batch number; compute it up front so it can seed the RNG.
+        seq = (con.execute(
+            'SELECT COALESCE(MAX(seq), 0) m FROM batch WHERE project_id = ?', (project_id,)
+        ).fetchone()['m']) + 1
+        rng = random.Random(f'{project_id}:{seq}')
         POOL_TARGET = max(size * 20, 200)
         shuffled = list(images)
-        random.shuffle(shuffled)
+        rng.shuffle(shuffled)
         pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
         unused = 0
         for im in shuffled:
@@ -1104,13 +1113,10 @@ def create_batch(project_id: str):
                         unused += 1
             if unused >= POOL_TARGET:
                 break
-        picked = tiling.sample_positions(list(pool.keys()), used, size)
+        picked = tiling.sample_positions(list(pool.keys()), used, size, rng=rng)
         if not picked:
             return jsonify({'error': 'no unused tiles left to sample'}), 409
 
-        seq = (con.execute(
-            'SELECT COALESCE(MAX(seq), 0) m FROM batch WHERE project_id = ?', (project_id,)
-        ).fetchone()['m']) + 1
         batch_id = _uid()
         con.execute(
             'INSERT INTO batch (id, project_id, seq, size, status, created_at)'
