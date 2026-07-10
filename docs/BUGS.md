@@ -213,13 +213,17 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     vertical popup with the same content. UX proposal.
 
 ## Test flakiness (2026-07-09)
-31. **Freehand-paint Playwright tests flake under load.** A jailed Sonnet running the full gate 3× saw
-    `370/371` each time but a *different* single test failing each run — always in the mouse-drag-
-    freehand-paint family (`relabel.spec.ts`'s paint/relabel, `relabel-undo.spec.ts`'s undo/redo). Did
-    NOT reproduce on the host (clean `371/0`), so it's simulated-pointer-event timing under a loaded
-    box, not a product regression. Revisit: stabilize the paint gesture in these specs (settle/wait on
-    the committed stroke rather than a fixed drag), or add a retry only for the paint-gesture step.
-    Surfaced during the shared-canvas-viewer refactor (`b904fa5`); merge-mode's own spec was stable.
+31. **Freehand-paint Playwright tests flake under load.** ✅ **RESOLVED 2026-07-10 (`b3275eb`).**
+    Root cause was NOT pointer-event timing — it was RNG. `create_batch` shuffles images and samples
+    RANDOM tile positions, so only some tiles exist; `relabel.spec` painted at the SVG box CENTRE,
+    which lands inside a sampled tile only on some seeds. When it missed, the paint POST 422'd
+    ("annotation must intersect at least one tile") → the lesion never rendered → the spec failed.
+    Unseeded RNG made it a per-run coin flip (~30% under parallel repeat stress; the sibling
+    `relabel-undo.spec` had already been de-flaked the right way). Fix: port that pattern — fetch the
+    batch's real server-assigned tiles and anchor the paint at a tile CENTRE (`imgToScreen` maps
+    image→screen respecting letterboxing). Verified 16/16 under 6-worker stress; full gate ALL GREEN.
+    (`relabel-undo.spec` was already robust; `merge-*` specs seed marks via the API at real tile
+    coords, so they were never exposed to this.)
 
 ## Merge tool refinements (2026-07-09)
 32. **The merge grouping "brush" should be a LASSO (select-by-enclosure), + cycle through stacked marks.**
@@ -272,18 +276,16 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
     for something clearer once the interaction is settled (Christian, 2026-07-10).
 
 ## Testing round — brush fidelity + a11y (Christian, 2026-07-10)
-37. **Small-brush geometry: no sub-pixel accuracy + vertical lines vanish.** (a) Stroke points appear
-    to be quantized to integer image pixels — but the SVG can render at higher resolution than the
-    image, so there's no reason to snap to pixel boundaries; keep points as floats end-to-end. (b) A
-    straight VERTICAL stroke disappears entirely — a degenerate (zero-horizontal-extent) path whose
-    outline/buffer collapses to zero area, so the BE returns no rings → nothing renders. **This is the
-    FE-draws-vs-BE-sends-back discrepancy (top priority) and almost certainly the root cause of the
-    `relabel.spec` `POST /annotations` 422 I mis-labelled as the #31 flake** (a small/degenerate stroke
-    fails the BE's buffered-area "must intersect a tile" / valid-geometry check). Fixing it should also
-    settle that flake. **Affects merge too** — pooled marks are these same BE rings, and the grouping
-    brush sends a stroke the BE resolves. Investigate the FE perfect-freehand outline → `outline_json`
-    → `ShapelyPolygon(outline).buffer(0)` → rings pipeline; ensure a thin/vertical/tiny stroke still
-    yields a valid non-empty area and sub-pixel coords survive.
+37. **Small-brush geometry: no sub-pixel accuracy + vertical lines vanish.** ✅ **RESOLVED
+    2026-07-10 (`dba96c1`).** Sole culprit: `_poly_rings` rounded every stored ring coordinate to the
+    nearest INTEGER pixel, while the FE maps client→image px as floats via the CTM. That (a) lost
+    sub-pixel accuracy on every mark and (b) collapsed a <1px-wide vertical/thin stroke's two long
+    edges onto the same column → a zero-area path that renders as nothing. Fix: round to 2 dp. TDD:
+    `test_poly_rings_precision.py` (sub-pixel survives / thin sliver keeps distinct columns / tiny
+    square keeps a renderable area). **Correction:** this was NOT the root cause of the `relabel.spec`
+    422 — that turned out to be a separate test-robustness flake (see #31). This fix DOES benefit merge
+    (pooled marks are these same BE rings). Original notes: keep points float end-to-end; the pipeline
+    is FE perfect-freehand outline → `outline_json` → `buffer(0)`/`_footprint` → `_poly_rings` → rings.
 38. **Space+drag pan doesn't work while the eraser tool is active.** The hold-space temporary-pan
     override works for other tools but not the eraser — the eraser's pointer handling swallows it.
 39. **Accidental right-click leaves the eraser "hanging around."** A right-click while erasing leaves
