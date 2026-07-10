@@ -77,6 +77,7 @@
   "manage.btn.replace": "Replace files",
   "manage.btn.delete": "Delete",
   "admin.user.inviteExpires": "Invite (expires {expiry}):",
+  "admin.user.inviteExpired": "Invite (expired)",
   "merge.image": "Image",
   "merge.annotationSets": "Annotation sets",
   "merge.empty": "No annotation sets yet.",

@@ -90,7 +90,7 @@ const CanvasScreen: Component = () => {
 
   // Best-effort viewport (pan/zoom) telemetry — see viewportTelemetry.ts. No UI; feeds
   // future analysis of per-user "vision level" tile sizing.
-  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef });
+  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
 
@@ -102,7 +102,8 @@ const CanvasScreen: Component = () => {
         () => canvas()?.projectId ?? '',
         () => image()?.imageId ?? '',
         () => image()?.width ?? 0,
-        () => image()?.height ?? 0)
+        () => image()?.height ?? 0,
+        annotator)
     : null;
 
   const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas);
