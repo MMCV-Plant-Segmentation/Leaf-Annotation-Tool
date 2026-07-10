@@ -43,6 +43,8 @@ export type Batch = {
   size: number;
   status: string;
   tileCount: number;
+  /** MERGE Phase 1 gate: true once every annotator_tile in the batch is 'completed'. */
+  mergeReady: boolean;
 };
 
 export type Progress = {
@@ -79,7 +81,8 @@ import type { Group, Compound } from './taxonomy';
 // {...} from './api'` call site keeps working unchanged.
 export type {
   CanvasTile, TileStateUpdate, CanvasAnnotation, CanvasImage, BatchCanvas,
-  ConsumedGroup, CreateAnnotationResult,
+  ConsumedGroup, CreateAnnotationResult, MergeAnnotations,
+  CandidateObject, CandidateObjects, Erasures,
 } from './canvasApi';
 import { canvasApi } from './canvasApi';
 

@@ -211,3 +211,91 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
 30. **Controls UX: replace the bottom tooltip bar with a "show controls" popup.** Instead of covering the
     page bottom with tooltips, a small "click here to see controls" affordance opening a closable, more
     vertical popup with the same content. UX proposal.
+
+## Test flakiness (2026-07-09)
+31. **Freehand-paint Playwright tests flake under load.** ✅ **RESOLVED 2026-07-10 (`b3275eb`).**
+    Root cause was NOT pointer-event timing — it was RNG. `create_batch` shuffles images and samples
+    RANDOM tile positions, so only some tiles exist; `relabel.spec` painted at the SVG box CENTRE,
+    which lands inside a sampled tile only on some seeds. When it missed, the paint POST 422'd
+    ("annotation must intersect at least one tile") → the lesion never rendered → the spec failed.
+    Unseeded RNG made it a per-run coin flip (~30% under parallel repeat stress; the sibling
+    `relabel-undo.spec` had already been de-flaked the right way). Fix: port that pattern — fetch the
+    batch's real server-assigned tiles and anchor the paint at a tile CENTRE (`imgToScreen` maps
+    image→screen respecting letterboxing). Verified 16/16 under 6-worker stress; full gate ALL GREEN.
+    (`relabel-undo.spec` was already robust; `merge-*` specs seed marks via the API at real tile
+    coords, so they were never exposed to this.)
+
+## Merge tool refinements (2026-07-09)
+32. **The merge grouping "brush" should be a LASSO (select-by-enclosure), + cycle through stacked marks.**
+    Christian's observation: grouping marks into a candidate object is really a lasso — you draw a closed
+    gesture *around* the marks you want, and everything ENCLOSED is selected. Phase 2a ships it as a
+    paint-over brush (marks whose area the stroke *touches* join the CO); refine it to a proper lasso
+    (enclosure) — a more natural + precise "circle these" gesture. Open question when we do it: does the
+    lasso REPLACE the grouping brush, or do we keep both (brush = fast rough touch, lasso = precise
+    enclose)? Leave the rectangular select (on the select tool) as-is regardless.
+    - **NOT purely FE.** The membership geometry (which marks a stroke/lasso covers) is computed on the
+      BE with **shapely** — the same buffered-area `.intersects()` pattern already in `projects.py`/
+      `app.py` for annotation↔tile intersection — not reimplemented in FE JS. So the FE change is the
+      *gesture* (draw a lasso loop instead of a brush stroke) + sending its geometry; the BE resolution
+      is shared. (2a already routes brush membership through the BE per this — see the corrected spec.)
+    - **Overlapping-mark selection matters more than first thought (this is why the tool matters).**
+      Marks routinely stack on top of each other, so a click can't unambiguously pick one — we need a
+      mechanism to **cycle through the marks under the cursor** (e.g. repeated click / modifier-click
+      steps down the stack) to make a precise selection. 2a's click just takes the topmost; this
+      cycling is the real refinement to build here.
+
+## Process / infra (2026-07-09)
+33. **Log server-side errors durably for after-the-fact investigation.** The `/overview` 500 vanished
+    into the void — we root-caused it by reading code + the backup dir, but a persisted error log would
+    have pointed straight at the `FileNotFoundError` in `image_overview`. Add an app-level exception
+    handler / logging config that records uncaught exceptions + 5xx with traceback + request context
+    (endpoint, method, user, args) to a DURABLE sink — a rotating file under the data dir (survives
+    container restarts) and/or a proper log driver, not just ephemeral stdout. Pairs with the
+    `/overview` 500→404 hardening (a missing blob should 404, not log as a 500 — only genuine errors
+    log). Keep it out of the response body (no stack traces to clients).
+34. **Gate merges to `main`: only from `test/integration`, and require a version bump.** prod deploys
+    from `main` (or a `main`-derived tag), so `main` must only ever receive code that passed through
+    `test/integration` testing, and every such merge must bump the version (`webapp/version.py` / the
+    versioning system) so releases are traceable. This is exactly the "deploy from a validated release
+    line" discipline the 2026-07-09 prod-deploy discussion needed. Enforcement notes: git can't natively
+    restrict a merge's SOURCE, so this needs a check, not just a convention — e.g. a CI/pre-merge script
+    that fails if `main`'s new commit isn't a merge from `test/integration` OR if `version.py` is
+    unchanged vs the previous `main`; pair with GitHub branch protection (require PR + the check) once
+    there's CI. (Feature branches → `test/integration` → validated → `main` + bump → tag → deploy.)
+    Locally this is a **pre-push hook** — same pattern as the orchestrator repo's own pre-push guard
+    (block a `main` push that isn't from `test/integration` or lacks a version bump). Local hooks are
+    bypassable (`--no-verify`) + per-clone, so treat the hook as the ergonomic guard and CI/branch-
+    protection as the real enforcement.
+
+## Merge tool refinements (2026-07-10)
+35. **Right-click context menu for CO actions (group / ungroup / dissolve).** For Phase 2a these
+    actions land as plain buttons (a merge-toolbar action area). Christian would prefer a right-click
+    context menu on marks / a CO's hull — but that's entirely new UI (no context-menu primitive in the
+    app today), so it's deferred. Build the menu later; keep the buttons for now.
+36. **Better names for the merge tools.** `group` / `select` / `eraser` are placeholder names; revisit
+    for something clearer once the interaction is settled (Christian, 2026-07-10).
+
+## Testing round — brush fidelity + a11y (Christian, 2026-07-10)
+37. **Small-brush geometry: no sub-pixel accuracy + vertical lines vanish.** ✅ **RESOLVED
+    2026-07-10 (`dba96c1`).** Sole culprit: `_poly_rings` rounded every stored ring coordinate to the
+    nearest INTEGER pixel, while the FE maps client→image px as floats via the CTM. That (a) lost
+    sub-pixel accuracy on every mark and (b) collapsed a <1px-wide vertical/thin stroke's two long
+    edges onto the same column → a zero-area path that renders as nothing. Fix: round to 2 dp. TDD:
+    `test_poly_rings_precision.py` (sub-pixel survives / thin sliver keeps distinct columns / tiny
+    square keeps a renderable area). **Correction:** this was NOT the root cause of the `relabel.spec`
+    422 — that turned out to be a separate test-robustness flake (see #31). This fix DOES benefit merge
+    (pooled marks are these same BE rings). Original notes: keep points float end-to-end; the pipeline
+    is FE perfect-freehand outline → `outline_json` → `buffer(0)`/`_footprint` → `_poly_rings` → rings.
+38. **Space+drag pan doesn't work while the eraser tool is active.** The hold-space temporary-pan
+    override works for other tools but not the eraser — the eraser's pointer handling swallows it.
+39. **Accidental right-click leaves the eraser "hanging around."** A right-click while erasing leaves
+    the eraser in a stuck state (stray preview / mid-stroke). Christian: "perhaps unavoidable?" — at
+    least suppress the context menu / reset the gesture on right-click / pointercancel.
+
+## Accessibility (Christian, 2026-07-10) — need UX design
+40. **Line / polygon tool on the FIRST identity pass** for users with reduced eye-hand coordination:
+    place points (not freehand-drag), **edit points after the fact**, and **add points along an
+    existing path**. A real point-based drawing+editing tool — needs UX design before building.
+41. **Contextual help.** The bottom help strip should show CONTEXT-dependent shortcuts (what's usable
+    in the current tool/mode); clicking it opens a popup help page showing BOTH global and
+    context-dependent help. Needs UX design (and pairs with the deferred controls-popup, #30).

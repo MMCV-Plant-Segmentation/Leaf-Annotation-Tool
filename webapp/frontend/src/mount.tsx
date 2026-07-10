@@ -19,6 +19,7 @@ import ProjectImagesScreen from './projects/ProjectImagesScreen';
 import ProjectTilingScreen from './projects/ProjectTilingScreen';
 import ProjectBatchesScreen from './projects/ProjectBatchesScreen';
 import CanvasScreen from './projects/CanvasScreen';
+import MergeCanvasScreen from './projects/MergeCanvasScreen';
 
 // Apply theme class to body on boot (dark default, respects localStorage).
 initTheme(darkThemeClass, lightThemeClass);
@@ -47,6 +48,7 @@ void initI18n().then(() => {
         <Route path="/projects/:id/images" component={ProjectImagesScreen} />
         <Route path="/projects/:id/tiling" component={ProjectTilingScreen} />
         <Route path="/projects/:id/batches" component={ProjectBatchesScreen} />
+        <Route path="/projects/:id/batches/:batchId/merge" component={MergeCanvasScreen} />
         <Route path="/projects/:id/batches/:batchId" component={CanvasScreen} />
         <Route path="/*" component={HomeScreen} />
       </Router>

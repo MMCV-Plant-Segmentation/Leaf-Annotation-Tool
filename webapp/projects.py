@@ -138,7 +138,10 @@ def _poly_rings(poly) -> list:
     if poly is None or poly.is_empty or poly.geom_type != 'Polygon':
         return []
     def coords(ring):
-        return [[round(float(pt[0])), round(float(pt[1]))] for pt in ring.coords]
+        # Keep sub-pixel precision (BUGS #37): the FE maps client→image px as floats via the
+        # CTM, so snapping to whole pixels loses accuracy and collapses a <1px-wide (thin/
+        # vertical) stroke's two edges onto one column → a zero-area path that vanishes.
+        return [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in ring.coords]
     return [coords(poly.exterior)]
 
 
@@ -524,6 +527,7 @@ def get_project(project_id: str):
             b['tileCount'] = con.execute(
                 'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (b['id'],)
             ).fetchone()['c']
+            b['mergeReady'] = _merge_ready(con, b['id'])
         out['batches'] = batches
         out['progress'] = _progress(con, project_id, batches)
         return jsonify(out)
@@ -1086,9 +1090,18 @@ def create_batch(project_id: str):
         # unused-candidate pool comfortably exceeds what this call could ever need — so
         # even a cold first-ever batch on a huge project only pays for a bounded sample of
         # images, not a full-project sweep.
+        # Deterministic per-batch RNG: the image scan order and the tile sample are a pure
+        # function of (project_id, seq), so batch composition is reproducible in prod AND tests
+        # and is safe under the concurrent test server (no shared process-global RNG state
+        # consumed in nondeterministic order — the BUGS #31 flake root cause). seq is the next
+        # batch number; compute it up front so it can seed the RNG.
+        seq = (con.execute(
+            'SELECT COALESCE(MAX(seq), 0) m FROM batch WHERE project_id = ?', (project_id,)
+        ).fetchone()['m']) + 1
+        rng = random.Random(f'{project_id}:{seq}')
         POOL_TARGET = max(size * 20, 200)
         shuffled = list(images)
-        random.shuffle(shuffled)
+        rng.shuffle(shuffled)
         pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
         unused = 0
         for im in shuffled:
@@ -1100,13 +1113,10 @@ def create_batch(project_id: str):
                         unused += 1
             if unused >= POOL_TARGET:
                 break
-        picked = tiling.sample_positions(list(pool.keys()), used, size)
+        picked = tiling.sample_positions(list(pool.keys()), used, size, rng=rng)
         if not picked:
             return jsonify({'error': 'no unused tiles left to sample'}), 409
 
-        seq = (con.execute(
-            'SELECT COALESCE(MAX(seq), 0) m FROM batch WHERE project_id = ?', (project_id,)
-        ).fetchone()['m']) + 1
         batch_id = _uid()
         con.execute(
             'INSERT INTO batch (id, project_id, seq, size, status, created_at)'
@@ -1145,6 +1155,22 @@ def create_batch(project_id: str):
 
 
 # ── batch / canvas read ───────────────────────────────────────────────────────
+
+def _merge_ready(con, batch_id: str) -> bool:
+    """MERGE Phase 1 gate: a batch is merge-ready when EVERY annotator_tile for it
+    (all its batch_tiles × all its roster annotators) has state='completed'. A batch
+    with no annotator_tile rows at all (no tiles or no roster) is never ready."""
+    row = con.execute(
+        '''SELECT COUNT(*) total,
+                  SUM(CASE WHEN at.state = 'completed' THEN 1 ELSE 0 END) done
+           FROM annotator_tile at
+           JOIN batch_tile bt ON bt.id = at.batch_tile_id
+           WHERE bt.batch_id = ?''', (batch_id,)
+    ).fetchone()
+    total = row['total'] or 0
+    done = row['done'] or 0
+    return total > 0 and total == done
+
 
 @projects_bp.get('/api/batches/<batch_id>')
 @login_required
@@ -1202,9 +1228,480 @@ def get_batch(batch_id: str):
             images.append(entry)
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
-            'status': batch['status'], 'classes': classes,
-            'groups': groups, 'compounds': compounds, 'images': images,
+            'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
+            'classes': classes, 'groups': groups, 'compounds': compounds, 'images': images,
         })
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode (Phase 1: gate + blind pooled read) ────────────────────────────
+
+@projects_bp.post('/api/batches/<batch_id>/enter-merge')
+@login_required
+def enter_merge(batch_id: str):
+    """Advance a merge-ready batch to status='merge'. Idempotent when already in merge;
+    409 when not yet merge-ready (every annotator_tile must be 'completed' — see
+    _merge_ready)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if batch['status'] == 'merge':
+            return jsonify({'ok': True, 'status': 'merge'})
+        if not _merge_ready(con, batch_id):
+            return jsonify({'error': 'batch is not merge-ready — every tile must be '
+                                      'completed by every annotator'}), 409
+        con.execute("UPDATE batch SET status = 'merge' WHERE id = ?", (batch_id,))
+        con.commit()
+        return jsonify({'ok': True, 'status': 'merge'})
+    finally:
+        _db.close_db(con)
+
+
+def _pooled_annotations(con, image_id: str, active_tile_ids: list[str]) -> list:
+    """Every LIVE annotation from EVERY annotator on this image that intersects an
+    active tile — the merge-mode pooled read. Unlike _visible_annotations, this is
+    cross-annotator BY DESIGN (that's the whole point of merge mode); blindness (all
+    marks render identically, one colour, outline-only) is enforced client-side by
+    MergeCanvasScreen, never by hiding whose mark is whose here — the merger is a
+    project member and the data isn't secret, just visually anonymised."""
+    if not active_tile_ids:
+        return []
+    qmarks = ','.join('?' * len(active_tile_ids))
+    rows = con.execute(
+        f'''SELECT DISTINCT a.* FROM annotation a
+            JOIN annotation_tile atl ON atl.annotation_id = a.id
+            WHERE a.project_image_id = ? AND a.deleted_at IS NULL
+              AND atl.tile_id IN ({qmarks})''',
+        (image_id, *active_tile_ids),
+    ).fetchall()
+    return [_annotation_out(r) for r in rows]
+
+
+@projects_bp.get('/api/batches/<batch_id>/merge-annotations')
+@login_required
+def batch_merge_annotations(batch_id: str):
+    """All non-deleted annotations from ALL annotators that intersect this batch's
+    tiles — the pooled, blind read MergeCanvasScreen renders (Phase 1: read-only)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT t.id tile_id, t.project_image_id FROM batch_tile bt
+               JOIN tile t ON t.id = bt.tile_id
+               WHERE bt.batch_id = ?''', (batch_id,)
+        ).fetchall()
+        tiles_by_image: dict[str, list[str]] = {}
+        for r in rows:
+            tiles_by_image.setdefault(r['project_image_id'], []).append(r['tile_id'])
+        out = []
+        for image_id, tile_ids in tiles_by_image.items():
+            out.extend(_pooled_annotations(con, image_id, tile_ids))
+        return jsonify({'annotations': out})
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode Phase 2a: candidate objects ────────────────────────────────────
+# A candidate object (CO) is a merger's lesion-hypothesis during merge mode. Its
+# identity is its MEMBER MARKS only (co_membership rows) — the convex-hull / union
+# shape a merger sees is a FE display concern, not persisted here (see
+# alembic/versions/0005_candidate_objects.py). Any project member may merge and
+# owns/edits only their OWN COs.
+
+
+def _batch_tile_ids_for_image(con, batch_id: str, image_id: str) -> list[str]:
+    """Tile ids of this batch that lie on this image — the "active tiles" that
+    scope which annotations are pooled for merge (see _pooled_annotations)."""
+    rows = con.execute(
+        '''SELECT t.id FROM batch_tile bt
+           JOIN tile t ON t.id = bt.tile_id
+           WHERE bt.batch_id = ? AND t.project_image_id = ?''',
+        (batch_id, image_id),
+    ).fetchall()
+    return [r['id'] for r in rows]
+
+
+def _pooled_annotation_ids_for_image(con, batch_id: str, image_id: str) -> set[str]:
+    """The set of pooled annotation ids for this batch/image — the marks a merger
+    is allowed to reference from a candidate object. Same scoping as
+    `_pooled_annotations` (cross-annotator, live, intersects an active tile), but
+    returns ids only for cheap membership checks."""
+    tile_ids = _batch_tile_ids_for_image(con, batch_id, image_id)
+    if not tile_ids:
+        return set()
+    qmarks = ','.join('?' * len(tile_ids))
+    rows = con.execute(
+        f'''SELECT DISTINCT a.id FROM annotation a
+            JOIN annotation_tile atl ON atl.annotation_id = a.id
+            WHERE a.project_image_id = ? AND a.deleted_at IS NULL
+              AND atl.tile_id IN ({qmarks})''',
+        (image_id, *tile_ids),
+    ).fetchall()
+    return {r['id'] for r in rows}
+
+
+def _co_member_ids(con, coid: str) -> list[str]:
+    return [r['annotation_id'] for r in con.execute(
+        'SELECT annotation_id FROM co_membership WHERE candidate_object_id = ?',
+        (coid,),
+    ).fetchall()]
+
+
+def _co_out(con, row: dict) -> dict:
+    return {'id': row['id'], 'imageId': row['project_image_id'],
+            'memberIds': _co_member_ids(con, row['id'])}
+
+
+def _co_owner_or_403(row: dict):
+    """A merger owns/edits only their OWN COs. Admin bypasses (matches _member_or_403).
+    Returns a 403 tuple or None."""
+    if session.get('username') == 'admin':
+        return None
+    if (row['merger'] or '') != (session.get('username') or ''):
+        return jsonify({'error': 'forbidden'}), 403
+    return None
+
+
+def _resolve_brush_members(con, brush_path, brush_width, pooled_ids: set[str]) -> list[str]:
+    """The BACKEND-side membership resolution for a brush-stroke CO create: build the
+    stroke's shapely footprint (LineString + buffer) and pick every pooled mark whose
+    stored geometry it intersects. Mirrors create_annotation's shapely usage — the
+    client never resolves membership."""
+    if not brush_path or brush_width is None or not pooled_ids:
+        return []
+    try:
+        coords = [tuple(p) for p in brush_path]
+        if len(coords) < 2:
+            return []
+        stroke = LineString(coords).buffer(float(brush_width) / 2.0)
+    except (TypeError, ValueError):
+        return []
+    if stroke is None or stroke.is_empty:
+        return []
+    ids_list = list(pooled_ids)
+    qmarks = ','.join('?' * len(ids_list))
+    rows = con.execute(
+        f'''SELECT * FROM annotation
+            WHERE id IN ({qmarks}) AND deleted_at IS NULL''',
+        (*ids_list,),
+    ).fetchall()
+    members = []
+    for r in rows:
+        g = _annotation_geom(r)
+        if g is not None and not g.is_empty and stroke.intersects(g):
+            members.append(r['id'])
+    return members
+
+
+@projects_bp.get('/api/batches/<batch_id>/candidate-objects')
+@login_required
+def list_candidate_objects(batch_id: str):
+    """That merger's non-deleted COs for this batch."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT * FROM candidate_object
+               WHERE batch_id = ? AND merger = ? AND deleted_at IS NULL
+               ORDER BY created_at ASC''',
+            (batch_id, merger),
+        ).fetchall()
+        return jsonify({'candidateObjects': [_co_out(con, r) for r in rows]})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/candidate-objects')
+@login_required
+def create_candidate_object(batch_id: str):
+    """Create a CO from EITHER explicit `memberIds` OR a brush stroke.
+
+    For a brush stroke: membership is resolved BACKEND-side via shapely against each
+    pooled mark's stored geometry — the client sends the raw path + width only.
+    For explicit `memberIds`: every id must be a pooled mark of this batch on this
+    image (rejected 422 otherwise).
+    """
+    body = request.json or {}
+    image_id = body.get('imageId')
+    if not image_id:
+        return jsonify({'error': 'imageId required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        im = _image_row(con, image_id)
+        if not im or im['project_id'] != batch['project_id']:
+            return jsonify({'error': 'imageId not in this batch project'}), 404
+        pooled = _pooled_annotation_ids_for_image(con, batch_id, image_id)
+
+        raw_member_ids = body.get('memberIds')
+        brush_path = body.get('brushPath')
+        if raw_member_ids is not None:
+            member_ids = list(raw_member_ids)
+            bad = [mid for mid in member_ids if mid not in pooled]
+            if bad:
+                return jsonify({'error': 'member id is not a pooled mark of this batch',
+                                'invalidIds': bad}), 422
+        elif brush_path is not None:
+            brush_width = body.get('brushWidth')
+            if brush_width is None:
+                return jsonify({'error': 'brushWidth required'}), 400
+            member_ids = _resolve_brush_members(con, brush_path, brush_width, pooled)
+        else:
+            return jsonify({'error': 'memberIds or brushPath required'}), 400
+
+        coid = _uid()
+        merger = session.get('username') or ''
+        con.execute(
+            '''INSERT INTO candidate_object
+                 (id, batch_id, project_image_id, merger, created_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, NULL)''',
+            (coid, batch_id, image_id, merger, _now()),
+        )
+        # De-duplicate to keep the (co, annotation) unique-pair contract.
+        for mid in list(dict.fromkeys(member_ids)):
+            con.execute(
+                '''INSERT INTO co_membership (candidate_object_id, annotation_id)
+                   VALUES (?, ?)''',
+                (coid, mid),
+            )
+        con.commit()
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        return jsonify(_co_out(con, row)), 201
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.patch('/api/candidate-objects/<coid>')
+@login_required
+def patch_candidate_object(coid: str):
+    """Group/ungroup a CO's members (addIds / removeIds). Emptying the CO
+    soft-dissolves it (deleted_at set) — the merger's undo can then restore it
+    (v1: no explicit restore endpoint; the row survives for provenance)."""
+    body = request.json or {}
+    add_ids = list(body.get('addIds') or [])
+    remove_ids = list(body.get('removeIds') or [])
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'not found'}), 404
+        batch = con.execute(
+            'SELECT * FROM batch WHERE id = ?', (row['batch_id'],)
+        ).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id']) or _co_owner_or_403(row)
+        if err:
+            return err
+        if row['deleted_at']:
+            return jsonify({'error': 'candidate object dissolved'}), 404
+
+        if add_ids:
+            pooled = _pooled_annotation_ids_for_image(
+                con, row['batch_id'], row['project_image_id']
+            )
+            bad = [mid for mid in add_ids if mid not in pooled]
+            if bad:
+                return jsonify({'error': 'member id is not a pooled mark of this batch',
+                                'invalidIds': bad}), 422
+            for mid in add_ids:
+                con.execute(
+                    '''INSERT OR IGNORE INTO co_membership
+                         (candidate_object_id, annotation_id) VALUES (?, ?)''',
+                    (coid, mid),
+                )
+        if remove_ids:
+            qmarks = ','.join('?' * len(remove_ids))
+            con.execute(
+                f'''DELETE FROM co_membership
+                    WHERE candidate_object_id = ? AND annotation_id IN ({qmarks})''',
+                (coid, *remove_ids),
+            )
+
+        remaining = con.execute(
+            'SELECT COUNT(*) c FROM co_membership WHERE candidate_object_id = ?',
+            (coid,),
+        ).fetchone()['c']
+        if remaining == 0:
+            con.execute(
+                'UPDATE candidate_object SET deleted_at = ? WHERE id = ?',
+                (_now(), coid),
+            )
+        con.commit()
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        return jsonify(_co_out(con, row))
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/candidate-objects/<coid>')
+@login_required
+def dissolve_candidate_object(coid: str):
+    """Soft-dissolve a CO (deleted_at set). The row + its co_membership edges are
+    preserved for provenance; list_candidate_objects hides it going forward."""
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'not found'}), 404
+        batch = con.execute(
+            'SELECT * FROM batch WHERE id = ?', (row['batch_id'],)
+        ).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id']) or _co_owner_or_403(row)
+        if err:
+            return err
+        con.execute(
+            'UPDATE candidate_object SET deleted_at = ? '
+            'WHERE id = ? AND deleted_at IS NULL',
+            (_now(), coid),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode Phase 2a: erasures ─────────────────────────────────────────────
+# An erasure = a per-merger "this mark is not a lesion / an error" vote on a
+# pooled mark — a recoverable TOGGLE (delete the row to un-erase; recovery beyond
+# undo/redo), scoped to the merger who cast it (see
+# alembic/versions/0006_co_erasure.py). The source annotation is NEVER touched
+# — erasure lives in its own table so un-erase always restores the mark from
+# provenance. Mirrors the CO endpoints above (member-gated; per-merger visibility).
+
+
+def _annotation_is_pooled_in_batch(con, batch_id: str, annotation_id: str) -> bool:
+    """True iff `annotation_id` is a pooled mark of this batch — a live
+    annotation that intersects any of the batch's active tiles. Same scoping as
+    `_pooled_annotations` / `_pooled_annotation_ids_for_image`, generalised
+    across every image in the batch (an erasure POST identifies a mark by id
+    only — no imageId in the payload)."""
+    row = con.execute(
+        '''SELECT 1 FROM annotation a
+           JOIN annotation_tile atl ON atl.annotation_id = a.id
+           JOIN batch_tile bt ON bt.tile_id = atl.tile_id
+           WHERE bt.batch_id = ? AND a.id = ? AND a.deleted_at IS NULL
+           LIMIT 1''',
+        (batch_id, annotation_id),
+    ).fetchone()
+    return row is not None
+
+
+@projects_bp.get('/api/batches/<batch_id>/erasures')
+@login_required
+def list_erasures(batch_id: str):
+    """That merger's erasures for this batch — the pooled-annotation ids they've
+    toggled off. Per-merger isolation: another merger's erasures never appear
+    here (co_erasure rows are keyed by (batch, merger, annotation))."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT annotation_id FROM co_erasure
+               WHERE batch_id = ? AND merger = ?
+               ORDER BY created_at ASC''',
+            (batch_id, merger),
+        ).fetchall()
+        return jsonify({'erasedIds': [r['annotation_id'] for r in rows]})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/erasures')
+@login_required
+def create_erasure(batch_id: str):
+    """Cast an erasure vote on a pooled mark for the acting merger. The mark
+    must be a pooled mark of this batch (rejected 422 otherwise). Idempotent:
+    a repeat erase of the same mark is a no-op — the
+    UNIQUE (batch, merger, annotation) constraint dedupes so we never surface
+    a 500 on a second erase."""
+    body = request.json or {}
+    annotation_id = body.get('annotationId')
+    if not annotation_id:
+        return jsonify({'error': 'annotationId required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if not _annotation_is_pooled_in_batch(con, batch_id, annotation_id):
+            return jsonify({'error': 'annotationId is not a pooled mark of this batch'}), 422
+        merger = session.get('username') or ''
+        con.execute(
+            '''INSERT OR IGNORE INTO co_erasure
+                 (id, batch_id, merger, annotation_id, created_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (_uid(), batch_id, merger, annotation_id, _now()),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'annotationId': annotation_id}), 201
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/erasures/<annotation_id>')
+@login_required
+def delete_erasure(batch_id: str, annotation_id: str):
+    """Un-erase (recoverable toggle) — drop the acting merger's erasure row on
+    this mark. Idempotent: deleting a non-existent erasure is a no-op 204 (so
+    an undo replaying against a stale state can't spuriously 404)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        con.execute(
+            '''DELETE FROM co_erasure
+               WHERE batch_id = ? AND merger = ? AND annotation_id = ?''',
+            (batch_id, merger, annotation_id),
+        )
+        con.commit()
+        return ('', 204)
     finally:
         _db.close_db(con)
 
