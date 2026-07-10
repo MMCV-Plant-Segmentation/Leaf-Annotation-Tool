@@ -774,7 +774,10 @@ def api_image_overview(image_hash: str):
         _db.close_db(con)
     if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, row['image_ext'])
+    try:
+        img  = _get_image(image_hash, row['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     w, h = img.size
     if max(w, h) > 2000:
         scale = 2000 / max(w, h)
@@ -799,7 +802,10 @@ def api_image_crop(image_hash: str):
         _db.close_db(con)
     if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, row['image_ext'])
+    try:
+        img  = _get_image(image_hash, row['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     iw, ih = img.size
     try:
         x = max(0, int(request.args['x']))

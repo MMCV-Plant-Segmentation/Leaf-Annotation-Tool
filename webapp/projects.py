@@ -1440,6 +1440,10 @@ def create_viewport_events(project_id: str):
     Body: {imageId, events: [{clientTs, x, y, w, h, cssW, cssH, dpr}, ...]}.
     Response: {ok: true, count: N}.
     """
+    if session.get('username') == 'admin':
+        # Admins are read-only when viewing an annotator's canvas — never record telemetry
+        # "as" admin. (Keep this guard confined to THIS endpoint; see docstring above.)
+        return jsonify({'ok': True, 'count': 0}), 201
     body = request.json or {}
     image_id = body.get('imageId')
     events = body.get('events') or []
@@ -1889,7 +1893,10 @@ def image_overview(image_id: str):
             return err
     finally:
         _db.close_db(con)
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     return send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
 
 
@@ -1911,7 +1918,10 @@ def image_crop(image_id: str):
         w, h = int(request.args['w']), int(request.args['h'])
     except (KeyError, ValueError):
         return jsonify({'error': 'x, y, w, h required'}), 400
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     return send_file(_bytesio(imaging.crop_png(img, x, y, w, h)), mimetype='image/png')
 
 
