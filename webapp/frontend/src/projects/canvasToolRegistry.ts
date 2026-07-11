@@ -25,6 +25,8 @@ export function toolMeta(tl: Tool): ToolMeta {
       return { label: t('canvas.pan'), title: t('canvas.panTitle'), testId: 'tool-pan' };
     case 'brush':
       return { label: t('canvas.brush'), title: t('canvas.brushTitle'), testId: 'tool-brush' };
+    case 'polyline':
+      return { label: t('canvas.polyline'), title: t('canvas.polylineTitle'), testId: 'tool-polyline' };
     case 'eraser':
       return { label: t('canvas.eraser'), title: t('canvas.eraserTitle'), testId: 'tool-eraser' };
     case 'group':

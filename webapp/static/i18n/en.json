@@ -270,6 +270,8 @@
   "canvas.panTitle": "Pan",
   "canvas.brush": "brush",
   "canvas.brushTitle": "Brush",
+  "canvas.polyline": "poly",
+  "canvas.polylineTitle": "Polyline click-brush (click to drop vertices; click the start to close)",
   "canvas.eraser": "✕ eraser",
   "canvas.eraserTitle": "Eraser (drag over strokes to delete them)",
   "canvas.viewing": "viewing",

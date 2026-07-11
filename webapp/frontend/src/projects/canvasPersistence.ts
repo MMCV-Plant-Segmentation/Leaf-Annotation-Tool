@@ -72,15 +72,17 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
-  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => {
+  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => {
     if (kind === 'erase') return void eraseStroke(points, strokeWidth ?? 1);
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return;
     try {
-      // Compute the perfect-freehand outline polygon for stroke commits so the server
-      // stores and uses it for the fused mask's geometry (fills loops, matches rendered
-      // shape). Kept so redo (canvasHistory.ts) can re-POST this exact body.
-      const outline = (kind === 'stroke' && strokeWidth != null)
+      // Compute the perfect-freehand outline polygon for BRUSH stroke commits so the
+      // server stores and uses it for the fused mask's geometry (fills loops, matches
+      // rendered shape). Polyline strokes send NO outline — the backend buffers straight
+      // segments at strokeWidth, which is the correct look for click-brush input.
+      // Kept so redo (canvasHistory.ts) can re-POST this exact body.
+      const outline = (kind === 'stroke' && strokeWidth != null && tool !== 'polyline')
         ? strokeOutline(points, strokeWidth)
         : undefined;
       const body = {
@@ -88,6 +90,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
         label: o.selClass(), viewport: clampRect(o.vb(), im.width, im.height),
         strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
         outline,
+        tool: kind === 'stroke' ? tool : undefined,
       };
       const ann = await projectsApi.createAnnotation(pid, body);
       pushAnnotation(ann);
