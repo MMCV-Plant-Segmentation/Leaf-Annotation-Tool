@@ -2,6 +2,7 @@ import type { Accessor } from 'solid-js';
 import { projectsApi } from './api';
 import type { CanvasAnnotation, CanvasImage, TileStateUpdate } from './api';
 import { clampRect, mergeTileStates, strokeOutline } from './canvasShapes';
+import { polylineOutline } from './canvasPolylineGeometry';
 import type { ViewBox } from './canvasShapes';
 import type { createCanvasHistory } from './canvasHistory';
 
@@ -77,13 +78,15 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return;
     try {
-      // Compute the perfect-freehand outline polygon for BRUSH stroke commits so the
-      // server stores and uses it for the fused mask's geometry (fills loops, matches
-      // rendered shape). Polyline strokes send NO outline — the backend buffers straight
-      // segments at strokeWidth, which is the correct look for click-brush input.
-      // Kept so redo (canvasHistory.ts) can re-POST this exact body.
-      const outline = (kind === 'stroke' && strokeWidth != null && tool !== 'polyline')
-        ? strokeOutline(points, strokeWidth)
+      // Compute the exact stroke-outline polygon FE-side so the server stores + uses it for
+      // the fused mask's geometry (fills loops, matches the rendered shape). Brush → perfect-
+      // freehand; polyline → straight-segment buffer (round joins/caps). Sending it for BOTH
+      // means what gets stored is exactly what the FE drew (no BE re-derivation drift), and
+      // redo (canvasHistory.ts) can re-POST this exact body.
+      const outline = (kind === 'stroke' && strokeWidth != null)
+        ? (tool === 'polyline'
+            ? polylineOutline(points, strokeWidth)
+            : strokeOutline(points, strokeWidth))
         : undefined;
       const body = {
         imageId: im.imageId, annotator: o.annotator(), kind, points, passNo,

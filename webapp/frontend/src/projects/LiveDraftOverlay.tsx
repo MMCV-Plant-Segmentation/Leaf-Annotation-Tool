@@ -1,5 +1,6 @@
 import { type Component, For, Show } from 'solid-js';
-import { buildStrokePath, type Tool } from './canvasShapes';
+import { buildStrokePath, ringsToPath, type Tool } from './canvasShapes';
+import { polylineOutline } from './canvasPolylineGeometry';
 
 // Accessibility-tuned colours for the *live* brush/eraser/polyline draft + hover preview —
 // deliberately louder than the committed-stroke rendering (AnnotationShape), since a
@@ -54,12 +55,15 @@ export const LiveDraftOverlay: Component<{
       )}
     </Show>
     <Show when={props.tool === 'polyline' && props.draft.length > 0}>
-      <polyline data-testid="polyline-live"
-        points={props.draft.map((p) => `${p[0]},${p[1]}`).join(' ')} fill="none"
+      {/* The THICK filled shape the commit will store (polylineOutline == the sent outline),
+          so the preview matches the stored geometry exactly. nonzero fill so a reflex/looped
+          ring still fills. Vertex dots + a dashed rubber-band preview the pending segment. */}
+      <path data-testid="polyline-live"
+        d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill="none"
         stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
         vector-effect="non-scaling-stroke" pointer-events="none" />
-      <polyline points={props.draft.map((p) => `${p[0]},${p[1]}`).join(' ')} fill="none"
-        stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
+      <path d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill-rule="nonzero"
+        fill={LIVE_DRAFT.brushFill} stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
         vector-effect="non-scaling-stroke" pointer-events="none" />
       <For each={props.draft}>{(pt) => (
         <circle cx={pt[0]} cy={pt[1]} r={LIVE_DRAFT.polylineVertexR}
