@@ -6,6 +6,7 @@ import { type Tool, type ViewBox } from './canvasShapes';
 import { LiveDraftOverlay } from './LiveDraftOverlay';
 import { SelectionHighlight } from './SelectionHighlight';
 import { hitTestAnnotation } from './lesionSelect';
+import { VertexHandles } from './VertexHandles';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
@@ -77,7 +78,7 @@ const CanvasScreen: Component = () => {
     updateImg,
   );
 
-  const { commit, relabel } = createCanvasPersistence({
+  const { commit, relabel, editStroke } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
@@ -99,6 +100,16 @@ const CanvasScreen: Component = () => {
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
+
+  // a11y #40 v1b: the selected annotation, only when it's a stroke mask with member
+  // strokes to draw handles for; and image-space units per screen pixel (drives
+  // handleRadiusImg so the dot stays a CONSTANT ~6-screen-px target across zooms).
+  const selectedStrokeAnn = createMemo(() => {
+    const id = selId(); if (!id) return undefined;
+    const a = image()?.annotations.find((x) => x.id === id);
+    return a?.kind === 'stroke' && (a.strokes?.length ?? 0) > 0 ? a : undefined;
+  });
+  const imgPerScreenPx = () => { const v = vb(); return svgRef ? v.w / svgRef.clientWidth : 1; };
 
   // Admin-only viewport-attention HEATMAP overlay (dwell x zoom-closeness). The math
   // lives in viewportHeatmap.ts; the SVG layer + control panel in ViewportHeatmapOverlay.
@@ -163,6 +174,12 @@ const CanvasScreen: Component = () => {
       >
         <Show when={imgLoaded() && selId()}>{(id) =>
           <SelectionHighlight ann={image()!.annotations.find((a) => a.id === id())!} />
+        }</Show>
+        <Show when={imgLoaded() && tool() === 'select' && selectedStrokeAnn()}>{(ann) =>
+          // a11y #40 v1b: vertex-editing handles for the selected stroke mask.
+          <VertexHandles ann={ann()} scale={imgPerScreenPx}
+            toImage={interaction.toImage}
+            onCommit={(sid, tl, pts, sw) => void editStroke(sid, tl, pts, sw)} />
         }</Show>
         <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
           hover={interaction.hoverImg()} />
