@@ -83,6 +83,7 @@ export type {
   CanvasTile, TileStateUpdate, CanvasAnnotation, CanvasImage, BatchCanvas,
   ConsumedGroup, CreateAnnotationResult, MergeAnnotations,
   CandidateObject, CandidateObjects, Erasures,
+  CanvasStroke, StrokeEditBefore, StrokeEditGroup,
 } from './canvasApi';
 import { canvasApi } from './canvasApi';
 
