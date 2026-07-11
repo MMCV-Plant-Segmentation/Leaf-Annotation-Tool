@@ -13,6 +13,10 @@ Proposed contract (refine as needed — this is the starting spec):
 
 E1. Moving a lone polyline's vertices moves its mask (the mask covers the NEW vertices, not the old).
 E2. Two fused polylines: moving one far away SPLITS the mask into two separate annotations.
+E3. Two SEPARATE same-label polylines: moving one onto the other MERGES them into one annotation
+    (the "annotations never overlap" invariant — recompute must consider global overlaps, Christian).
+E4. The edit is stroke-general, NOT polyline-only: a BRUSH stroke edits through the same endpoint
+    (a brush stroke is just a polyline whose in-between points perfect-freehand fills — Christian).
 
 RED until the stroke-edit endpoint + recompute land.
 """
@@ -68,10 +72,10 @@ tx, ty, tw, th = t0['x'], t0['y'], t0['w'], t0['h']
 cx, cy = tx + tw // 2, ty + th // 2
 
 
-def make(points, label, sw=12):
+def make(points, label, sw=12, tool='polyline'):
     r2 = client.post(f'/api/projects/{pid}/annotations', json={
         'imageId': image_id, 'annotator': 'alice', 'kind': 'stroke', 'points': points,
-        'label': label, 'strokeWidth': sw, 'tool': 'polyline',
+        'label': label, 'strokeWidth': sw, 'tool': tool,
         'viewport': {'x': tx, 'y': ty, 'w': tw, 'h': th}})
     assert r2.status_code == 201, f'create failed: {jdump(r2)}'
     return jdump(r2)
@@ -123,5 +127,27 @@ assert r.status_code == 200, f'edit should 200, got {r.status_code}: {jdump(r)}'
 after = anns('e2')
 assert len(after) == 2, f'separating the fused strokes must SPLIT into two annotations, got {len(after)}'
 print('E2 OK — separating fused polyline strokes splits the mask')
+
+# ── E3: moving one polyline ONTO a separate same-label one MERGES them ────────────────
+b1 = make([[cx - 90, cy + 60], [cx - 70, cy + 60]], label='e3')   # far left
+make([[cx + 70, cy + 60], [cx + 90, cy + 60]], label='e3')        # far right — disjoint
+assert len(anns('e3')) == 2, f'two disjoint same-label polylines should be two annotations, got {len(anns("e3"))}'
+sidb1 = stroke_id_of(b1['id'])
+# move b1 onto the right-hand one → they now overlap → must fuse into ONE annotation
+r = edit_stroke(sidb1, [[cx + 60, cy + 60], [cx + 80, cy + 60]])
+assert r.status_code == 200, f'edit should 200, got {r.status_code}: {jdump(r)}'
+merged = anns('e3')
+assert len(merged) == 1, f'overlapping the two strokes must MERGE into one annotation, got {len(merged)}'
+print('E3 OK — moving a stroke onto a neighbour merges the masks (no-overlap invariant)')
+
+# ── E4: the edit is stroke-general — a BRUSH stroke edits through the same endpoint ────
+c1 = make([[cx - 20, cy - 70], [cx, cy - 70]], label='e4', tool='brush')
+sidc1 = stroke_id_of(c1['id'])
+r = edit_stroke(sidc1, [[cx + 40, cy - 70], [cx + 60, cy - 70]])
+assert r.status_code == 200, f'brush stroke must edit through the same endpoint, got {r.status_code}: {jdump(r)}'
+m = mask(anns('e4')[0])
+assert m is not None and m.contains(_Point(cx + 50, cy - 70)), 'brush mask must cover the NEW vertices'
+assert not m.contains(_Point(cx - 20, cy - 70)), 'brush mask must no longer cover the OLD position'
+print('E4 OK — editing a brush stroke recomputes its mask (edit is not polyline-only)')
 
 print('\npolyline-edit (v1b) contract tests passed.')
