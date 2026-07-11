@@ -4,6 +4,8 @@
 import type { Rect, Label } from './api';
 import type { Group, Compound, LabelSnapshot } from './taxonomy';
 import { jbody, jfetch } from './httpJson';
+import { strokeEditApi } from './canvasStrokeEditApi';
+export type { StrokeEditBefore, StrokeEditGroup } from './canvasStrokeEditApi';
 
 export type CanvasTile = Rect & {
   tileId: string;
@@ -16,9 +18,13 @@ export type CanvasTile = Rect & {
  * editing a completed tile re-opens it) — enough for the FE to patch its local state. */
 export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
 
-/** A persisted annotation (mask). kind='stroke' renders from `rings` (the fused,
- * hole-less exterior ring the server stores — never recomputed client-side); other
- * kinds never fuse, so they render from their own `points`, same as before. */
+/** One member stroke of a fused mask (a11y #40 v1b — `tool` picks the outline
+ * builder on vertex-edit drop: polyline → polylineOutline, brush → perfect-freehand). */
+export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number };
+
+/** A persisted annotation (mask). kind='stroke' renders from `rings` (fused, hole-less
+ * exterior ring the server stores); other kinds render from their own `points`.
+ * `strokes` is opt-in server-side and drives the vertex-edit handles when selected. */
 export type CanvasAnnotation = {
   id: string;
   kind: string;
@@ -31,6 +37,7 @@ export type CanvasAnnotation = {
   viewport: Rect | null;
   annotator: string;
   imageId: string;
+  strokes?: CanvasStroke[];
 };
 
 export type CanvasImage = {
@@ -145,6 +152,8 @@ export const canvasApi = {
   reverseMerge: (projectId: string, body: { annotationId: string; strokeId: string; consumedGroups: ConsumedGroup[] }) =>
     jfetch<{ ok: boolean; resurrected: CanvasAnnotation[]; deletedAnnotationId: string; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/reverse`, jbody('POST', body)),
+
+  ...strokeEditApi,
 
   setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
     jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
