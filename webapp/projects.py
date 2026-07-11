@@ -1753,14 +1753,19 @@ def _annotation_out(row: dict) -> dict:
 # ── annotations CRUD (the painting data sink) ─────────────────────────────────
 
 def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
-                   stroke_width, outline, now: str) -> None:
-    """INSERT the provenance-only `stroke` row bridged to its owning `annotation`."""
+                   stroke_width, outline, now: str, tool: str = 'brush') -> None:
+    """INSERT the provenance-only `stroke` row bridged to its owning `annotation`.
+
+    `tool` records the input mode that created the stroke (brush | polyline) — brush and
+    polyline are two ways of producing the same stroke data (a11y #40). It drives editing
+    affordances (a polyline's clicked vertices are editable), never fusion.
+    """
     con.execute(
         '''INSERT INTO stroke (id, annotation_id, kind, points_json, stroke_width,
-             outline_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+             outline_json, created_at, tool)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
         (sid, annotation_id, kind, json.dumps(points), stroke_width,
-         json.dumps(outline) if outline is not None else None, now),
+         json.dumps(outline) if outline is not None else None, now, tool),
     )
 
 
@@ -1822,6 +1827,7 @@ def create_annotation(project_id: str):
                 except (TypeError, ValueError):
                     stroke_width = None
             outline = body.get('outline')
+            tool = 'polyline' if body.get('tool') == 'polyline' else 'brush'
             footprint = _footprint(points, stroke_width, outline)
             if footprint is None or footprint.is_empty \
                or not _tiles_for_geom(con, image_id, footprint):
@@ -1854,7 +1860,7 @@ def create_annotation(project_id: str):
                 (aid, project_id, image_id, annotator, pass_no, label, snapshot_json,
                  json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
             )
-            _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now)
+            _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now, tool=tool)
 
             consumed_groups = []
             for r, _g in fuse_set:

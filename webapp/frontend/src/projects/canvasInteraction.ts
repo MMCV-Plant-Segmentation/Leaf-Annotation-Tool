@@ -1,6 +1,6 @@
-import { createSignal } from 'solid-js';
-import type { Accessor, Setter } from 'solid-js';
+import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
+import { polylineClick, polylineFinish } from './canvasPolyline';
 
 export interface CanvasInteractionOpts {
   getSvg: () => SVGSVGElement | undefined;
@@ -12,7 +12,7 @@ export interface CanvasInteractionOpts {
   maxBrushSize: Accessor<number>;
   draft: Accessor<number[][]>;
   setDraft: Setter<number[][]>;
-  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => void;
+  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
   onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
@@ -118,8 +118,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
     if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
-    // polygon/line: add a vertex (legacy tools, not shown in toolbar)
-    o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);
+    if (tl === 'polyline') { polylineClick(ix, iy, o); return; }
+    o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
 
   const onPointerLeave = () => { setHoverImg(null); };
@@ -181,16 +181,13 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     lastPanClient = null;
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === ' ') setSpaceDown(true);
-  };
-
-  const handleKeyUp = (e: KeyboardEvent) => {
-    if (e.key === ' ') { setSpaceDown(false); spacePanRef = null; }
-  };
+  const handleKeyDown = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceDown(true); };
+  const handleKeyUp = (e: KeyboardEvent) => { if (e.key === ' ') { setSpaceDown(false); spacePanRef = null; } };
 
   const finishDraft = () => {
-    const d = o.draft(); const tl = o.tool();
+    const tl = o.tool();
+    if (tl === 'polyline') return polylineFinish(o);
+    const d = o.draft();
     if (tl === 'polygon' && d.length >= 3) o.commit('polygon', d, 2);
     else if (tl === 'line' && d.length >= 2) o.commit('line', d);
     o.setDraft([]);

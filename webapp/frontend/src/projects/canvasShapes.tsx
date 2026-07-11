@@ -2,7 +2,7 @@ import { type Component, For, Show } from 'solid-js';
 import { getStroke } from 'perfect-freehand';
 import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
-export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select' | 'group';
+export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select' | 'group' | 'polyline';
 export type ViewBox = { x: number; y: number; w: number; h: number };
 
 export const TILE_COLORS: Record<string, string> = {
@@ -131,54 +131,8 @@ export const AnnotationShape: Component<{
   );
 };
 
-// Accessibility-tuned colours for the *live* brush/eraser draft + hover preview —
-// deliberately louder than the committed-stroke rendering above (AnnotationShape),
-// since a low-vision user needs to see her own in-progress stroke while drawing.
-// A white halo is drawn under a dark-toned outline so the shape reads against both
-// light and dark leaf backgrounds. Kept as one object so Christian can retune by eye.
-export const LIVE_DRAFT = {
-  haloColor: '#ffffff',
-  haloWidth: 4,
-  brushFill: 'rgba(37,99,235,0.6)',
-  brushStroke: '#1e3a8a',
-  eraserFill: 'rgba(220,38,38,0.6)',
-  eraserStroke: '#7f1d1d',
-  strokeWidth: 2,
-  previewHaloWidth: 4.5,
-  previewStrokeWidth: 2.5,
-};
-
-/** Live in-progress brush/eraser stroke + hover-radius preview circle. Rendered on
- * top of everything else while drawing; not shown for committed strokes. */
-export const LiveDraftOverlay: Component<{
-  tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
-}> = (props) => (
-  <>
-    <Show when={props.draft.length > 0 && (props.tool === 'brush' || props.tool === 'eraser')}>
-      <path d={buildStrokePath(props.draft, props.brushSize, false)} fill="none"
-        stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={buildStrokePath(props.draft, props.brushSize, false)}
-        fill={props.tool === 'eraser' ? LIVE_DRAFT.eraserFill : LIVE_DRAFT.brushFill}
-        stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
-        stroke-width={LIVE_DRAFT.strokeWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-    </Show>
-    <Show when={(props.tool === 'brush' || props.tool === 'eraser') && props.hover}>
-      {(c) => (
-        <>
-          <circle cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
-            stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.previewHaloWidth}
-            vector-effect="non-scaling-stroke" pointer-events="none" />
-          <circle cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
-            stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
-            stroke-width={LIVE_DRAFT.previewStrokeWidth}
-            vector-effect="non-scaling-stroke" pointer-events="none" />
-        </>
-      )}
-    </Show>
-  </>
-);
+// LIVE_DRAFT constants + LiveDraftOverlay component moved to ./LiveDraftOverlay.tsx —
+// keeps this file under the 200-line cap while making room for polyline draft rendering.
 
 // Clamp a viewport to the image bounds (used when persisting an annotation's viewport).
 export function clampRect(v: ViewBox, w: number, h: number): Rect {
