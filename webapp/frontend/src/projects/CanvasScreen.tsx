@@ -2,7 +2,8 @@ import { type Component, createEffect, createMemo, createResource, createSignal,
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, LiveDraftOverlay } from './canvasShapes';
+import { type Tool, type ViewBox } from './canvasShapes';
+import { LiveDraftOverlay } from './LiveDraftOverlay';
 import { SelectionHighlight } from './SelectionHighlight';
 import { hitTestAnnotation } from './lesionSelect';
 import { createCanvasInteraction } from './canvasInteraction';
@@ -23,7 +24,8 @@ import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } fro
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set (unchanged behavior) — see canvasToolRegistry.ts.
-const ANNOTATE_TOOLS: Tool[] = ['select', 'pan', 'brush', 'eraser'];
+// 'polyline' is the a11y click-brush (feature #40): same brush data, click-driven input.
+const ANNOTATE_TOOLS: Tool[] = ['select', 'pan', 'brush', 'polyline', 'eraser'];
 
 const CanvasScreen: Component = () => {
   const params = useParams();
@@ -88,7 +90,7 @@ const CanvasScreen: Component = () => {
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
     brushSize, setBrushSize, maxBrushSize,
-    commit: (kind, points, passNo, strokeWidth) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth),
+    commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
