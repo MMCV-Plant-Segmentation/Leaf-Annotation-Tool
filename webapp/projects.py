@@ -1924,6 +1924,127 @@ def create_annotation(project_id: str):
         _db.close_db(con)
 
 
+@projects_bp.patch('/api/projects/<project_id>/strokes/<stroke_id>')
+@login_required
+def edit_stroke(project_id: str, stroke_id: str):
+    """Edit a stroke's vertices and RECOMPUTE the affected mask(s) — a11y #40 v1b.
+
+    The one new capability the computed-from-strokes model unlocks. A `stroke` is the raw
+    record of a mark; brush and polyline are two ways of producing one (a brush stroke is
+    just a polyline whose in-between points perfect-freehand fills), so this endpoint is
+    stroke-general, NOT polyline-only (Christian, 2026-07-11). Moving a stroke's points
+    changes its footprint, so we recompute EVERY same-(annotator, image, label) mask from
+    ALL those strokes' footprints as connected components — which naturally MOVES a mask,
+    SPLITS one whose strokes now disconnect, and MERGES strokes that now overlap. Scoping
+    the recompute over the whole label set (not just the edited stroke's own annotation) is
+    what preserves the "annotations never overlap" invariant. Like create_annotation, we
+    never mutate a mask in place: the affected masks are soft-deleted and one fresh
+    annotation is minted per resulting component.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+        if not srow:
+            return jsonify({'error': 'not found'}), 404
+        ann = con.execute('SELECT * FROM annotation WHERE id = ?',
+                          (srow['annotation_id'],)).fetchone()
+        if not ann or ann['deleted_at']:
+            return jsonify({'error': 'not found'}), 404
+        if ann['kind'] != 'stroke':
+            return jsonify({'error': 'only stroke masks support vertex editing'}), 422
+        err = _member_or_403(con, project_id) or _owner_or_403(ann['annotator'])
+        if err:
+            return err
+        points = body.get('points') or []
+        if not points:
+            return jsonify({'error': 'points required'}), 400
+
+        image_id = ann['project_image_id']
+        annotator = ann['annotator']
+        label = ann['label']
+        now = _now()
+
+        # Clamp stroke width to [1px, image diagonal] — never trust the client (mirrors create).
+        stroke_width = srow['stroke_width']
+        if body.get('strokeWidth') is not None:
+            im = _image_row(con, image_id)
+            diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+            try:
+                w = float(body['strokeWidth'])
+                stroke_width = max(1.0, min(w, diag) if diag else w)
+            except (TypeError, ValueError):
+                pass
+        outline = body.get('outline')
+
+        # 1) apply the edit to this stroke's raw record.
+        con.execute(
+            'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+            (json.dumps(points), stroke_width,
+             json.dumps(outline) if outline is not None else None, stroke_id))
+
+        # 2) gather ALL live strokes for this (annotator, image, label) — the full merge scope.
+        srows = con.execute(
+            '''SELECT s.* FROM stroke s JOIN annotation a ON a.id = s.annotation_id
+               WHERE a.project_image_id = ? AND a.annotator = ? AND a.label IS ?
+                 AND a.kind = 'stroke' AND a.deleted_at IS NULL''',
+            (image_id, annotator, label)).fetchall()
+        parsed = [{'id': s['id'],
+                   'points': json.loads(s['points_json']) if s['points_json'] else [],
+                   'stroke_width': s['stroke_width'],
+                   'outline': json.loads(s['outline_json']) if s['outline_json'] else None}
+                  for s in srows]
+
+        # 3) recompute connected components (fusion) over the whole set.
+        components = _stroke_components(parsed)
+
+        # 4) soft-delete every affected mask (never mutate in place) + drop its tile links.
+        old_ids = list({s['annotation_id'] for s in srows})
+        if old_ids:
+            qmarks = ','.join('?' * len(old_ids))
+            con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
+                       (now, *old_ids))
+            con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks})', old_ids)
+
+        # 5) mint one fresh annotation per component; repoint its member strokes; relink tiles.
+        # Label metadata carries over from the edited stroke's former annotation.
+        dirty_tiles: list[str] = []
+        for comp in components:
+            geom = comp['geometry']
+            if geom is None or geom.is_empty:
+                continue
+            geom = _exterior_only(geom)  # fill loop holes — a lesion is a solid blob
+            rings = _poly_rings(geom)
+            if not rings:
+                continue
+            aid = _uid()
+            con.execute(
+                '''INSERT INTO annotation
+                     (id, project_id, project_image_id, annotator, kind, pass_no, label,
+                      label_snapshot, points_json, geometry_json, viewport_json,
+                      hsv_hist_json, created_at, updated_at, deleted_at)
+                   VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+                (aid, project_id, image_id, annotator, ann['pass_no'], label,
+                 ann['label_snapshot'], json.dumps(rings), ann['viewport_json'],
+                 ann['hsv_hist_json'], now, now))
+            member_ids = comp['member_ids']
+            qm = ','.join('?' * len(member_ids))
+            con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
+                       (aid, *member_ids))
+            tile_ids = _tiles_for_geom(con, image_id, geom)
+            for tid in tile_ids:
+                con.execute(
+                    'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                    (aid, tid))
+            dirty_tiles.extend(tile_ids)
+
+        tile_states = _mark_tiles_dirty(con, list(set(dirty_tiles)), annotator)
+        con.commit()
+        return jsonify({'ok': True, 'tileStates': tile_states})
+    finally:
+        _db.close_db(con)
+
+
 @projects_bp.post('/api/projects/<project_id>/viewport-events')
 @login_required
 def create_viewport_events(project_id: str):
