@@ -334,9 +334,11 @@ test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @ful
   const toolbar = p.getByTestId('canvas-toolbar');
   await expect(toolbar.getByRole('button', { name: 'pan' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'brush' })).toBeVisible();
-  await expect(toolbar.getByRole('button', { name: 'polygon' })).toHaveCount(0);
-  await expect(toolbar.getByRole('button', { name: 'point' })).toHaveCount(0);
-  await expect(toolbar.getByRole('button', { name: 'line' })).toHaveCount(0);
+  // Exact match: these assert the LEGACY tools are absent — a substring match would false-
+  // positive on the polyline click-brush ("polyline" contains "line"), so pin them exact.
+  await expect(toolbar.getByRole('button', { name: 'polygon', exact: true })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'point', exact: true })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'line', exact: true })).toHaveCount(0);
   // Finish button removed: brush commits on pointer-up, no finish needed
   await expect(toolbar.getByRole('button', { name: /finish/i })).toHaveCount(0);
 });
