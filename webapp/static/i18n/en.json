@@ -276,6 +276,7 @@
   "canvas.eraserTitle": "Eraser (drag over strokes to delete them)",
   "canvas.viewing": "viewing",
   "canvas.tileError": "Could not update the tile — please try again.",
+  "canvas.vertexHandle": "Drag to move this vertex",
   "mergeCanvas.blindLabel": "Blind pooled view — one colour, outline only",
   "detail.labels.title": "Labels",
   "detail.labels.add": "Add label",

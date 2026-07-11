@@ -1,0 +1,76 @@
+/**
+ * canvasVertexEdit — pure geometry behind the polyline/brush vertex-editing UX
+ * (a11y #40 v1b). Domain-agnostic, DOM-free, unit-testable — the interactive
+ * overlay + wire-up live in VertexHandles.tsx / canvasPersistence.ts / canvasHistory.ts.
+ *
+ * When a stroke MASK is selected (Select tool), the canvas draws a draggable dot at
+ * each of its member strokes' stored input points (polyline = clicked vertices;
+ * brush = the freehand mouse trail — editable too, expected to look rough). Grabbing
+ * a handle and dragging moves that one vertex; on drop the FE PATCHes /strokes/<id>
+ * with the moved points + a freshly-recomputed outline.
+ */
+import type { CanvasAnnotation } from './canvasApi';
+
+/** Editable member stroke as shipped on `CanvasAnnotation.strokes`. */
+export type EditableStroke = {
+  id: string;
+  tool: string;
+  points: number[][];
+  strokeWidth: number;
+};
+
+/** Identifies which vertex a grab lands on. */
+export type VertexHit = { strokeId: string; index: number };
+
+/**
+ * Image-space handle radius so the dot stays a CONSTANT screen size at any zoom.
+ * `scale` = image-space units per screen pixel (bigger when zoomed OUT). A fixed
+ * image-space size would vanish for a 1-px brush; scaling by the current CTM keeps
+ * it grabbable. Never collapses to 0 — even at a bogus/zero scale we return a small
+ * positive floor so the handle is always hittable.
+ */
+export function handleRadiusImg(screenPx: number, scale: number): number {
+  const r = screenPx * scale;
+  return r > 1e-3 ? r : 1e-3;
+}
+
+/**
+ * Nearest-vertex hit test: `{strokeId, index}` of the vertex within `radiusImg` of
+ * the image-space point (px,py), or null when nothing is in range. Scans strokes
+ * TOPMOST-first (later in `strokes` paints on top) with a strict-less comparison,
+ * so an exact tie among vertices at equal distance goes to the topmost stroke.
+ */
+export function hitHandle(
+  strokes: EditableStroke[], px: number, py: number, radiusImg: number,
+): VertexHit | null {
+  let bestSq = radiusImg * radiusImg;
+  let best: VertexHit | null = null;
+  for (let s = strokes.length - 1; s >= 0; s--) {
+    const stroke = strokes[s];
+    for (let i = 0; i < stroke.points.length; i++) {
+      const [x, y] = stroke.points[i];
+      const dsq = (x - px) ** 2 + (y - py) ** 2;
+      if (dsq < bestSq || (best === null && dsq <= bestSq)) {
+        bestSq = dsq;
+        best = { strokeId: stroke.id, index: i };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Return a NEW points array with only `points[index]` replaced by [nx, ny]. Non-
+ * mutating so callers can safely use the result for a live-preview memo without
+ * touching the stored geometry until the drag commits.
+ */
+export function moveVertex(
+  points: number[][], index: number, nx: number, ny: number,
+): number[][] {
+  return points.map((p, i) => (i === index ? [nx, ny] : p));
+}
+
+/** Convenience: the editable strokes from a selected annotation, or []. */
+export function annStrokes(ann: CanvasAnnotation | undefined): EditableStroke[] {
+  return ann?.strokes ?? [];
+}

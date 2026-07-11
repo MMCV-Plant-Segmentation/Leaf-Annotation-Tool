@@ -115,5 +115,33 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
-  return { commit, relabel };
+  // a11y #40 v1b: commit a stroke-vertex edit. Recompute the outline from the moved
+  // points (polyline vs. brush) so the STORED geometry matches the LIVE preview, PATCH
+  // /strokes/<id>, splice the response into the view, and push an `edit` history entry
+  // (canvasHistory.ts) whose reversal descriptor is everything undo needs.
+  const editStroke = async (strokeId: string, tool: string, points: number[][], strokeWidth: number) => {
+    const pid = o.getProjectId();
+    if (!pid) return;
+    try {
+      const outline = tool === 'polyline'
+        ? polylineOutline(points, strokeWidth)
+        : strokeOutline(points, strokeWidth);
+      const body = { points, strokeWidth, outline };
+      const r = await projectsApi.editStroke(pid, strokeId, body);
+      o.updateImg((im) => ({
+        ...im,
+        annotations: [
+          ...im.annotations.filter((a) => !r.deletedAnnotationIds.includes(a.id)),
+          ...r.created,
+        ],
+        tiles: mergeTileStates(im.tiles, r.tileStates),
+      }));
+      o.history.push({ kind: 'edit', strokeId, before: r.before,
+        deletedGroups: r.deletedGroups, created: r.created, redoBody: body });
+    } catch (ex) {
+      alert(ex instanceof Error ? ex.message : 'Edit failed');
+    }
+  };
+
+  return { commit, relabel, editStroke };
 }

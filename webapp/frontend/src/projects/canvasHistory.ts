@@ -5,7 +5,7 @@
  * server always has the authoritative state. The stack is reset on image/batch change and
  * is never persisted across page reload.
  *
- * Four action kinds:
+ * Five action kinds:
  *  - 'draw'  — a plain create (point/line/polygon, or a brush stroke that fused with
  *    nothing). Undo/redo is a simple soft-delete/restore by id.
  *  - 'merge' — a brush stroke that FUSED with ≥1 existing live mask. The create minted a
@@ -22,6 +22,8 @@
  *    the same label-only PATCH the forward op used, re-applying the `before`/`after`
  *    label respectively. This is the template for making any future edit-op undoable:
  *    capture enough on the action to redo the mutating call in either direction.
+ *  - 'edit'   — a11y #40 v1b: a stroke vertex was moved. Undo/redo delegate to
+ *    canvasHistoryEdit.ts (reverse endpoint / re-PATCH; stack entry swap on redo).
  *
  * Usage:
  *   const history = createCanvasHistory(getProjectId, updateCurrentImage);
@@ -36,20 +38,24 @@
  */
 
 import { createSignal } from 'solid-js';
-import type { CanvasAnnotation, CanvasImage, ConsumedGroup, TileStateUpdate } from './api';
+import type { CanvasAnnotation, CanvasImage, ConsumedGroup, TileStateUpdate,
+  StrokeEditBefore, StrokeEditGroup } from './api';
 import { projectsApi } from './api';
 import { mergeTileStates } from './canvasShapes';
+import { editUndo, editRedo } from './canvasHistoryEdit';
 
-/** The exact body a brush create was POSTed with — kept on the `merge` action so redo can
- * re-issue the identical request. */
+/** Bodies kept on `merge`/`edit` actions so redo can re-issue the identical request. */
 type CreateAnnotationBody = Parameters<typeof projectsApi.createAnnotation>[1];
+type EditStrokeBody = { points: number[][]; strokeWidth?: number; outline?: number[][] };
 
 export type HistoryAction =
   | { kind: 'draw'; ann: CanvasAnnotation }
   | { kind: 'merge'; ann: CanvasAnnotation; strokeId: string;
       consumedGroups: ConsumedGroup[]; redoBody: CreateAnnotationBody }
   | { kind: 'erase'; anns: CanvasAnnotation[] }
-  | { kind: 'relabel'; annotationId: string; before: string | null; after: string | null };
+  | { kind: 'relabel'; annotationId: string; before: string | null; after: string | null }
+  | { kind: 'edit'; strokeId: string; before: StrokeEditBefore; deletedGroups: StrokeEditGroup[];
+      created: CanvasAnnotation[]; redoBody: EditStrokeBody };
 
 /** Minimal view-update callback: receives a transform function over the current image. */
 type UpdateImg = (fn: (im: CanvasImage) => CanvasImage) => void;
@@ -139,6 +145,8 @@ export function createCanvasHistory(
       // forward relabel used. No geometry, no /annotations/reverse needed.
       const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.before });
       applyRelabel(updateImg, updated);
+    } else if (action.kind === 'edit') {
+      await editUndo(pid, action, (add, rm, ts) => applyDelta(updateImg, add, rm, ts));
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'restore', ids);
@@ -171,6 +179,11 @@ export function createCanvasHistory(
       // Re-apply the NEW label the forward relabel set — same label-only PATCH.
       const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.after });
       applyRelabel(updateImg, updated);
+    } else if (action.kind === 'edit') {
+      const at = cursor();
+      await editRedo(pid, action,
+        (add, rm, ts) => applyDelta(updateImg, add, rm, ts),
+        (fresh) => setStack((s) => s.map((a, i) => i === at ? fresh : a)));
     } else {
       const ids = action.anns.map((a) => a.id);
       const r = await projectsApi.mutateAnnotations(pid, 'delete', ids);
