@@ -109,7 +109,10 @@ const CanvasScreen: Component = () => {
     const a = image()?.annotations.find((x) => x.id === id);
     return a?.kind === 'stroke' && (a.strokes?.length ?? 0) > 0 ? a : undefined;
   });
-  const imgPerScreenPx = () => { const v = vb(); return svgRef ? v.w / svgRef.clientWidth : 1; };
+  // "meet" fits the viewBox to the more-constraining axis → image-px-per-screen-px is the
+  // max of both ratios (exact whether width- or height-limited; handle stays ~6 screen px).
+  const imgPerScreenPx = () =>
+    svgRef ? Math.max(vb().w / svgRef.clientWidth, vb().h / svgRef.clientHeight) : 1;
 
   // Admin-only viewport-attention HEATMAP overlay (dwell x zoom-closeness). The math
   // lives in viewportHeatmap.ts; the SVG layer + control panel in ViewportHeatmapOverlay.
