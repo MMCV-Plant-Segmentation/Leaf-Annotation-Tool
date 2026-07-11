@@ -302,10 +302,11 @@ construction. Do NOT ship the interim per-stroke→component patch; do it right 
 ## Accessibility (Christian, 2026-07-10) — need UX design
 40. **Line / polygon tool on the FIRST identity pass** for users who prefer placing points over freehand dragging:
     place points (not freehand-drag), **edit points after the fact**, and **add points along an
-    existing path**. A real point-based drawing+editing tool. **DESIGNED 2026-07-10** as a *polyline
-    click-brush* — see root `docs/plans/Plan — Polyline click-brush tool (a11y #40).md` (reuses the
-    brush stroke/geometry/fusion pipeline; click-to-place vertices, straight segments + rounded corners,
-    snap-to-point to close/fill, edit via Select). Next: TDD + build.
+    existing path**. A real point-based drawing+editing tool. **v1a (CREATE) SHIPPED 2026-07-10** — the
+    *polyline click-brush* (click-to-place vertices, snap-to-start closes+fills, `tool='polyline'` fuses
+    through the brush pipeline) is on `test/integration`; **usable now**. Remaining: v1b
+    vertex editing (Select→drag→recompute) + Phase 2 (all-polyline snapping/extend/unfuse). See root
+    `docs/plans/Plan — Polyline click-brush tool (a11y #40).md`.
 41. **Contextual help.** The bottom help strip should show CONTEXT-dependent shortcuts (what's usable
     in the current tool/mode); clicking it opens a popup help page showing BOTH global and
     context-dependent help. Needs UX design (and pairs with the deferred controls-popup, #30).
