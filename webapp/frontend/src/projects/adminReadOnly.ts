@@ -8,8 +8,10 @@
 //
 // Kept as a tiny module of its own so CanvasScreen.tsx stays under its line limit.
 
-/** A persistence `commit` (see createCanvasPersistence): async, fire-and-forget. */
-type CommitFn = (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => void | Promise<void>;
+/** A persistence `commit` (see createCanvasPersistence): async, fire-and-forget. The
+ * trailing `tool` arg carries the input mode ('brush' | 'polyline') so the stroke's
+ * provenance is recorded server-side; brush is the default when omitted. */
+type CommitFn = (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void | Promise<void>;
 
 /**
  * Wraps a canvas persistence `commit` so it does nothing when `readOnly` is true
@@ -24,7 +26,8 @@ export function adminReadOnlyCommit(
   points: number[][],
   passNo?: number,
   strokeWidth?: number,
+  tool?: string,
 ): void {
   if (readOnly) return;
-  void commit(kind, points, passNo, strokeWidth);
+  void commit(kind, points, passNo, strokeWidth, tool);
 }

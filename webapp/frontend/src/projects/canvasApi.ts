@@ -123,7 +123,7 @@ export const canvasApi = {
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number; outline?: number[][];
+    strokeWidth?: number; outline?: number[][]; tool?: string;
   }) => jfetch<CreateAnnotationResult>(`/api/projects/${projectId}/annotations`, jbody('POST', body)),
   // `label: string | null` (not `?string`) so a relabel-undo/redo of a lesion whose
   // prior label was null still sends the `label` key — JSON.stringify drops `undefined`
