@@ -104,8 +104,13 @@ def mask(a):
     return _Poly(a['rings'][0]) if a.get('rings') and a['rings'][0] else None
 
 
-# ── E1: moving a lone polyline's vertices moves its mask ─────────────────────────────
+# ── S0: the read payload exposes each mask's member strokes (FE draws handles from these) ──
 a1 = make([[cx - 20, cy], [cx, cy]], label='e1')
+assert a1.get('strokes') and a1['strokes'][0]['points'], 'create response must expose member strokes'
+assert anns('e1')[0].get('strokes'), 'batch read must expose member strokes for vertex editing'
+print('S0 OK — annotation payload carries member-stroke vertices')
+
+# ── E1: moving a lone polyline's vertices moves its mask ─────────────────────────────
 sid1 = stroke_id_of(a1['id'])
 new_pts = [[cx + 5, cy + 30], [cx + 25, cy + 30]]
 r = edit_stroke(sid1, new_pts)
@@ -149,5 +154,26 @@ m = mask(anns('e4')[0])
 assert m is not None and m.contains(_Point(cx + 50, cy - 70)), 'brush mask must cover the NEW vertices'
 assert not m.contains(_Point(cx - 20, cy - 70)), 'brush mask must no longer cover the OLD position'
 print('E4 OK — editing a brush stroke recomputes its mask (edit is not polyline-only)')
+
+# ── E5: robust undo — edit → reverse resurrects the EXACT prior annotation row ────────
+d1 = make([[cx - 20, cy], [cx, cy]], label='e5')
+aid5 = d1['id']
+sid5 = stroke_id_of(aid5)
+r = edit_stroke(sid5, [[cx + 5, cy + 30], [cx + 25, cy + 30]])
+assert r.status_code == 200, f'edit should 200, got {r.status_code}: {jdump(r)}'
+rev = jdump(r)
+assert aid5 not in [a['id'] for a in anns('e5')], 'after edit the prior annotation is retired'
+assert rev['created'] and rev['created'][0]['id'] in [a['id'] for a in anns('e5')]
+ru = client.post(f'/api/projects/{pid}/strokes/{sid5}/reverse', json={
+    'before': rev['before'], 'deletedGroups': rev['deletedGroups'],
+    'createdAnnotationIds': [a['id'] for a in rev['created']]})
+assert ru.status_code == 200, f'reverse should 200, got {ru.status_code}: {jdump(ru)}'
+live_after = [a['id'] for a in anns('e5')]
+assert aid5 in live_after, 'undo must resurrect the EXACT prior annotation id (robust, not a re-derivation)'
+assert rev['created'][0]['id'] not in live_after, 'undo must remove the minted annotation'
+m = mask(anns('e5')[0])
+assert m is not None and m.contains(_Point(cx - 10, cy)), 'undo restores the mask at the OLD position'
+assert not m.contains(_Point(cx + 15, cy + 30)), 'undo removes the edited position'
+print('E5 OK — edit → reverse resurrects the exact prior annotation (robust undo)')
 
 print('\npolyline-edit (v1b) contract tests passed.')

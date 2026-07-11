@@ -1722,10 +1722,23 @@ def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: li
               AND atl.tile_id IN ({qmarks})''',
         (image_id, annotator, *active_tile_ids),
     ).fetchall()
-    return [_annotation_out(r) for r in rows]
+    return [_annotation_out(r, con) for r in rows]
 
 
-def _annotation_out(row: dict) -> dict:
+def _member_strokes_out(con, annotation_id: str) -> list:
+    """Member strokes of a fused mask, shaped for JSON — the per-stroke clicked/mouse
+    vertices (a11y #40 v1b vertex editing). A stroke's `points` are the raw input path
+    (polyline = clicked vertices; brush = the freehand trail); the FE draws draggable
+    handles from them when the mask is selected and PATCHes /strokes/<id> to reshape."""
+    rows = con.execute(
+        'SELECT id, tool, points_json, stroke_width FROM stroke WHERE annotation_id = ?',
+        (annotation_id,)).fetchall()
+    return [{'id': s['id'], 'tool': s['tool'],
+             'points': json.loads(s['points_json']) if s['points_json'] else [],
+             'strokeWidth': s['stroke_width']} for s in rows]
+
+
+def _annotation_out(row: dict, con=None) -> dict:
     """Shape an `annotation` (mask) row for JSON. kind='stroke' masks render from the
     stored fused `rings` (geometry_json); other kinds render from their own `points`
     (never fused, so points_json is always the exact shape that was drawn).
@@ -1734,20 +1747,27 @@ def _annotation_out(row: dict) -> dict:
     selections}) captured at assign time, plus a `labelColor` convenience so the FE
     can paint a lesion in its compound's colour WITHOUT re-resolving the taxonomy
     (a later preset edit/delete never orphans the colour). Legacy rows with no
-    snapshot fall back to label text only (labelColor None -> caller's default)."""
+    snapshot fall back to label text only (labelColor None -> caller's default).
+
+    When `con` is supplied, a stroke mask also carries its `strokes` (member vertices)
+    so the FE can offer vertex editing (a11y #40 v1b) — omitted otherwise (small extra
+    query kept opt-in for callers that don't need it)."""
     is_mask = row['kind'] == 'stroke'
     rings = json.loads(row['geometry_json']) if (is_mask and row['geometry_json']) else []
     points = [] if is_mask else (json.loads(row['points_json']) if row['points_json'] else [])
     snap_raw = row.get('label_snapshot') if isinstance(row, dict) else None
     snapshot = json.loads(snap_raw) if snap_raw else None
     label_color = snapshot.get('color') if snapshot else None
-    return {
+    out = {
         'id': row['id'], 'kind': row['kind'], 'passNo': row['pass_no'],
         'points': points, 'rings': rings, 'label': row['label'],
         'labelColor': label_color, 'labelSnapshot': snapshot,
         'viewport': json.loads(row['viewport_json']) if row['viewport_json'] else None,
         'annotator': row['annotator'], 'imageId': row['project_image_id'],
     }
+    if is_mask and con is not None:
+        out['strokes'] = _member_strokes_out(con, row['id'])
+    return out
 
 
 # ── annotations CRUD (the painting data sink) ─────────────────────────────────
@@ -1888,7 +1908,7 @@ def create_annotation(project_id: str):
                 )
             tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
             con.commit()
-            out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone())
+            out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(), con)
             out.update({'tileIds': tile_ids, 'tileStates': tile_states,
                        'consumedAnnotationIds': consumed_ids, 'createdStrokeId': sid,
                        'consumedGroups': consumed_groups})
@@ -1976,6 +1996,11 @@ def edit_stroke(project_id: str, stroke_id: str):
             except (TypeError, ValueError):
                 pass
         outline = body.get('outline')
+        # Snapshot the stroke's PRE-edit record so undo can restore it verbatim (robust
+        # undo: exact prior rows, not a lossy re-derivation — Christian, "robust > easy").
+        before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+                  'strokeWidth': srow['stroke_width'],
+                  'outline': json.loads(srow['outline_json']) if srow['outline_json'] else None}
 
         # 1) apply the edit to this stroke's raw record.
         con.execute(
@@ -1999,7 +2024,12 @@ def edit_stroke(project_id: str, stroke_id: str):
         components = _stroke_components(parsed)
 
         # 4) soft-delete every affected mask (never mutate in place) + drop its tile links.
+        # Capture each retired mask's stroke group BEFORE repointing so undo can repoint back
+        # and resurrect the exact rows (mirrors create's consumedGroups / reverse_merge).
         old_ids = list({s['annotation_id'] for s in srows})
+        deleted_groups = [{'annotationId': oid,
+                           'strokeIds': [s['id'] for s in srows if s['annotation_id'] == oid]}
+                          for oid in old_ids]
         if old_ids:
             qmarks = ','.join('?' * len(old_ids))
             con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
@@ -2009,6 +2039,8 @@ def edit_stroke(project_id: str, stroke_id: str):
         # 5) mint one fresh annotation per component; repoint its member strokes; relink tiles.
         # Label metadata carries over from the edited stroke's former annotation.
         dirty_tiles: list[str] = []
+        created_groups: list[dict] = []
+        created_ids: list[str] = []
         for comp in components:
             geom = comp['geometry']
             if geom is None or geom.is_empty:
@@ -2037,10 +2069,111 @@ def edit_stroke(project_id: str, stroke_id: str):
                     'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
                     (aid, tid))
             dirty_tiles.extend(tile_ids)
+            created_ids.append(aid)
+            created_groups.append({'annotationId': aid, 'strokeIds': member_ids})
 
         tile_states = _mark_tiles_dirty(con, list(set(dirty_tiles)), annotator)
         con.commit()
-        return jsonify({'ok': True, 'tileStates': tile_states})
+        # The reversal descriptor is everything undo needs (POST /strokes/<id>/reverse):
+        # reset this stroke to `before`, drop the `created` masks, repoint `deletedGroups`
+        # strokes back and un-delete those exact annotations. `created` carries the live
+        # masks (with member strokes) for the FE to splice in immediately.
+        created = [_annotation_out(
+            con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(), con)
+            for cid in created_ids]
+        return jsonify({'ok': True, 'strokeId': stroke_id, 'before': before,
+                        'deletedAnnotationIds': old_ids, 'deletedGroups': deleted_groups,
+                        'created': created, 'createdGroups': created_groups,
+                        'tileStates': tile_states})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/projects/<project_id>/strokes/<stroke_id>/reverse')
+@login_required
+def reverse_stroke_edit(project_id: str, stroke_id: str):
+    """Undo a stroke-vertex edit (compound op — mirrors reverse_annotation_merge). Reset the
+    stroke to its pre-edit record, hard-delete the annotations the edit minted, repoint every
+    retired mask's strokes back to it and resurrect those EXACT rows (flip deleted_at to NULL
+    + rebuild their tiles from stored geometry). Robust undo: the prior annotation ids/rows
+    come back verbatim, not a re-derivation (Christian, "robust > easy").
+
+    Body (the edit's reversal descriptor): { before: {points, strokeWidth, outline},
+      deletedGroups: [{annotationId, strokeIds}, ...], createdAnnotationIds: [...] }
+    Returns: { ok, resurrected: [...], deletedAnnotationIds: [...], tileStates: [...] }
+    """
+    body = request.json or {}
+    before = body.get('before') or {}
+    deleted_groups = body.get('deletedGroups') or []
+    created_ids = body.get('createdAnnotationIds') or []
+    con = _db.get_db()
+    try:
+        srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+        if not srow:
+            return jsonify({'error': 'not found'}), 404
+        old_ids = [g['annotationId'] for g in deleted_groups]
+        # Authorize via a resurrection target's owner (all one annotator by construction).
+        owner = None
+        for oid in old_ids:
+            r = con.execute('SELECT annotator FROM annotation WHERE id = ?', (oid,)).fetchone()
+            if r:
+                owner = r['annotator']
+                break
+        err = _member_or_403(con, project_id) or (_owner_or_403(owner) if owner else None)
+        if err:
+            return err
+        now = _now()
+        # Tiles the minted masks occupied — reopen them once the masks are gone.
+        created_tiles: list[str] = []
+        if created_ids:
+            qm = ','.join('?' * len(created_ids))
+            created_tiles = [r['tile_id'] for r in con.execute(
+                f'SELECT tile_id FROM annotation_tile WHERE annotation_id IN ({qm})',
+                created_ids).fetchall()]
+
+        # 1) reset the edited stroke to its pre-edit record.
+        con.execute(
+            'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+            (json.dumps(before.get('points') or []), before.get('strokeWidth'),
+             json.dumps(before.get('outline')) if before.get('outline') is not None else None,
+             stroke_id))
+        # 2) repoint each retired mask's strokes back to it + un-delete those exact rows.
+        for g in deleted_groups:
+            sids = g.get('strokeIds') or []
+            if sids:
+                qm = ','.join('?' * len(sids))
+                con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
+                           (g['annotationId'], *sids))
+        if old_ids:
+            qm = ','.join('?' * len(old_ids))
+            con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qm})',
+                       (now, *old_ids))
+        # 3) hard-delete the minted masks (cascades their annotation_tile).
+        for cid in created_ids:
+            con.execute('DELETE FROM annotation WHERE id = ?', (cid,))
+        # 4) rebuild resurrected masks' tiles from their stored geometry + dirty every tile.
+        dirtied: dict[str, dict] = {}
+        annotator = None
+        resurrected = []
+        for oid in old_ids:
+            r = con.execute('SELECT * FROM annotation WHERE id = ?', (oid,)).fetchone()
+            if not r:
+                continue
+            annotator = r['annotator']
+            tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
+            for tid in tile_ids:
+                con.execute(
+                    'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                    (oid, tid))
+            for d in _mark_tiles_dirty(con, tile_ids, annotator):
+                dirtied[d['tileId']] = d
+            resurrected.append(_annotation_out(r, con))
+        if annotator and created_tiles:
+            for d in _mark_tiles_dirty(con, created_tiles, annotator):
+                dirtied[d['tileId']] = d
+        con.commit()
+        return jsonify({'ok': True, 'resurrected': resurrected,
+                        'deletedAnnotationIds': created_ids, 'tileStates': list(dirtied.values())})
     finally:
         _db.close_db(con)
 
@@ -2189,7 +2322,7 @@ def update_annotation(annotation_id: str):
             _mark_tiles_dirty(con, tile_ids, row['annotator'])
             con.commit()
             out = _annotation_out(con.execute(
-                'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone())
+                'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
             out['tileIds'] = tile_ids
             return jsonify(out)
         err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
@@ -2228,7 +2361,7 @@ def update_annotation(annotation_id: str):
         _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
         con.commit()
         out = _annotation_out(con.execute(
-            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone())
+            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
         out['tileIds'] = new_tiles
         return jsonify(out)
     finally:
@@ -2456,7 +2589,7 @@ def reverse_annotation_merge(project_id: str):
                 )
             for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
                 dirtied[d['tileId']] = d
-            resurrected.append(_annotation_out(r))
+            resurrected.append(_annotation_out(r, con))
         for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
             dirtied[d['tileId']] = d
         con.commit()
