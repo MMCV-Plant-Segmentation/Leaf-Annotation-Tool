@@ -38,6 +38,9 @@ export function createCanvasKeyboard(o: CanvasKeyboardOpts): void {
     // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
     if (e.key === 'Escape') {
       if (o.tool() === 'select') o.setSelId(null);
+      // Polyline: ESC COMMITS the in-progress line and exits to select (Ctrl+Z is the undo
+      // path) — it must not discard the clicked vertices.
+      else if (o.tool() === 'polyline') { o.interaction.finishDraft(); o.setTool('select'); }
       else { o.setDraft([]); o.setTool('pan'); }
     }
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }
