@@ -1706,6 +1706,155 @@ def delete_erasure(batch_id: str, annotation_id: str):
         _db.close_db(con)
 
 
+# ── merge mode Phase 2b: completeness + explicit submission ───────────────────
+# A merger's pass is COMPLETE when every pooled mark for the batch is accounted
+# for — a member of one of THAT merger's LIVE candidate objects (co_membership
+# via candidate_object.deleted_at IS NULL) OR erased by that merger (co_erasure).
+# Completeness only ENABLES; SUBMIT is the explicit "I'm done — lock my pass so
+# agreement can compute across mergers" signal (a merger may reach completeness
+# yet keep revising), recorded per merger in `merge_submission`
+# (alembic/versions/0008_merge_submission.py). Mirrors the CO/erasure handlers
+# above (member-gated; per-merger isolation).
+
+
+def _pooled_annotation_ids_for_batch(con, batch_id: str) -> set[str]:
+    """Every pooled mark id for this batch across all its images — the same
+    scoping as `_pooled_annotations` / `_pooled_annotation_ids_for_image`
+    (cross-annotator, live, intersects an active batch tile), rolled up per
+    batch for the completeness count."""
+    rows = con.execute(
+        '''SELECT DISTINCT a.id FROM annotation a
+           JOIN annotation_tile atl ON atl.annotation_id = a.id
+           JOIN batch_tile bt ON bt.tile_id = atl.tile_id
+           WHERE bt.batch_id = ? AND a.deleted_at IS NULL''',
+        (batch_id,),
+    ).fetchall()
+    return {r['id'] for r in rows}
+
+
+def _merger_accounted_ids(con, batch_id: str, merger: str, pooled: set[str]) -> set[str]:
+    """The distinct pooled marks THIS merger has accounted for on this batch —
+    (members of their LIVE COs via co_membership) ∪ (their erasures via
+    co_erasure). Intersected with `pooled` so a mark that has since dropped
+    out of the pool can never count. Per-merger by design."""
+    if not pooled:
+        return set()
+    accounted: set[str] = set()
+    rows = con.execute(
+        '''SELECT DISTINCT m.annotation_id FROM co_membership m
+           JOIN candidate_object c ON c.id = m.candidate_object_id
+           WHERE c.batch_id = ? AND c.merger = ? AND c.deleted_at IS NULL''',
+        (batch_id, merger),
+    ).fetchall()
+    accounted.update(r['annotation_id'] for r in rows)
+    rows = con.execute(
+        '''SELECT annotation_id FROM co_erasure
+           WHERE batch_id = ? AND merger = ?''',
+        (batch_id, merger),
+    ).fetchall()
+    accounted.update(r['annotation_id'] for r in rows)
+    return accounted & pooled
+
+
+@projects_bp.get('/api/batches/<batch_id>/merge-completeness')
+@login_required
+def merge_completeness(batch_id: str):
+    """That merger's pass status on this batch: total pooled marks, how many
+    they've accounted for (CO-member or erased), whether that's complete, and
+    whether they've submitted (with the ISO timestamp). Read-only; per-merger."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        pooled = _pooled_annotation_ids_for_batch(con, batch_id)
+        accounted = _merger_accounted_ids(con, batch_id, merger, pooled)
+        total = len(pooled)
+        n_acc = len(accounted)
+        row = con.execute(
+            'SELECT submitted_at FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        ).fetchone()
+        submitted_at = row['submitted_at'] if row else None
+        return jsonify({
+            'total': total,
+            'accounted': n_acc,
+            'complete': n_acc == total,
+            'submitted': submitted_at is not None,
+            'submittedAt': submitted_at,
+        })
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/submit-merge')
+@login_required
+def submit_merge(batch_id: str):
+    """Lock the SESSION user's merge pass on this batch — 409 if their pass
+    isn't complete (every pooled mark accounted for via CO-member or erasure),
+    otherwise UPSERT the merge_submission row so re-submit is idempotent
+    (never a 500) and returns the recorded timestamp."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        pooled = _pooled_annotation_ids_for_batch(con, batch_id)
+        accounted = _merger_accounted_ids(con, batch_id, merger, pooled)
+        if len(accounted) < len(pooled):
+            return jsonify({'error': 'merge pass is not complete',
+                            'total': len(pooled), 'accounted': len(accounted)}), 409
+        # (batch_id, merger) is the PK — a repeat submit refreshes submitted_at
+        # instead of raising a UNIQUE conflict.
+        con.execute(
+            '''INSERT INTO merge_submission (batch_id, merger, submitted_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT (batch_id, merger)
+               DO UPDATE SET submitted_at = excluded.submitted_at''',
+            (batch_id, merger, _now()),
+        )
+        con.commit()
+        row = con.execute(
+            'SELECT submitted_at FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        ).fetchone()
+        return jsonify({'ok': True, 'submittedAt': row['submitted_at']})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/submit-merge')
+@login_required
+def unsubmit_merge(batch_id: str):
+    """Un-submit — drop the SESSION user's merge_submission row so they may
+    revise. Idempotent (no row is a no-op 204)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        con.execute(
+            'DELETE FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
 def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str]) -> list:
     """This annotator's non-deleted annotations on this image that intersect an active tile.
 
