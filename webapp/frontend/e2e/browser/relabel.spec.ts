@@ -130,10 +130,29 @@ async function pickClass(p: Page, toolbar: Locator, name: string) {
   await p.getByRole('option', { name }).click();
 }
 
+/** A short brush drag starting at (cx - 15, cy - 15), producing one painted lesion.
+ * Returns the drag's START point — guaranteed to lie ON the stroke's own path (unlike
+ * some arbitrary point near it), so it's the one safe coordinate to click for selecting
+ * this lesion afterwards (same helper as relabel-undo.spec.ts — single source of truth
+ * for the drag-start / select-click coord so a future tweak to the stroke can't drift
+ * the select-click off the mask). */
+async function paintStroke(p: Page, cx: number, cy: number): Promise<[number, number]> {
+  const start: [number, number] = [cx - 15, cy - 15];
+  await p.mouse.move(...start);
+  await p.mouse.down();
+  for (let i = 1; i <= 5; i++) await p.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);
+  await p.mouse.up();
+  return start;
+}
+
 test('select a painted lesion, relabel via the paint drop-down, recolor, restore on deselect', async ({ page, browser }) => {
   const { p, okColor, dangerColor, tiles } = await setupRelabelCanvas(page, browser);
   const toolbar = p.getByTestId('canvas-toolbar');
   const classSelect = classPickerValue(toolbar);
+  // Install the dialog dismisser BEFORE any interaction that could raise one (matches
+  // relabel-undo.spec.ts) — a stray unload/leave prompt firing after a tool-switch or
+  // reload would otherwise hang the test until timeout instead of being auto-dismissed.
+  p.on('dialog', (d) => void d.dismiss());
 
   // Paint a stroke labelled 'ok' (the drop-down defaults to the first compound).
   await expect(classSelect).toContainText('ok', { timeout: 5000 });
@@ -143,7 +162,6 @@ test('select a painted lesion, relabel via the paint drop-down, recolor, restore
   const brushInput = p.getByTestId('brush-size-input');
   await brushInput.fill('50');
   await brushInput.press('Tab');
-  p.on('dialog', (d) => void d.dismiss());
   const canvasSvg = p.locator('svg').first();
   await expect(canvasSvg).toBeVisible({ timeout: 10000 });
   const box = await canvasSvg.boundingBox();
@@ -153,18 +171,17 @@ test('select a painted lesion, relabel via the paint drop-down, recolor, restore
   // intersects a tile — see setupRelabelCanvas (BUGS #31: the SVG-centre guess flaked on the
   // RNG seeds where no sampled tile covered the centre).
   const [cx, cy] = imgToScreen(box, viewBox, ...tileCentre(tiles));
-  await p.mouse.move(cx - 15, cy - 15);
-  await p.mouse.down();
-  for (let i = 1; i <= 5; i++) await p.mouse.move(cx - 15 + i * 6, cy - 15 + i * 4);
-  await p.mouse.up();
+  const [startX, startY] = await paintStroke(p, cx, cy);
 
   const lesion = p.locator('svg path[stroke]').first();
   await expect(lesion).toBeVisible({ timeout: 5000 });
   await expect(lesion).toHaveAttribute('stroke', new RegExp(okColor, 'i'));
 
-  // Select it: switch to the select tool, click back on the painted spot.
+  // Select it: switch to the select tool, click back on the drag's START point —
+  // guaranteed to lie ON the stroke's own path (see paintStroke), unlike an arbitrary
+  // nearby coord which can miss the mask under load.
   await p.getByTestId('tool-select').click();
-  await p.mouse.click(cx - 15, cy - 15);
+  await p.mouse.click(startX, startY);
 
   // Drop-down auto-syncs to the selected lesion's current label ('ok').
   await expect(classSelect).toContainText('ok');
@@ -173,9 +190,14 @@ test('select a painted lesion, relabel via the paint drop-down, recolor, restore
   await pickClass(p, toolbar, 'danger');
   await expect(lesion).toHaveAttribute('stroke', new RegExp(dangerColor, 'i'));
 
-  // Persists across a reload.
+  // Persists across a reload. Wait for the SVG path COUNT to hydrate from the DB BEFORE
+  // asserting on `.first()` — after reload the toolbar can be visible before the
+  // annotations have finished loading, so a bare `.first().toHaveAttribute(...)` can
+  // race an empty locator (the intermittent stress-flake this spec exhibited under
+  // @full). Same wait-for-state pattern as relabel-undo.spec.ts.
   await p.reload();
   await expect(p.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+  await expect(p.locator('svg path[stroke]')).toHaveCount(1, { timeout: 5000 });
   await expect(p.locator('svg path[stroke]').first()).toHaveAttribute('stroke', new RegExp(dangerColor, 'i'));
 
   // Deselect (Escape) → drop-down restores to the last MANUALLY-chosen paint label
