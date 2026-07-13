@@ -21,31 +21,39 @@ export interface CanvasKeyboardOpts {
  * of CanvasScreen.tsx to keep it under the file's line limit; registers/tears down its own
  * listeners via onMount/onCleanup so the caller just invokes this once.
  */
+/**
+ * The pure keydown reducer (extracted from the window listener below so it's unit-testable
+ * without a DOM/mount — see e2e/unit/canvasKeyboard.spec.ts). Behaviour is identical to what
+ * the window listener dispatched. Redo is reachable via BOTH Ctrl+Shift+Z and Ctrl+Y; the
+ * Shift case relies on `key.toLowerCase()` because browsers report the shifted glyph ('Z').
+ */
+export function handleCanvasKeyDown(e: KeyboardEvent, o: CanvasKeyboardOpts): void {
+  if (!o.isAdmin()) {
+    // Edit shortcuts only for the annotator who owns this work — never for an admin viewer.
+    if (e.key === 'Enter') o.interaction.finishDraft();
+    // NB: with Shift held, browsers report e.key as the shifted glyph ('Z', not 'z') —
+    // compare case-insensitively so Ctrl+Shift+Z actually fires (pre-existing bug found
+    // while wiring relabel into undo/redo, Phase 2c: the literal 'z' check meant redo
+    // was reachable only via the Ctrl+Y fallback below).
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && key === 'z') { e.preventDefault(); void o.history.undo(); }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'z') { e.preventDefault(); void o.history.redo(); }
+    if (e.ctrlKey && !e.metaKey && key === 'y') { e.preventDefault(); void o.history.redo(); }
+  }
+  // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
+  if (e.key === 'Escape') {
+    if (o.tool() === 'select') o.setSelId(null);
+    // Polyline: ESC COMMITS the in-progress line and exits to select (Ctrl+Z is the undo
+    // path) — it must not discard the clicked vertices.
+    else if (o.tool() === 'polyline') { o.interaction.finishDraft(); o.setTool('select'); }
+    else { o.setDraft([]); o.setTool('pan'); }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }
+  o.interaction.handleKeyDown(e);
+}
+
 export function createCanvasKeyboard(o: CanvasKeyboardOpts): void {
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!o.isAdmin()) {
-      // Edit shortcuts only for the annotator who owns this work — never for an admin viewer.
-      if (e.key === 'Enter') o.interaction.finishDraft();
-      // NB: with Shift held, browsers report e.key as the shifted glyph ('Z', not 'z') —
-      // compare case-insensitively so Ctrl+Shift+Z actually fires (pre-existing bug found
-      // while wiring relabel into undo/redo, Phase 2c: the literal 'z' check meant redo
-      // was reachable only via the Ctrl+Y fallback below).
-      const key = e.key.toLowerCase();
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && key === 'z') { e.preventDefault(); void o.history.undo(); }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && key === 'z') { e.preventDefault(); void o.history.redo(); }
-      if (e.ctrlKey && !e.metaKey && key === 'y') { e.preventDefault(); void o.history.redo(); }
-    }
-    // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
-    if (e.key === 'Escape') {
-      if (o.tool() === 'select') o.setSelId(null);
-      // Polyline: ESC COMMITS the in-progress line and exits to select (Ctrl+Z is the undo
-      // path) — it must not discard the clicked vertices.
-      else if (o.tool() === 'polyline') { o.interaction.finishDraft(); o.setTool('select'); }
-      else { o.setDraft([]); o.setTool('pan'); }
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }
-    o.interaction.handleKeyDown(e);
-  };
+  const onKeyDown = (e: KeyboardEvent) => handleCanvasKeyDown(e, o);
   const onKeyUp = (e: KeyboardEvent) => o.interaction.handleKeyUp(e);
   onMount(() => { window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); });
   onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
