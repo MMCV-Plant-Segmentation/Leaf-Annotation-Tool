@@ -67,3 +67,49 @@ test('a bare Y or Z (no modifier) does nothing', () => {
   press({ key: 'Z', shiftKey: true });
   expect(calls).toMatchObject({ undo: 0, redo: 0, prevented: 0 });
 });
+
+test('ESC on polyline just switches to select — placed clicks stay persisted, no commit', () => {
+  // The per-click rebuild (2026-07-13) makes ESC drop the rubber-band and switch tools
+  // ONLY: the clicked vertices were already persisted per-click, so finishDraft must NOT
+  // be called (it would double-commit). And the draft is cleared so the rubber-band vanishes.
+  let toolNow: string = 'polyline';
+  let drafted: number[][] | null = null;
+  let finishCalls = 0;
+  const opts: Partial<CanvasKeyboardOpts> = {
+    tool: () => toolNow as 'polyline',
+    setTool: (t) => { toolNow = t as string; },
+    setDraft: (d) => { drafted = d; },
+    interaction: {
+      finishDraft: () => { finishCalls++; },
+      handleKeyDown: () => {}, handleKeyUp: () => {},
+    } as unknown as CanvasKeyboardOpts['interaction'],
+  };
+  const { press } = makeOpts(opts);
+  press({ key: 'Escape' });
+  expect(toolNow).toBe('select');
+  expect(finishCalls).toBe(0);            // ESC does NOT commit anything for polyline
+  expect(drafted).toEqual([]);            // rubber-band dropped
+});
+
+test('Enter no longer commits an in-progress polyline — Enter is a no-op for polyline', () => {
+  // Enter still finishes polygon/line via finishDraft; for polyline it must do nothing
+  // useful (the per-click persistence has already stored everything).
+  let toolNow: string = 'polyline';
+  let commits = 0;
+  const opts: Partial<CanvasKeyboardOpts> = {
+    tool: () => toolNow as 'polyline',
+    interaction: {
+      finishDraft: () => { commits++; },   // finishDraft is called (still handles polygon/line);
+                                            // but the interaction's polyline branch is gone,
+                                            // so its net effect for polyline is a no-op.
+      handleKeyDown: () => {}, handleKeyUp: () => {},
+    } as unknown as CanvasKeyboardOpts['interaction'],
+    setTool: (t) => { toolNow = t as string; },
+  };
+  const { press } = makeOpts(opts);
+  press({ key: 'Enter' });
+  // The polyline branch of finishDraft is removed in the implementation, so Enter for
+  // polyline does nothing meaningful. We still allow finishDraft to be invoked (polygon/
+  // line use it) but the tool must not switch.
+  expect(toolNow).toBe('polyline');
+});

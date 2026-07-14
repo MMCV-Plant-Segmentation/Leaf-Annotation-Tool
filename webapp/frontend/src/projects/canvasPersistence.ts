@@ -5,6 +5,7 @@ import { clampRect, mergeTileStates, strokeOutline } from './canvasShapes';
 import { polylineOutline } from './canvasPolylineGeometry';
 import type { ViewBox } from './canvasShapes';
 import type { createCanvasHistory } from './canvasHistory';
+import { createPolylineSession } from './canvasPolylinePersist';
 
 export interface CanvasPersistenceOpts {
   image: Accessor<CanvasImage | undefined>;
@@ -73,10 +74,11 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
-  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => {
-    if (kind === 'erase') return void eraseStroke(points, strokeWidth ?? 1);
+  const commit = async (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string):
+      Promise<{ createdStrokeId: string } | null> => {
+    if (kind === 'erase') { void eraseStroke(points, strokeWidth ?? 1); return null; }
     const im = o.image(); const pid = o.getProjectId();
-    if (!im || !pid) return;
+    if (!im || !pid) return null;
     try {
       // Compute the exact stroke-outline polygon FE-side so the server stores + uses it for
       // the fused mask's geometry (fills loops, matches the rendered shape). Brush → perfect-
@@ -110,8 +112,10 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       } else {
         o.history.push({ kind: 'draw', ann });
       }
+      return { createdStrokeId: ann.createdStrokeId };
     } catch (ex) {
       alert(ex instanceof Error ? ex.message : 'Save failed');
+      return null;
     }
   };
 
@@ -143,5 +147,21 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     }
   };
 
-  return { commit, relabel, editStroke };
+  // a11y #40 per-click rebuild (Christian, 2026-07-13): polyline persistence session —
+  // each click either creates the annotation (1st click) or editStrokes it (subsequent),
+  // so the mask exists after the FIRST click and grows one vertex at a time. The session
+  // reuses commit/editStroke above; history entries flow the standard draw/merge/edit
+  // paths, so Ctrl+Z peels one click at a time (delete → resurrect → reverse-edit).
+  const polySession = createPolylineSession({
+    create: async (points, strokeWidth) => {
+      const r = await commit('stroke', points, 1, strokeWidth, 'polyline');
+      return r ? r.createdStrokeId : null;
+    },
+    extend: async (strokeId, points, strokeWidth) => {
+      await editStroke(strokeId, 'polyline', points, strokeWidth);
+    },
+  });
+
+  return { commit, relabel, editStroke,
+    polylineStep: polySession.step, resetPolyline: polySession.reset };
 }
