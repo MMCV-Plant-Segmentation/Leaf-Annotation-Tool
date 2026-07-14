@@ -78,20 +78,20 @@ const CanvasScreen: Component = () => {
     updateImg,
   );
 
-  const { commit, relabel, editStroke } = createCanvasPersistence({
+  const { commit, relabel, editStroke, polylineStep, resetPolyline } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
+  // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
+  createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); }));
 
-  // BUGS #15: an admin viewing another user's annotations may look but must NOT add or
-  // delete anything for that user. When isAdmin() is true, the commit handed to the canvas
-  // interaction is a no-op, so drawing/erasing produces no server write — regardless of
-  // which tool is selected. (Admin's API-level ability is intentionally left intact; this
-  // is FE enforcement only, consistent with readOnly={isAdmin()} used elsewhere.)
+  // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin() is
+  // true, so no gesture writes for the admin (API access left intact for future edits).
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
     brushSize, setBrushSize, maxBrushSize,
     commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
+    polylineStep: (pts, sw) => { if (!isAdmin()) polylineStep(pts, sw); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 

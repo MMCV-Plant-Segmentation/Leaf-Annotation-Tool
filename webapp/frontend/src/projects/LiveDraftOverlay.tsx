@@ -1,6 +1,5 @@
-import { type Component, For, Show } from 'solid-js';
-import { buildStrokePath, ringsToPath, type Tool } from './canvasShapes';
-import { polylineOutline } from './canvasPolylineGeometry';
+import { type Component, Show } from 'solid-js';
+import { buildStrokePath, type Tool } from './canvasShapes';
 
 // Accessibility-tuned colours for the *live* brush/eraser/polyline draft + hover preview —
 // deliberately louder than the committed-stroke rendering (AnnotationShape), since a
@@ -17,16 +16,15 @@ export const LIVE_DRAFT = {
   strokeWidth: 2,
   previewHaloWidth: 4.5,
   previewStrokeWidth: 2.5,
-  polylineVertexR: 3,
   polylineDash: '6 4',
 };
 
-/** Live in-progress brush/eraser/polyline stroke + hover-radius preview. Rendered on
- * top of everything else while drawing; not shown for committed strokes.
- *
- * For a polyline (a11y click-brush): the placed vertices are shown as solid dots, the
- * committed segments as a solid line, and a DASHED rubber-band segment previews the
- * next segment from the last vertex to the current cursor. */
+/** Live in-progress brush/eraser stroke + hover-radius preview and the polyline rubber-
+ * band. For polyline (per-click rebuild, 2026-07-13): every click persists+fuses immediately
+ * so the placed vertices show up through the normal AnnotationShape rendering — the ONLY
+ * ephemeral thing here is the DASHED rubber-band from the last placed vertex to the cursor,
+ * so the user sees where the NEXT segment will land. ESC/tool-switch clears the draft and
+ * the rubber-band vanishes. */
 export const LiveDraftOverlay: Component<{
   tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
 }> = (props) => (
@@ -54,30 +52,15 @@ export const LiveDraftOverlay: Component<{
         </>
       )}
     </Show>
-    <Show when={props.tool === 'polyline' && props.draft.length > 0}>
-      {/* The THICK filled shape the commit will store (polylineOutline == the sent outline),
-          so the preview matches the stored geometry exactly. nonzero fill so a reflex/looped
-          ring still fills. Vertex dots + a dashed rubber-band preview the pending segment. */}
-      <path data-testid="polyline-live"
-        d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill="none"
-        stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill-rule="nonzero"
-        fill={LIVE_DRAFT.brushFill} stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <For each={props.draft}>{(pt) => (
-        <circle cx={pt[0]} cy={pt[1]} r={LIVE_DRAFT.polylineVertexR}
-          fill={LIVE_DRAFT.brushStroke} stroke={LIVE_DRAFT.haloColor} stroke-width={1}
-          vector-effect="non-scaling-stroke" pointer-events="none" />
-      )}</For>
-      <Show when={props.hover}>{(c) => (
+    <Show when={props.tool === 'polyline' && props.draft.length > 0 && props.hover}>
+      {(c) => (
         <line data-testid="polyline-rubberband"
           x1={props.draft[props.draft.length - 1][0]} y1={props.draft[props.draft.length - 1][1]}
           x2={c()[0]} y2={c()[1]}
           stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
           stroke-dasharray={LIVE_DRAFT.polylineDash}
           vector-effect="non-scaling-stroke" pointer-events="none" />
-      )}</Show>
+      )}
     </Show>
   </>
 );

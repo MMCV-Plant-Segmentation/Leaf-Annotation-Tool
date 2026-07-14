@@ -43,9 +43,11 @@ export function handleCanvasKeyDown(e: KeyboardEvent, o: CanvasKeyboardOpts): vo
   // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
   if (e.key === 'Escape') {
     if (o.tool() === 'select') o.setSelId(null);
-    // Polyline: ESC COMMITS the in-progress line and exits to select (Ctrl+Z is the undo
-    // path) — it must not discard the clicked vertices.
-    else if (o.tool() === 'polyline') { o.interaction.finishDraft(); o.setTool('select'); }
+    // Polyline (per-click rebuild, 2026-07-13): ESC just SWITCHES to the select tool.
+    // Every click was already persisted per-click, so there is nothing to commit and
+    // nothing to discard beyond the ephemeral rubber-band. Clear draft so the rubber-
+    // band vanishes; Ctrl+Z peels a single click (see canvasHistory `edit`/`draw`).
+    else if (o.tool() === 'polyline') { o.setDraft([]); o.setTool('select'); }
     else { o.setDraft([]); o.setTool('pan'); }
   }
   if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }
