@@ -54,8 +54,11 @@ ENV BUILD_TIME=$BUILD_TIME
 
 EXPOSE 5000
 
-# Run granian straight from the venv (not `uv run`): as a non-root uid, `uv run` would try to
-# touch its cache/venv and needs a writable HOME; the venv is already built, so invoke it directly.
-# umask 002 so files this process writes (the DB, WAL) are GROUP-writable — lets any member of the
-# shared group (see compose PUID/PGID + the ownership runbook) read/write the same data + backups.
-CMD ["sh", "-c", "umask 002 && exec /app/.venv/bin/granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
+# Launch through webapp.wsgi:main() (not granian directly): main() writes the launch ledger
+# under HT_DATA_DIR and then execs granian-asgi serving webapp.asgi:app — the SAME serve path
+# dev and the gate go through. --workers 1 stays (one process = one SQLite writer). Run the
+# venv Python straight (not `uv run`): as a non-root uid, uv would try to touch its cache/venv
+# and needs a writable HOME; the venv is already built. umask 002 so files this process writes
+# (the DB, WAL, launch-log.jsonl) are GROUP-writable — lets any member of the shared group
+# (compose PUID/PGID + the ownership runbook) read/write the same data + backups.
+CMD ["sh", "-c", "umask 002 && exec /app/.venv/bin/python -m webapp.wsgi"]

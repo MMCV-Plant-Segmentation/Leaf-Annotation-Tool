@@ -10,7 +10,12 @@ into auth.py or a route handler) fails this test immediately.
 
 Allowed (legitimate env boundaries):
   webapp/config.py         — default_data_dir()'s XDG_DATA_HOME read (a boundary default).
-  webapp/wsgi.py            — the prod AppConfig builder; captures env once at import.
+  webapp/wsgi.py            — launcher + prod AppConfig builder; the launcher-set
+                              HT_LAUNCH_LOG worker handoff and prod env-sourced cfg both
+                              read env here at the boundary.
+  webapp/asgi.py            — the granian-asgi worker boot: reads the ONE launcher-set
+                              env var (HT_LAUNCH_LOG) pointing at the launch ledger to
+                              reconstitute AppConfig. No other env reads.
   webapp/app.py             — the dev/CLI AppConfig builder (argparse defaults +
                               the AppConfig(...) construction in main()).
   webapp/version.py         — build identity (APP_VERSION/GIT_SHA/BUILD_TIME) is
@@ -37,6 +42,7 @@ WEBAPP = REPO / 'webapp'
 ALLOWLIST_WHOLE_FILE = {
     WEBAPP / 'config.py',
     WEBAPP / 'wsgi.py',
+    WEBAPP / 'asgi.py',
     WEBAPP / 'app.py',
     WEBAPP / 'version.py',
     WEBAPP / 'backup_status.py',
