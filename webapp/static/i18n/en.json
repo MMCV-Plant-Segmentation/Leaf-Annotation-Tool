@@ -271,7 +271,7 @@
   "canvas.brush": "brush",
   "canvas.brushTitle": "Brush",
   "canvas.polyline": "polyline",
-  "canvas.polylineTitle": "Polyline click-brush (click to drop vertices; click the start to close)",
+  "canvas.polylineTitle": "Polyline click-brush (each click drops a vertex and is saved; Undo peels one, Esc or another tool finishes)",
   "canvas.eraser": "✕ eraser",
   "canvas.eraserTitle": "Eraser (drag over strokes to delete them)",
   "canvas.viewing": "viewing",

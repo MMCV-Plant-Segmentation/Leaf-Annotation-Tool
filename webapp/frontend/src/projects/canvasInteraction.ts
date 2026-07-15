@@ -1,6 +1,6 @@
 import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
-import { polylineClick, polylineFinish } from './canvasPolyline';
+import { polylineClick } from './canvasPolyline';
 
 export interface CanvasInteractionOpts {
   getSvg: () => SVGSVGElement | undefined;
@@ -13,6 +13,8 @@ export interface CanvasInteractionOpts {
   draft: Accessor<number[][]>;
   setDraft: Setter<number[][]>;
   commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
+  /** Polyline per-click hook: fires with growing point list; persistence picks create/edit. */
+  polylineStep?: (points: number[][], strokeWidth: number) => void;
   onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
@@ -118,7 +120,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
     if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
-    if (tl === 'polyline') { polylineClick(ix, iy, o); return; }
+    if (tl === 'polyline') { polylineClick(ix, iy, { draft: o.draft, setDraft: o.setDraft,
+        brushSize: o.brushSize, polylineStep: o.polylineStep ?? (() => {}) }); return; }  // per-click persist
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
 
@@ -186,7 +189,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const finishDraft = () => {
     const tl = o.tool();
-    if (tl === 'polyline') return polylineFinish(o);
+    if (tl === 'polyline') return;  // Per-click rebuild: every click already persisted.
     const d = o.draft();
     if (tl === 'polygon' && d.length >= 3) o.commit('polygon', d, 2);
     else if (tl === 'line' && d.length >= 2) o.commit('line', d);
