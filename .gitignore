@@ -12,3 +12,4 @@ webapp/frontend/e2e/.auth.json
 app.config.toml
 
 docs/plans/
+.cc_jail_gate_output.log
