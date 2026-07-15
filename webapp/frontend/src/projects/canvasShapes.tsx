@@ -122,7 +122,7 @@ export const AnnotationShape: Component<{
         </Show>
       }>
         <Show when={props.ann.rings.length > 0}>
-          <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
+          <path data-testid="annotation-mask" d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
             fill={fill()} stroke={color()} stroke-width="1.5"
             vector-effect="non-scaling-stroke" />
         </Show>

@@ -1,48 +1,39 @@
 import type { Accessor, Setter } from 'solid-js';
 
 /**
- * Polyline click-brush helpers — a11y feature #40. A polyline is a BRUSH driven by
- * CLICKS: each click drops a vertex (no drag, no auto-commit), a click within the
- * brush RADIUS of the start vertex snaps to it and commits a closed loop, and
- * `finishDraft()` commits any OPEN polyline (a lone vertex commits as a dot).
+ * Polyline click-brush helpers — a11y feature #40, per-click persistence rebuild
+ * (Christian, 2026-07-13). Each click behaves like a brush stroke on finger-lift:
+ * persist + fuse immediately. The interaction fires `polylineStep` on every click
+ * with the growing point list; the persistence layer resolves the 1st call as
+ * `createAnnotation` and each subsequent call as `editStroke` — so the mask exists
+ * after the FIRST click and grows one vertex per click.
  *
- * The commit callback carries `tool='polyline'` in a trailing arg so downstream
- * persistence tags the stroke's provenance (see `canvasPersistence.ts`); brush
- * strokes leave that arg undefined and default to 'brush' server-side.
+ * The draft signal holds the placed vertices only to drive the rubber-band overlay
+ * (last vertex → cursor). ESC and tool-switch clear the draft; there is no ESC/Enter
+ * commit path (nothing to commit — every click is already persisted), and there is no
+ * snap-to-first-vertex auto-close (that was the OLD buffered model). Each click is its
+ * own undo entry: the 1st is a `draw`/`merge` history entry (mutate delete on undo),
+ * every subsequent click an `edit` (reverse-stroke-edit peels one vertex on undo).
  *
  * Kept in its own module so `canvasInteraction.ts` stays under the 200-line file cap.
  */
-export interface PolylineDraftOpts {
+export interface PolylineClickOpts {
   draft: Accessor<number[][]>;
   setDraft: Setter<number[][]>;
   brushSize: Accessor<number>;
-  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
+  /** Per-click persistence hook — called with the growing point list on every click.
+   * The persistence layer decides create-vs-edit; the interaction just dispatches. */
+  polylineStep: (points: number[][], strokeWidth: number) => void;
 }
 
 /**
- * Handle one click at image coordinates (ix, iy). If the click lands within the
- * brush radius of the FIRST vertex, snap to it and commit the polyline as a
- * closed loop (the final point equals the start). Otherwise append (ix, iy) to
- * the draft.
+ * Handle one polyline click at image coordinates (ix, iy). Append the vertex to the
+ * draft (source of the rubber-band's first endpoint) and fire the per-click hook with
+ * the full growing point list. No snap-close: a click landing near the first vertex is
+ * treated exactly like any other click (the user ends the line with ESC / tool-switch).
  */
-export function polylineClick(ix: number, iy: number, o: PolylineDraftOpts): void {
-  const d = o.draft();
-  const r = o.brushSize() / 2;
-  if (d.length && Math.hypot(ix - d[0][0], iy - d[0][1]) <= r) {
-    o.commit('stroke', [...d, [d[0][0], d[0][1]]], 1, o.brushSize(), 'polyline');
-    o.setDraft([]);
-  } else {
-    o.setDraft((p) => [...p, [ix, iy]]);
-  }
-}
-
-/**
- * Commit an OPEN polyline via ESC / tool-switch / Enter. A lone vertex commits as
- * a single-point stroke (a dot of the current radius, like a brush click); an empty
- * draft is a no-op.
- */
-export function polylineFinish(o: PolylineDraftOpts): void {
-  const d = o.draft();
-  if (d.length) o.commit('stroke', d, 1, o.brushSize(), 'polyline');
-  o.setDraft([]);
+export function polylineClick(ix: number, iy: number, o: PolylineClickOpts): void {
+  const next = [...o.draft(), [ix, iy]];
+  o.setDraft(next);
+  o.polylineStep(next, o.brushSize());
 }
