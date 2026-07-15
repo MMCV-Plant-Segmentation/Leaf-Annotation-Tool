@@ -1,68 +1,88 @@
 /**
- * Polyline per-click persistence session — a11y #40 rebuild (Christian, 2026-07-13).
+ * Polyline per-click persistence session — a11y #40 rebuild (Christian, 2026-07-13),
+ * Phase 1 (feat/annotation-ws) polish: the ordering chain that USED to live here (the
+ * `pending: Promise<void>` we serialised clicks on) is GONE. Ordering is now the socket
+ * FIFO in canvasSocket.ts; this module is just a strokeId "am I on my first click?"
+ * bookkeeper wrapped inside a socket.enqueue slot per click.
  *
- * Each polyline click persists + fuses immediately. The FIRST click of a session runs the
- * create-annotation path (a real fused stroke mask, 1-vertex dot) and records the created
- * stroke id; each subsequent click runs `editStroke` on THAT SAME stroke id with the growing
- * point list, so the whole line stays ONE annotation — one `draw`/`merge` + N-1 `edit` history
- * entries. That single-stroke shape is what lets Ctrl+Z peel one vertex at a time and undo the
- * whole line cleanly back to zero.
+ * Each polyline click still persists + fuses immediately: the FIRST click of a session
+ * runs the create-annotation path (a real fused stroke mask, 1-vertex dot) and records the
+ * created stroke id; each subsequent click runs `editStroke` on THAT SAME stroke id with
+ * the growing point list, so the whole line stays ONE annotation. That single-stroke
+ * shape is what lets Ctrl+Z peel one vertex at a time and undo the whole line cleanly
+ * back to zero.
  *
- * Once the stroke id is set we TRUST it and extend — we do NOT re-derive "is this stroke still
- * live?" from the canvas image on each click. The freshly-created annotation isn't yet carrying
- * its member-stroke list in the pushed view, so that check false-negatives and every click would
- * spuriously create+fuse a NEW annotation; the fused pieces then un-fuse into multiple masks on
- * undo (the bug this rebuild's first cut had — undo of a 4-click line left 4 masks instead of 0).
- * The session id is cleared EXPLICITLY instead:
+ * The strokeId decision (create vs. extend) happens INSIDE the socket.enqueue task, not
+ * at click time. Because tasks run one-at-a-time on the socket queue, click N's task
+ * always reads a strokeId() that click N-1's ack has already set — so no second `create`
+ * can slip through and mint a spurious second annotation. That's what "click N's ack
+ * precedes click N+1's send on the same ordered channel" means concretely.
+ *
+ * Once the stroke id is set we TRUST it and extend — we do NOT re-derive "is this stroke
+ * still live?" from the canvas image on each click; the pushed view lags the create-ack
+ * for a moment and false-negatives would spuriously mint fresh annotations that then
+ * un-fuse on undo. The session id is cleared EXPLICITLY:
  *   - `reset()` on tool-switch away from polyline (CanvasScreen), and
- *   - the `.catch()` below on any create/extend rejection — an editStroke against a stroke that
- *     was undone away 404s → reset → the next click starts a fresh session.
- *
- * Sequential ordering: clicks queue on a promise chain so click #2's edit never fires before
- * click #1's create resolves the stroke id it extends.
+ *   - if a create/extend errors — the next click starts a fresh session.
  *
  * Kept as its own module so canvasPersistence.ts stays under the 200-line file cap.
  */
 import { createSignal } from 'solid-js';
+import type { CanvasSocket, SocketAck } from './canvasSocket';
+import type { CreateAnnotationResult } from './canvasApi';
+import type { EditStrokeResult } from './canvasStrokeEditApi';
 
 /** Callbacks the polyline session needs from the surrounding persistence context —
- * one-liner shims over `commit` and `editStroke` in canvasPersistence.ts. */
+ * pure body-building + view/history application. Kept as callbacks (not free imports)
+ * so this module never needs to know about `updateImg`/history internals. */
 export interface PolylineSessionCtx {
-  /** Fire the create-annotation path (as brush's commit does) and return the created stroke
-   * id — so the session can extend it on subsequent clicks. Null if the create was rejected. */
-  create: (points: number[][], strokeWidth: number) => Promise<string | null>;
-  /** Fire the editStroke PATCH to grow the current polyline stroke's point list. */
-  extend: (strokeId: string, points: number[][], strokeWidth: number) => Promise<void>;
+  socket: CanvasSocket;
+  /** Build the create-op payload for the FIRST click of the session (server body). */
+  buildCreatePayload: (points: number[][], strokeWidth: number) => unknown;
+  /** Build the edit-op payload for a subsequent click of the SAME stroke. */
+  buildEditPayload:   (strokeId: string, points: number[][], strokeWidth: number) => unknown;
+  /** Splice the create-op ack into the view + push the appropriate history entry. */
+  applyCreate: (result: CreateAnnotationResult, body: unknown) => void;
+  /** Splice the edit-op ack into the view + push the appropriate history entry. */
+  applyEdit:   (result: EditStrokeResult, strokeId: string, body: unknown) => void;
 }
 
 export function createPolylineSession(ctx: PolylineSessionCtx) {
   const [strokeId, setStrokeId] = createSignal<string | null>(null);
-  // Serialize per-click work so click #2's editStroke never runs before click #1's
-  // create resolves the stroke id we need to extend.
-  let pending: Promise<void> = Promise.resolve();
 
-  /** One per-click step: create on the first call (no stroke id yet), editStroke on every
-   * subsequent call. See the module docstring for why we trust the id rather than re-checking
-   * the (lagging) canvas image. */
+  /** One per-click step. The decision (create vs. extend) is DEFERRED to inside the
+   * socket-queue slot so it reads a strokeId() that the previous click's ack has
+   * already settled. See the module docstring for why we no longer keep a local chain. */
   const step = (points: number[][], strokeWidth: number): void => {
-    pending = pending.then(async () => {
+    void ctx.socket.enqueue(async (send) => {
       const sid = strokeId();
       if (sid) {
-        await ctx.extend(sid, points, strokeWidth);
+        const body = ctx.buildEditPayload(sid, points, strokeWidth);
+        const r: SocketAck<EditStrokeResult> = await send<EditStrokeResult>('edit', body);
+        if (!r.ok) {
+          // The extended stroke may have been undone away (404) — reset so the next
+          // click starts a fresh session instead of extending a probably-nonexistent one.
+          setStrokeId(null);
+          alert(r.message);
+          return;
+        }
+        ctx.applyEdit(r.result, sid, body);
       } else {
-        const fresh = await ctx.create(points, strokeWidth);
-        setStrokeId(fresh);
+        const body = ctx.buildCreatePayload(points, strokeWidth);
+        const r: SocketAck<CreateAnnotationResult> = await send<CreateAnnotationResult>('create', body);
+        if (!r.ok) {
+          setStrokeId(null);
+          alert(r.message);
+          return;
+        }
+        setStrokeId(r.result.createdStrokeId);
+        ctx.applyCreate(r.result, body);
       }
-    }).catch(() => {
-      // Never let a rejection break the chain — the underlying create/extend already surfaced
-      // its own error (alert). Reset the session so the next click starts fresh instead of
-      // trying to extend a probably-nonexistent stroke.
-      setStrokeId(null);
     });
   };
 
-  /** End the session — the next click will create a fresh annotation. Called on tool-switch
-   * away from polyline (CanvasScreen). Idempotent; safe to call repeatedly. */
+  /** End the session — the next click will create a fresh annotation. Called on tool-
+   * switch away from polyline (CanvasScreen). Idempotent; safe to call repeatedly. */
   const reset = (): void => { setStrokeId(null); };
 
   return { step, reset, strokeId };

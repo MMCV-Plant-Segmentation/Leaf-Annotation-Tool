@@ -9,44 +9,42 @@
  *  - 'draw'  — a plain create (point/line/polygon, or a brush stroke that fused with
  *    nothing). Undo/redo is a simple soft-delete/restore by id.
  *  - 'merge' — a brush stroke that FUSED with ≥1 existing live mask. The create minted a
- *    brand-new annotation and consumed the originals (see docs/plans/
- *    Plan — Annotation-stroke model (fused masks).md). Undo drives the server's
- *    /annotations/reverse endpoint (hard-deletes the created annotation+stroke,
- *    resurrects + repoints the consumed originals); redo just re-POSTs the ORIGINAL
- *    create request — since the originals are back exactly as they were, it re-derives
- *    the identical merge (new ids, so the stack entry is replaced with the fresh result).
+ *    brand-new annotation and consumed the originals. Undo drives /annotations/reverse
+ *    (hard-deletes the created annotation+stroke, resurrects the consumed originals);
+ *    redo re-POSTs the ORIGINAL create request.
  *  - 'erase' — a brush-eraser drag that soft-deleted whole annotations server-side already.
- *  - 'relabel' — compound labels Phase 2c: a pure label change on an already-painted
- *    lesion (see canvasPersistence.ts `relabel()`). No geometry moves and nothing is
- *    created/deleted, so undo/redo don't need the merge-reverse machinery — both are just
- *    the same label-only PATCH the forward op used, re-applying the `before`/`after`
- *    label respectively. This is the template for making any future edit-op undoable:
- *    capture enough on the action to redo the mutating call in either direction.
- *  - 'edit'   — a11y #40 v1b: a stroke vertex was moved. Undo/redo delegate to
+ *  - 'relabel' — pure label change (label-only PATCH). Undo/redo just re-apply
+ *    before/after via the same PATCH.
+ *  - 'edit'  — stroke vertex moved (a11y #40 v1b). Undo/redo delegate to
  *    canvasHistoryEdit.ts (reverse endpoint / re-PATCH; stack entry swap on redo).
  *
+ * Phase 1 (feat/annotation-ws): edit-undo (server op `reverse`) + edit-redo (server op
+ * `edit`) route over the SHARED socket (see canvasSocket.ts) so they serialise strictly
+ * FIFO behind any pending polyline persist ops — the ordering fix for the polyline
+ * undo-determinism race. `undo`/`redo` themselves also enqueue on the socket chain (as
+ * a barrier) so a rapid Ctrl+Z waits for every in-flight click to have applied before
+ * reading the history stack.
+ *
  * Usage:
- *   const history = createCanvasHistory(getProjectId, updateCurrentImage);
- *   history.push({ kind: 'draw', ann });           // after a successful non-fusing commit
- *   history.push({ kind: 'merge', ... });           // after a fusing brush commit
- *   history.push({ kind: 'relabel', ... });         // after a successful relabel PATCH
- *   history.erase(annsToDelete);                   // eraser tool — does mutate + push
- *   await history.undo();
- *   await history.redo();
- *   history.canUndo();  history.canRedo();          // signals for button disabled state
- *   history.reset();                               // on image/batch navigation
+ *   const history = createCanvasHistory(getProjectId, updateCurrentImage, socket);
+ *   history.push({ kind: 'draw', ann });
+ *   await history.undo();  await history.redo();
+ *   history.canUndo();  history.canRedo();
+ *   history.reset();
  */
 
 import { createSignal } from 'solid-js';
-import type { CanvasAnnotation, CanvasImage, ConsumedGroup, TileStateUpdate,
+import type { CanvasAnnotation, ConsumedGroup, TileStateUpdate,
   StrokeEditBefore, StrokeEditGroup } from './api';
 import { projectsApi } from './api';
-import { mergeTileStates } from './canvasShapes';
-import { editUndo, editRedo } from './canvasHistoryEdit';
+import type { CanvasSocket, SocketSend } from './canvasSocket';
+import type { UpdateImg } from './canvasHistoryApply';
+import { applyDelta } from './canvasHistoryApply';
+import { dispatchUndo, dispatchRedo } from './canvasHistoryDispatch';
 
 /** Bodies kept on `merge`/`edit` actions so redo can re-issue the identical request. */
 type CreateAnnotationBody = Parameters<typeof projectsApi.createAnnotation>[1];
-type EditStrokeBody = { points: number[][]; strokeWidth?: number; outline?: number[][] };
+type EditStrokeBody = { strokeId?: string; points: number[][]; strokeWidth?: number; outline?: number[][] };
 
 export type HistoryAction =
   | { kind: 'draw'; ann: CanvasAnnotation }
@@ -57,38 +55,23 @@ export type HistoryAction =
   | { kind: 'edit'; strokeId: string; before: StrokeEditBefore; deletedGroups: StrokeEditGroup[];
       created: CanvasAnnotation[]; redoBody: EditStrokeBody };
 
-/** Minimal view-update callback: receives a transform function over the current image. */
-type UpdateImg = (fn: (im: CanvasImage) => CanvasImage) => void;
-
-function applyDelta(
-  updateImg: UpdateImg,
-  add: CanvasAnnotation[],
-  removeIds: string[],
-  tileStates: TileStateUpdate[] = [],
-): void {
-  updateImg((im) => ({
-    ...im,
-    annotations: [
-      ...im.annotations.filter((a) => !removeIds.includes(a.id)),
-      ...add,
-    ],
-    // BUGS #16: the server may have re-opened a completed tile this mutation touched.
-    tiles: mergeTileStates(im.tiles, tileStates),
-  }));
-}
-
-/** Re-render a lesion in place after a label-only PATCH (relabel undo/redo): same id,
- * fresh label/labelColor/labelSnapshot from the server response — no add/remove. */
-function applyRelabel(updateImg: UpdateImg, updated: CanvasAnnotation): void {
-  updateImg((im) => ({
-    ...im,
-    annotations: im.annotations.map((a) => (a.id === updated.id ? { ...a, ...updated } : a)),
-  }));
-}
+/** Synthetic "no socket" fallback used by unit tests that call createCanvasHistory with
+ * only (getProjectId, updateImg). Runs the enqueue task inline with a stub send that
+ * always errors — draw/erase/relabel dispatch don't invoke `send` at all (they use REST
+ * via projectsApi), so those unit tests keep passing unchanged; only the `edit` action's
+ * WS-dependent path (not exercised in these tests) would surface the error. Production
+ * always passes a real CanvasSocket from CanvasScreen. */
+const _fallbackSend: SocketSend = async () => ({ ok: false, message: 'canvasHistory: no socket bound (edit undo/redo unsupported in this context)' });
+const FALLBACK_SOCKET: CanvasSocket = {
+  send:    _fallbackSend,
+  enqueue: async <T,>(task: (s: SocketSend) => Promise<T>): Promise<T> => task(_fallbackSend),
+  close:   () => { /* no-op */ },
+};
 
 export function createCanvasHistory(
   getProjectId: () => string,
   updateImg: UpdateImg,
+  socket: CanvasSocket = FALLBACK_SOCKET,
 ) {
   const [stack, setStack] = createSignal<HistoryAction[]>([]);
   const [cursor, setCursor] = createSignal(0);
@@ -96,17 +79,12 @@ export function createCanvasHistory(
   const canUndo = () => cursor() > 0;
   const canRedo = () => cursor() < stack().length;
 
-  /** Push an action after it has already been applied to the view (e.g. after a draw). */
   const push = (action: HistoryAction) => {
     setStack((s) => [...s.slice(0, cursor()), action]);
     setCursor((c) => c + 1);
   };
 
-  /**
-   * Erase a set of annotations: calls mutate(delete), updates the view, and pushes the
-   * action. Retained for the erase/undo/redo symmetry tests; the brush eraser uses
-   * `applyErase` below since its own request already deleted server-side.
-   */
+  /** Erase (via mutate) + push — the imperative variant used by tests. */
   const erase = async (anns: CanvasAnnotation[]) => {
     if (!anns.length) return;
     const ids = anns.map((a) => a.id);
@@ -115,12 +93,7 @@ export function createCanvasHistory(
     push({ kind: 'erase', anns });
   };
 
-  /**
-   * Apply an eraser-brush drag that the server has ALREADY soft-deleted (one request
-   * covers the whole drag, however many annotations it swept over). Updates the view and
-   * pushes ONE `erase` action carrying every deleted annotation, so a single Ctrl+Z
-   * restores all of them.
-   */
+  /** Apply the eraser-brush server delta (already soft-deleted) + push ONE erase entry. */
   const applyErase = (anns: CanvasAnnotation[], tileStates: TileStateUpdate[] = []) => {
     if (!anns.length) return;
     applyDelta(updateImg, [], anns.map((a) => a.id), tileStates);
@@ -129,67 +102,28 @@ export function createCanvasHistory(
 
   const undo = async () => {
     if (!canUndo()) return;
-    const action = stack()[cursor() - 1];
-    const pid = getProjectId();
-    if (action.kind === 'draw') {
-      const r = await projectsApi.mutateAnnotations(pid, 'delete', [action.ann.id]);
-      applyDelta(updateImg, [], [action.ann.id], r.tileStates);
-    } else if (action.kind === 'merge') {
-      const r = await projectsApi.reverseMerge(pid, {
-        annotationId: action.ann.id, strokeId: action.strokeId,
-        consumedGroups: action.consumedGroups,
-      });
-      applyDelta(updateImg, r.resurrected, [action.ann.id], r.tileStates);
-    } else if (action.kind === 'relabel') {
-      // Pure label change — re-apply the PRIOR label via the same label-only PATCH the
-      // forward relabel used. No geometry, no /annotations/reverse needed.
-      const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.before });
-      applyRelabel(updateImg, updated);
-    } else if (action.kind === 'edit') {
-      await editUndo(pid, action, (add, rm, ts) => applyDelta(updateImg, add, rm, ts));
-    } else {
-      const ids = action.anns.map((a) => a.id);
-      const r = await projectsApi.mutateAnnotations(pid, 'restore', ids);
-      applyDelta(updateImg, action.anns, [], r.tileStates);
-    }
-    setCursor((c) => c - 1);
+    // Enqueue on the shared socket chain — the ordering barrier that makes Ctrl+Z wait
+    // for every in-flight per-click polyline edit to have applied. Without it a fast
+    // Ctrl+Z could dispatch against a not-yet-populated history stack.
+    await socket.enqueue(async (send: SocketSend) => {
+      if (!canUndo()) return;
+      const action = stack()[cursor() - 1];
+      const pid = getProjectId();
+      await dispatchUndo(action, pid, updateImg, send);
+      setCursor((c) => c - 1);
+    });
   };
 
   const redo = async () => {
     if (!canRedo()) return;
-    const action = stack()[cursor()];
-    const pid = getProjectId();
-    if (action.kind === 'draw') {
-      const r = await projectsApi.mutateAnnotations(pid, 'restore', [action.ann.id]);
-      applyDelta(updateImg, [action.ann], [], r.tileStates);
-    } else if (action.kind === 'merge') {
-      // Replays the forward op (re-POST the original create) rather than a server-side
-      // "redo" endpoint — the consumed originals are back exactly as they were after
-      // undo, so this deterministically re-derives the same merge (new ids; the stack
-      // entry below is refreshed so a LATER undo repoints against the right ids).
-      const fresh = await projectsApi.createAnnotation(pid, action.redoBody);
-      const consumedIds = action.consumedGroups.map((g) => g.annotationId);
-      applyDelta(updateImg, [fresh], consumedIds, fresh.tileStates);
+    await socket.enqueue(async (send: SocketSend) => {
+      if (!canRedo()) return;
       const at = cursor();
-      setStack((s) => s.map((a, i) => i === at
-        ? { kind: 'merge', ann: fresh, strokeId: fresh.createdStrokeId,
-            consumedGroups: fresh.consumedGroups, redoBody: action.redoBody }
-        : a));
-    } else if (action.kind === 'relabel') {
-      // Re-apply the NEW label the forward relabel set — same label-only PATCH.
-      const updated = await projectsApi.updateAnnotation(action.annotationId, { label: action.after });
-      applyRelabel(updateImg, updated);
-    } else if (action.kind === 'edit') {
-      const at = cursor();
-      await editRedo(pid, action,
-        (add, rm, ts) => applyDelta(updateImg, add, rm, ts),
-        (fresh) => setStack((s) => s.map((a, i) => i === at ? fresh : a)));
-    } else {
-      const ids = action.anns.map((a) => a.id);
-      const r = await projectsApi.mutateAnnotations(pid, 'delete', ids);
-      applyDelta(updateImg, [], ids, r.tileStates);
-    }
-    setCursor((c) => c + 1);
+      const action = stack()[at];
+      const pid = getProjectId();
+      await dispatchRedo(action, pid, at, updateImg, setStack, send);
+      setCursor((c) => c + 1);
+    });
   };
 
   const reset = () => { setStack([]); setCursor(0); };
