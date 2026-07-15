@@ -10,6 +10,7 @@ import { VertexHandles } from './VertexHandles';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
+import { createCanvasSocket } from './canvasSocket';
 import { createRelabelDropdown } from './relabelDropdown';
 import { createCanvasKeyboard } from './canvasKeyboard';
 import { createTileToggle } from './tileComplete';
@@ -73,13 +74,11 @@ const CanvasScreen: Component = () => {
   const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
 
-  const history = createCanvasHistory(
-    () => canvas()?.projectId ?? '',
-    updateImg,
-  );
-
+  // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
+  const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
+  const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
   const { commit, relabel, editStroke, polylineStep, resetPolyline } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history,
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
   // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
