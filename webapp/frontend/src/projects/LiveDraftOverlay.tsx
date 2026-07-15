@@ -54,6 +54,23 @@ export const LiveDraftOverlay: Component<{
         </>
       )}
     </Show>
+    {/* Polyline hover-radius preview (a11y #40): mirrors the brush/eraser cursor circle so
+        the user SEES the stroke thickness before dropping a vertex — a polyline is a brush
+        driven by clicks, so its preview should convey width the same way. Shown whenever
+        polyline is active + hovering (no draft required), same as brush/eraser. */}
+    <Show when={props.tool === 'polyline' && props.hover}>
+      {(c) => (
+        <>
+          <circle cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
+            stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.previewHaloWidth}
+            vector-effect="non-scaling-stroke" pointer-events="none" />
+          <circle data-testid="polyline-cursor-preview"
+            cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
+            stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.previewStrokeWidth}
+            vector-effect="non-scaling-stroke" pointer-events="none" />
+        </>
+      )}
+    </Show>
     <Show when={props.tool === 'polyline' && props.draft.length > 0}>
       {/* The THICK filled shape the commit will store (polylineOutline == the sent outline),
           so the preview matches the stored geometry exactly. nonzero fill so a reflex/looped
@@ -70,14 +87,32 @@ export const LiveDraftOverlay: Component<{
           fill={LIVE_DRAFT.brushStroke} stroke={LIVE_DRAFT.haloColor} stroke-width={1}
           vector-effect="non-scaling-stroke" pointer-events="none" />
       )}</For>
-      <Show when={props.hover}>{(c) => (
-        <line data-testid="polyline-rubberband"
-          x1={props.draft[props.draft.length - 1][0]} y1={props.draft[props.draft.length - 1][1]}
-          x2={c()[0]} y2={c()[1]}
-          stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
-          stroke-dasharray={LIVE_DRAFT.polylineDash}
-          vector-effect="non-scaling-stroke" pointer-events="none" />
-      )}</Show>
+      <Show when={props.hover}>{(c) => {
+        const last = props.draft[props.draft.length - 1];
+        // Pending segment (last placed vertex → cursor) rendered as the SAME width-buffered
+        // outline that would be committed on the next click — so the user sees the actual
+        // thickness of the next segment, not just a hairline direction cue. `polylineOutline`
+        // handles the degenerate cursor-on-vertex case by returning a disc. Halo goes under
+        // so the shape reads against both light and dark leaf backgrounds. The existing dashed
+        // centerline stays on top as a direction guide.
+        const bandPath = () => ringsToPath([polylineOutline([last, c()], props.brushSize)]);
+        return (
+          <>
+            <path d={bandPath()} fill="none"
+              stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
+              vector-effect="non-scaling-stroke" pointer-events="none" />
+            <path data-testid="polyline-width-preview" d={bandPath()} fill-rule="nonzero"
+              fill={LIVE_DRAFT.brushFill} stroke={LIVE_DRAFT.brushStroke}
+              stroke-width={LIVE_DRAFT.strokeWidth}
+              vector-effect="non-scaling-stroke" pointer-events="none" />
+            <line data-testid="polyline-rubberband"
+              x1={last[0]} y1={last[1]} x2={c()[0]} y2={c()[1]}
+              stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
+              stroke-dasharray={LIVE_DRAFT.polylineDash}
+              vector-effect="non-scaling-stroke" pointer-events="none" />
+          </>
+        );
+      }}</Show>
     </Show>
   </>
 );

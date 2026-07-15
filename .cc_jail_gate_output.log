@@ -1,0 +1,47 @@
+── gate ── (logs: /tmp/leaf-gate-trnwko4r/logs)
+  backend:test_admin_password  PASS
+  backend:test_admin_safety    PASS
+  backend:test_alembic         PASS
+  backend:test_annotator_redesign PASS
+  backend:test_backend         PASS
+  backend:test_batch_determinism PASS
+  backend:test_eraser          PASS
+  backend:test_error_logging   PASS
+  backend:test_health          PASS
+  backend:test_lesions         PASS
+  backend:test_membership      PASS
+  backend:test_merge_co        PASS
+  backend:test_merge_erasure   PASS
+  backend:test_merge_gate      PASS
+  backend:test_no_env_reads    PASS
+  backend:test_polish          PASS
+  backend:test_polish2         PASS
+  backend:test_poly_rings_precision PASS
+  backend:test_polyline        PASS
+  backend:test_polyline_edit   PASS
+  backend:test_preflight_global PASS
+  backend:test_preview_origin  PASS
+  backend:test_probe           PASS
+  backend:test_relabel_stroke  PASS
+  backend:test_semaphore       PASS
+  backend:test_sync_status     PASS
+  backend:test_taxonomy        PASS
+  backend:test_taxonomy_v2     PASS
+  backend:test_tile_cache      PASS
+  backend:test_tile_reopen     PASS
+  backend:test_tiling          PASS
+  backend:test_upload          PASS
+  backend:test_user_settings   PASS
+  backend:test_version         PASS
+  backend:test_viewport_events PASS
+  backend:test_viewport_heatmap PASS
+  tsc                          PASS
+  lint                         PASS
+  build                        PASS
+  playwright:full              FAIL  (396 passed, 1 failed)
+
+backend: 36/36 passed
+playwright: 396 passed, 1 failed
+FAILURES:
+  playwright:full: merge 2a: grouping brush makes a candidate object; eraser flags a mark, recoverably @full [full]
+GATE: FAILURES
