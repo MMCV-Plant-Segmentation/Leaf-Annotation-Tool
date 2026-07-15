@@ -1,0 +1,86 @@
+── gate ── (logs: /tmp/leaf-gate-1qh63swf/logs)
+  backend:test_admin_password  PASS
+  backend:test_admin_safety    PASS
+  backend:test_alembic         PASS
+  backend:test_annotator_redesign PASS
+  backend:test_backend         PASS
+  backend:test_batch_determinism PASS
+  backend:test_eraser          PASS
+  backend:test_error_logging   PASS
+  backend:test_health          PASS
+  backend:test_lesions         PASS
+  backend:test_membership      PASS
+  backend:test_merge_co        PASS
+  backend:test_merge_erasure   PASS
+  backend:test_merge_gate      PASS
+  backend:test_no_env_reads    PASS
+  backend:test_polish          PASS
+  backend:test_polish2         PASS
+  backend:test_poly_rings_precision PASS
+  backend:test_polyline        PASS
+  backend:test_polyline_edit   PASS
+  backend:test_preflight_global PASS
+  backend:test_preview_origin  PASS
+  backend:test_probe           PASS
+  backend:test_relabel_stroke  PASS
+  backend:test_semaphore       PASS
+  backend:test_sync_status     PASS
+  backend:test_taxonomy        PASS
+  backend:test_taxonomy_v2     PASS
+  backend:test_tile_cache      PASS
+  backend:test_tile_reopen     PASS
+  backend:test_tiling          PASS
+  backend:test_upload          PASS
+  backend:test_user_settings   PASS
+  backend:test_version         PASS
+  backend:test_viewport_events PASS
+  backend:test_viewport_heatmap PASS
+  tsc                          PASS
+  lint                         PASS
+  build                        PASS
+  playwright:full              FAIL  (server failed to start)
+
+backend: 36/36 passed
+playwright: server failed to start
+FAILURES:
+  playwright:full → /tmp/leaf-gate-1qh63swf/logs/server.log
+    | [INFO] Starting granian (main PID: 5350)
+    | [INFO] Listening at: http://127.0.0.1:59363
+    | [INFO] Spawning worker-1 with PID: 5351
+    | Process granian-worker:
+    | Traceback (most recent call last):
+    |   File "/usr/local/lib/python3.12/dist-packages/granian/_internal.py", line 47, in load_module
+    |     __import__(module_name)
+    |   File "/work/webapp/asgi.py", line 33, in <module>
+    |     from asgiref.wsgi import WsgiToAsgi
+    | ModuleNotFoundError: No module named 'asgiref'
+    | 
+    | During handling of the above exception, another exception occurred:
+    | 
+    | Traceback (most recent call last):
+    |   File "/usr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    |     self.run()
+    |   File "/usr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    |     self._target(*self._args, **self._kwargs)
+    |   File "/usr/local/lib/python3.12/dist-packages/granian/server/mp.py", line 90, in wrapped
+    |     callback = callback_loader()
+    |                ^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.12/dist-packages/granian/_internal.py", line 65, in load_target
+    |     module = load_module(path)
+    |              ^^^^^^^^^^^^^^^^^
+    |   File "/usr/local/lib/python3.12/dist-packages/granian/_internal.py", line 50, in load_module
+    |     raise RuntimeError(
+    | RuntimeError: While importing 'webapp.asgi', an ImportError was raised:
+    | 
+    | Traceback (most recent call last):
+    |   File "/usr/local/lib/python3.12/dist-packages/granian/_internal.py", line 47, in load_module
+    |     __import__(module_name)
+    |   File "/work/webapp/asgi.py", line 33, in <module>
+    |     from asgiref.wsgi import WsgiToAsgi
+    | ModuleNotFoundError: No module named 'asgiref'
+    | 
+    | [ERROR] Unexpected exit from worker-1
+    | [INFO] Shutting down granian
+    | [INFO] Stopped worker-1
+    | [INFO] Granian shutdown completed, see ya!
+GATE: FAILURES
