@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""deploy.py — one tool to run the Leaf Annotation stack: prod, or a throwaway test copy.
+"""deploy.py — one tool to run the Leaf Annotation stack.
 
-Runs the stack as YOU + a shared group (app_group in app.config.toml), so data + backups are
-group-owned, never root — no UID typed or hardcoded, and no sudo needed (works even on a host you
-don't own, as long as you're in app_group). Auto-computes the build version. Depends only on the
-stdlib + two sibling pure-stdlib repo modules (webapp.seed, webapp.config_file) — no pip install.
+Owns everything situational (config source, containerization, mode dev/prod, services).
+The webapp package knows NOTHING about prod/dev/test/gate — it's a library exposing
+`webapp.run(cfg)`; deploy.py + deploy_lib + container_entry.py build the AppConfig for
+each mode and hand it to webapp.run.
 
-Config comes from app.config.toml (repo root; replaces .env — a legacy .env is still read as a
-deprecated fallback when the toml is absent). See app.config.toml.example.
+Runs prod as YOU + a shared group (app_group in the [deploy] section of app.config.toml),
+so data + backups are group-owned, never root — no UID typed or hardcoded, and no sudo
+needed (works even on a host you don't own, as long as you're in app_group).
 
-Test is fully decoupled from prod: it does NOT require prod to be running, and it never copies
-prod's live volume. Test's data comes from --data-mode, not from prod.
+Config: sectioned app.config.toml (see app.config.toml.example). deploy_lib.resolve()
+flattens each service's slice; secrets never leave the resolved config file (which the
+prod path writes to an ephemeral /tmp dir and hands to compose as an `app-config` secret,
+mounted read-only at /run/secrets/app-config — never via env, which leaks through
+`docker inspect`).
 
-  ./deploy.py create-config                    # interactively write app.config.toml (gen SECRET_KEY)
-  ./deploy.py start prod                       # build (auto-version) + run prod as you+group
-  ./deploy.py start prod --with-backup         # + the litestream/lsyncd backup sidecars
-  ./deploy.py start test --data-mode reset     # run the real image against a fresh empty volume
+  ./deploy.py create-config                    # interactively write app.config.toml
+  ./deploy.py dev                              # in-process dev server (no container)
+  ./deploy.py prod                             # build + run prod containers
+  ./deploy.py prod --with-backup               # + the litestream/lsyncd backup sidecars
+  ./deploy.py start test --data-mode reset     # throwaway container against a fresh volume
   ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR
   ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
   ./deploy.py start test --data-mode fixture   # ...on the in-repo synthetic dataset (subagents)
-  ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch, no merge needed
+  ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch
   ./deploy.py stop prod | test
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
 """
@@ -35,31 +40,26 @@ import tempfile
 import time
 from pathlib import Path
 
-from webapp.config_file import load_file_config
+import deploy_lib
 from webapp.seed import free_port
 
 ROOT = Path(__file__).resolve().parent
 IMAGE = "leaf-annotation:latest"
 TEST_CT = "leaf-testenv"
 TEST_VOL = "leaf-test-data"
+CONFIG_FILE = ROOT / "app.config.toml"
 # In-repo synthetic dataset for subagent test envs — DISJOINT from prod by construction, never
 # sourced from prod's volume or backups. Rebuild/extend: webapp/tests/build_subagent_fixture.py.
 FIXTURE_DIR = ROOT / "webapp" / "tests" / "fixtures" / "subagent_dataset"
-
-# Config values the prod CONTAINER needs injected as env (compose interpolates these from the
-# process env deploy.py hands to `docker compose`; see compose.yaml's app `environment:` block).
-CONTAINER_ENV_KEYS = ("PORT", "SECRET_KEY", "ADMIN_PASSWORD", "BACKUP_DIR", "BACKUP_STATUS_URL")
 
 
 def die(msg):
     sys.exit(f"deploy.py: {msg}")
 
 
-def load_env():
-    """Resolve stack config from app.config.toml (preferred) or a legacy .env (deprecated
-    fallback), keyed by ENV-style names (APP_GROUP, PORT, SECRET_KEY, …). See webapp/config_file.py.
-    Returns a plain dict so existing `env.get('APP_GROUP')` call sites are unchanged."""
-    return load_file_config(ROOT).as_env()
+def load_master():
+    """Load the sectioned master config file (app.config.toml)."""
+    return deploy_lib.load_master(CONFIG_FILE)
 
 
 def sh(cmd, **kw):
@@ -79,11 +79,13 @@ def git_sha(root=ROOT):
         return ""
 
 
-def identity(env):
-    """(uid, gid) to run as: your uid + the APP_GROUP gid. No sudo, nothing hardcoded."""
-    group = env.get("APP_GROUP")
+def identity(master):
+    """(uid, gid) to run prod containers as: your uid + the [deploy].app_group gid.
+    No sudo, nothing hardcoded."""
+    deploy_section = master.get("deploy") or {}
+    group = deploy_section.get("app_group")
     if not group:
-        die("APP_GROUP not set in app.config.toml (or legacy .env) — run: ./deploy.py create-config")
+        die("[deploy].app_group not set in app.config.toml — run: ./deploy.py create-config")
     try:
         gid = grp.getgrnam(group).gr_gid
     except KeyError:
@@ -91,32 +93,47 @@ def identity(env):
     return str(os.getuid()), str(gid)
 
 
-def base_env(env, root=ROOT):
-    """Version + project pin for build/compose. No identity → `test` and `stop` work without
-    APP_GROUP or a .env (test runs as your personal uid/gid; stop doesn't start containers).
-    root: whichever tree is actually being built (main checkout, or a --branch worktree) —
-    GIT_SHA must match what was built, not always the main checkout's HEAD."""
+def compose_project_name(master):
+    return (master.get("deploy") or {}).get("compose_project_name", "leaf-annotation-tool")
+
+
+def base_compose_env(master, root=ROOT):
+    """Host-side env for `docker compose` interpolation. NEVER injected into the container
+    itself (the container config comes from the mounted `app-config` secret file). Only
+    non-secret orchestration values: version identity, project name."""
     e = dict(os.environ)
     e.update(GIT_SHA=git_sha(root), BUILD_TIME=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-    e.setdefault("COMPOSE_PROJECT_NAME", env.get("COMPOSE_PROJECT_NAME", "leaf-annotation-tool"))
+    e.setdefault("COMPOSE_PROJECT_NAME", compose_project_name(master))
     return e
 
 
-def prod_env(env):
-    """base_env + run-as identity (your uid + the APP_GROUP gid) for running prod containers,
-    PLUS the container-facing config values (SECRET_KEY/ADMIN_PASSWORD/BACKUP_DIR/…) so compose
-    can interpolate them into the container's environment. Sourcing them from `env` (app.config.toml
-    or the legacy .env) is what lets prod run WITHOUT a .env on disk — the toml is enough. Only set
-    keys that actually resolved, so we never blank out a value compose would otherwise auto-load
-    from a present .env (which would silently break an existing .env-based prod)."""
-    puid, pgid = identity(env)
-    e = base_env(env)
-    e.update(PUID=puid, PGID=pgid)
-    for key in CONTAINER_ENV_KEYS:
-        val = env.get(key)
-        if val is not None:
-            e[key] = val
+def prod_compose_env(master, app_config_file, resolved_app):
+    """base_compose_env + run-as identity + PORT (for the compose `ports:` interpolation)
+    + APP_CONFIG_FILE (for the compose `secrets: file:` reference) + BACKUP_DIR (only if
+    set — the compose.backup.yaml sidecar mounts need it). Only non-secret values leak into
+    this env; the app's SECRET_KEY / ADMIN_PASSWORD ride inside app_config_file, mounted as
+    a compose secret."""
+    puid, pgid = identity(master)
+    e = base_compose_env(master)
+    e["PUID"] = puid
+    e["PGID"] = pgid
+    e["PORT"] = str(resolved_app.get("port", 5000))
+    e["APP_CONFIG_FILE"] = str(app_config_file)
+    backup = master.get("backup") or {}
+    if backup.get("backup_dir"):
+        e["BACKUP_DIR"] = backup["backup_dir"]
     return e
+
+
+def _placeholder_app_config():
+    """A tiny empty compose-secret file for maintenance ops (stop/restore) that don't need
+    the real app config but must still satisfy compose's `secrets: file:` at parse time.
+    Written to an ephemeral /tmp dir (0700) so it's cleaned up by the OS."""
+    tmpdir = deploy_lib.make_ephemeral_config_dir()
+    dest = tmpdir / "app-config.toml"
+    dest.write_text("# placeholder — maintenance op, not the real app config\n")
+    dest.chmod(0o600)
+    return dest
 
 
 def resolve_build_root(branch):
@@ -141,37 +158,20 @@ def cleanup_worktree(wt_dir):
     shutil.rmtree(wt_dir, ignore_errors=True)
 
 
-def bake(env, root=ROOT):
-    # -f docker-bake.hcl only: bake otherwise also loads compose.yaml and demands BACKUP_DIR
-    # (from the backup services) even to build just `app`. cwd=root so the "." build context
-    # (docker-bake.hcl) resolves against the ref being built, not always the main checkout.
-    sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"], cwd=str(root), env=base_env(env, root))
+def bake(master, root=ROOT):
+    # -f docker-bake.hcl only: bake otherwise also loads compose.yaml and demands
+    # APP_CONFIG_FILE + BACKUP_DIR (compose interpolation) even to build just `app`. cwd=root
+    # so the "." build context (docker-bake.hcl) resolves against the ref being built.
+    sh(["docker", "buildx", "bake", "-f", "docker-bake.hcl", "app"],
+       cwd=str(root), env=base_compose_env(master, root))
 
 
 def _ensure_prod_volume(penv, name):
     """First-boot only: create + chown a prod named volume if it doesn't exist yet, so a
-    non-root sidecar (running as PUID:PGID — see prod_env()) can write into it. A brand-new
-    Docker named volume is root-owned, and Compose never chowns a volume it creates — so on a
-    truly fresh host, `docker compose up` would hand the container a root-owned mount it can't
-    write to. Mirrors _reset_test_volume()'s create+chown, but for prod: create, never wipe.
-
-    name: the volume's short name as declared in compose (e.g. "leaf-data", "lsyncd-status").
-    Compose names the actual volume f"{COMPOSE_PROJECT_NAME}_{name}" (its default naming for a
-    volume declared without `external: true`) — reproduce that exactly so this creates/adopts
-    the SAME volume Compose is about to use, not a shadow one.
+    non-root sidecar (running as PUID:PGID — see prod_compose_env()) can write into it.
 
     Idempotent + non-destructive: only acts when the volume does NOT already exist. On an
-    existing volume (not first boot) this is a no-op — never wipe, never blanket re-chown (an
-    operator may have deliberately changed ownership, and reusing this on every start would
-    silently stomp on that).
-
-    Labels: validated against this repo's Compose (v5.2.0) that a volume Compose did not create
-    still gets silently ADOPTED (no warning, no error) by `docker compose up` as long as it
-    carries Compose's own `com.docker.compose.project` + `com.docker.compose.volume` labels — a
-    plain unlabeled `docker volume create` works too (Compose adopts it) but prints a
-    "not created by Docker Compose" warning on every future `up`, forever. Labeling it up front
-    avoids that noise; no config-hash label is needed for adoption.
-    """
+    existing volume (not first boot) this is a no-op — never wipe, never blanket re-chown."""
     project = penv.get("COMPOSE_PROJECT_NAME", "leaf-annotation-tool")
     vol = f"{project}_{name}"
     if subprocess.run(["docker", "volume", "inspect", vol], capture_output=True).returncode == 0:
@@ -185,58 +185,82 @@ def _ensure_prod_volume(penv, name):
         "chown", "-R", f"{penv['PUID']}:{penv['PGID']}", "/data"])
 
 
-def start_prod(env, with_backup, branch):
-    # Required-ness validated AFTER merging file+env (the config file may supply it, so argparse
-    # can't). SECRET_KEY is mandatory for the app to boot; fail here with a clear message rather
-    # than letting the container crash-loop on a missing key.
-    if not env.get("SECRET_KEY"):
-        die("SECRET_KEY not set in app.config.toml (or legacy .env) — prod can't start without it. "
+def start_prod(master, with_backup, branch):
+    """Build image + write resolved app config to an ephemeral /tmp secret file + compose up.
+    The container reads its config from the mounted /run/secrets/app-config, not from env."""
+    resolved = deploy_lib.resolve(master, "prod")
+    resolved_app = resolved["app"]
+    # Required-ness validated AFTER resolve. secret_key is mandatory for the app to boot;
+    # fail here with a clear message rather than letting the container crash-loop.
+    if not resolved_app.get("secret_key"):
+        die("[app].secret_key not set in app.config.toml — prod can't start without it. "
             "Run: ./deploy.py create-config")
+
     build_root, worktree = resolve_build_root(branch)
     try:
-        bake(env, root=build_root)
+        bake(master, root=build_root)
         version = git_sha(build_root) or "dev"
     finally:
         cleanup_worktree(worktree)
-    penv = prod_env(env)
+
+    # Write the resolved app slice to an ephemeral /tmp file (0600 in a 0700 dir). Compose
+    # mounts this as the `app-config` secret at /run/secrets/app-config inside the container;
+    # container_entry.py reads it back via deploy_lib.launch_from_config_file. Secrets never
+    # touch the container's env (docker inspect would leak them) or the CLI (ps would).
+    tmpdir = deploy_lib.make_ephemeral_config_dir()
+    app_config_file = tmpdir / "app-config.toml"
+    deploy_lib.write_service_config(resolved_app, app_config_file)
+
+    penv = prod_compose_env(master, app_config_file, resolved_app)
     _ensure_prod_volume(penv, "leaf-data")
-    # Backup sidecars + BACKUP_DIR interpolation live entirely in compose.backup.yaml (see its
-    # header) — only merge that file in when backup was actually asked for, so plain prod never
-    # parses a ${BACKUP_DIR:?...} guard and never needs BACKUP_DIR set.
+
     up = ["docker", "compose", "-f", "compose.yaml"]
     if with_backup:
         up += ["-f", "compose.backup.yaml"]
-        # lsyncd-status is only declared (and only needed) on the --with-backup path — same
-        # first-boot root-owned-volume problem as leaf-data, but for lsyncd's non-root status
-        # writes (see ops/lsyncd.conf.lua's statusFile).
         _ensure_prod_volume(penv, "lsyncd-status")
     up += ["up", "-d"]
     sh(up, cwd=str(ROOT), env=penv)
     print(f"prod up (version {version}). backup: {'on' if with_backup else 'off'}.")
+    print(f"  app-config secret: {app_config_file}  (0600, ephemeral)")
+
+
+def start_dev(master):
+    """Dev = in-process, no container. Resolve [app]+[dev] → AppConfig → webapp.run(cfg).
+    Same webapp.run path prod uses in-container and the gate uses ephemerally — differ only
+    in the config source."""
+    resolved = deploy_lib.resolve(master, "dev")
+    resolved_app = resolved["app"]
+    if not resolved_app.get("secret_key"):
+        die("[app].secret_key not set in app.config.toml — dev can't start without it. "
+            "Run: ./deploy.py create-config")
+    cfg = deploy_lib.build_appconfig(resolved_app)
+    from webapp.wsgi import run
+    print(f"dev up on http://{cfg.host}:{cfg.port}  (in-process, no container)")
+    return run(cfg)
 
 
 def _reset_test_volume(puid, pgid):
     """Fresh, empty test volume. No prod involvement — matches seed.py's _seed_clean semantics
     (wipe-then-empty) but at the Docker-volume level, since the test container boots the prod
-    image (db_seed='existing' inside wsgi.py) and just needs an empty /data to seed itself onto.
-    A freshly-created named volume is root-owned; the app container runs as the personal
-    puid:pgid (not root), so chown it first or auto_create_schema's sqlite3.connect() fails with
-    'unable to open database file'."""
+    image (db_seed='existing' inside container_entry) and just needs an empty /data to seed
+    itself onto. A freshly-created named volume is root-owned; the app container runs as the
+    personal puid:pgid (not root), so chown it first or auto_create_schema's sqlite3.connect()
+    fails with 'unable to open database file'."""
     subprocess.run(["docker", "volume", "rm", TEST_VOL], capture_output=True)
     sh(["docker", "volume", "create", TEST_VOL])
     sh(["docker", "run", "--rm", "-v", f"{TEST_VOL}:/data", "alpine",
         "chown", "-R", f"{puid}:{pgid}", "/data"])
 
 
-def _restore_test_volume(env, puid, pgid):
+def _restore_test_volume(master, puid, pgid):
     """Populate the test volume from the host BACKUP (litestream file replica + lsyncd file
     mirror) — the SAME mechanism prod restore/webapp/restore.py use — never from prod's live
-    volume. Mirrors compose.yaml's one-shot `restore` service, retargeted at TEST_VOL."""
-    backup_dir = env.get("BACKUP_DIR")
+    volume. Mirrors compose.backup.yaml's one-shot `restore` service, retargeted at TEST_VOL."""
+    backup_dir = (master.get("backup") or {}).get("backup_dir")
     if not backup_dir:
-        die("--data-mode restore needs backup_dir set in app.config.toml (the host backup root: "
-            "<backup_dir>/db is the litestream replica, <backup_dir>/files is the file mirror) — "
-            "test restores from BACKUP, never from prod's live volume.")
+        die("--data-mode restore needs [backup].backup_dir set in app.config.toml (the host "
+            "backup root: <backup_dir>/db is the litestream replica, <backup_dir>/files is the "
+            "file mirror) — test restores from BACKUP, never from prod's live volume.")
     db_backup = Path(backup_dir) / "db"
     files_backup = Path(backup_dir) / "files"
     if not db_backup.is_dir():
@@ -252,13 +276,7 @@ def _restore_test_volume(env, puid, pgid):
     else:
         print(f"[restore] WARNING: no file backup at {files_backup} — DB restored, but "
               f"images/jsons/manifest.json were NOT (nothing to copy from).")
-    # litestream leaves app.db.tmp-shm/app.db.tmp-wal sidecars from applying WAL against its temp
-    # path (harmless — SQLite looks for app.db-wal/app.db-shm, not .tmp-* — but stray); same
-    # cleanup webapp/restore.py does for the native-Python restore path.
     cmd += " && rm -f /data/app.db.tmp-* && echo '[restore] done'"
-    # --entrypoint override: the image's default ENTRYPOINT is `litestream` itself (see
-    # compose.yaml's `restore` service, which overrides it the same way), so plain `sh -c ...`
-    # as the command would run as an argument TO litestream, not as a shell.
     sh(["docker", "run", "--rm", *mounts, "--user", f"{puid}:{pgid}",
         "--entrypoint", "/bin/sh", "litestream/litestream:0.3.13", "-c", cmd])
 
@@ -279,22 +297,18 @@ def _test_volume_exists():
     return subprocess.run(["docker", "volume", "inspect", TEST_VOL], capture_output=True).returncode == 0
 
 
-def _prep_test_data(mode, env, puid, pgid):
+def _prep_test_data(mode, master, puid, pgid):
     if mode == "keep":
         if not _test_volume_exists():
-            # First-ever test run: a bare `docker run -v <new-name>:/data` would auto-create the
-            # volume root-owned, and the app (running as puid:pgid, not root) can't open its DB
-            # file in a root-owned dir — so this still needs the create+chown, just never a wipe
-            # of anything that already exists.
             print("test volume doesn't exist yet — creating it empty (first run)…")
             _reset_test_volume(puid, pgid)
-        return  # otherwise: reuse the volume exactly as-is, no wipe, no seed
+        return
     if mode == "reset":
         print("resetting test volume to empty…")
         _reset_test_volume(puid, pgid)
     elif mode == "restore":
         print("restoring test volume from backup…")
-        _restore_test_volume(env, puid, pgid)
+        _restore_test_volume(master, puid, pgid)
     elif mode == "fixture":
         print("loading test volume from the in-repo synthetic fixture (disjoint from prod)…")
         _fixture_test_volume(puid, pgid)
@@ -302,40 +316,57 @@ def _prep_test_data(mode, env, puid, pgid):
         raise ValueError(f"unknown data-mode: {mode!r}")
 
 
-def start_test(env, port, data_mode, branch):
+def start_test(master, port, data_mode, branch):
+    """Throwaway test container against the SAME image prod would get. Test mounts its own
+    resolved-config file at /run/secrets/app-config via a plain bind-mount (no compose here —
+    this is a bare `docker run` for concurrency-safety and simpler teardown). Config values
+    (SECRET_KEY / ADMIN_PASSWORD / PORT) still ride in that file, not in env."""
     if data_mode is None:
         die("start test requires --data-mode {keep|reset|restore|fixture} (no default — this is a "
-            "wipe-guard, since reset/restore/fixture replace the test volume). Choose: "
-            "keep (reuse test data as-is), reset (fresh empty data), "
-            "restore (populate from BACKUP_DIR), or "
-            "fixture (in-repo synthetic dataset, disjoint from prod — for subagents).")
+            "wipe-guard, since reset/restore/fixture replace the test volume).")
     puid, pgid = str(os.getuid()), str(os.getgid())  # personal identity — test data isn't shared
     build_root, worktree = resolve_build_root(branch)
     try:
-        bake(env, root=build_root)  # test that code, same image prod would get
+        bake(master, root=build_root)
     finally:
         cleanup_worktree(worktree)
     subprocess.run(["docker", "rm", "-f", TEST_CT], capture_output=True)  # release the volume first
-    _prep_test_data(data_mode, env, puid, pgid)
+    _prep_test_data(data_mode, master, puid, pgid)
     if port is None:
-        port = free_port()  # auto: a free host port, so multiple test envs don't collide
-    admin_pw = env.get("ADMIN_PASSWORD")  # only takes effect if no admin exists yet (fresh 'reset'
-    admin_flags = [] if not admin_pw else ["-e", f"ADMIN_PASSWORD={admin_pw}"]  # data); no-op on keep/restore
+        port = free_port()
+
+    # Resolve a "prod-shaped" test app config, then override the transient bits (port,
+    # secret_key) for this test run. admin_password inherits from [app] (harmless — only
+    # takes effect on fresh 'reset' data; no-op on keep/restore).
+    resolved = deploy_lib.resolve(master, "prod")
+    resolved_app = dict(resolved["app"])
+    resolved_app["port"] = port
+    resolved_app["secret_key"] = f"testenv-{secrets.token_hex(8)}"
+
+    tmpdir = deploy_lib.make_ephemeral_config_dir()
+    app_config_file = tmpdir / "app-config.toml"
+    deploy_lib.write_service_config(resolved_app, app_config_file)
+
     sh(["docker", "run", "-d", "--rm", "--name", TEST_CT,
-        "-p", f"{port}:{port}", "-e", f"PORT={port}",
-        "-e", f"SECRET_KEY=testenv-{secrets.token_hex(8)}", *admin_flags,
-        "--user", f"{puid}:{pgid}", "-v", f"{TEST_VOL}:/data", IMAGE])
+        "-p", f"{port}:{port}",
+        "--user", f"{puid}:{pgid}", "-v", f"{TEST_VOL}:/data",
+        "-v", f"{app_config_file}:/run/secrets/app-config:ro",
+        IMAGE])
     print(f"test up on http://localhost:{port}  (data-mode={data_mode}; prod not required, not touched).")
     print(f"  logs: docker logs -f {TEST_CT}   |   stop: ./deploy.py stop test")
 
 
-def stop(env, target):
+def stop(master, target):
     if target == "prod":
         # -f compose.backup.yaml too, so `down` also removes the backup sidecars if they're up;
-        # without it they linger and hold the network. Dummy BACKUP_DIR only satisfies
-        # compose.backup.yaml's ${BACKUP_DIR:?...} interpolation guard (down mounts nothing).
-        e = base_env(env)
+        # without it they linger and hold the network. Placeholder APP_CONFIG_FILE + BACKUP_DIR
+        # satisfy compose's parse-time interpolation guards (down mounts nothing).
+        e = base_compose_env(master)
         e.setdefault("BACKUP_DIR", "/unused-for-down")
+        e.setdefault("APP_CONFIG_FILE", str(_placeholder_app_config()))
+        e.setdefault("PORT", str(((master.get("app") or {}).get("port")) or 5000))
+        e.setdefault("PUID", str(os.getuid()))
+        e.setdefault("PGID", str(os.getgid()))
         sh(["docker", "compose", "-f", "compose.yaml", "-f", "compose.backup.yaml",
             "down", "--remove-orphans"], cwd=str(ROOT), env=e)
     else:
@@ -343,10 +374,15 @@ def stop(env, target):
         subprocess.run(["docker", "volume", "rm", TEST_VOL], capture_output=True)
 
 
-def restore(env):
-    # restore now lives in compose.backup.yaml (see its header) — always composed with the base.
+def restore(master):
+    # restore lives in compose.backup.yaml (see its header) — always composed with the base.
+    # It runs the litestream image (not the app), so it never reads app-config; supply a
+    # placeholder so compose's parse-time `secrets: file:` interpolation succeeds.
+    placeholder = _placeholder_app_config()
+    resolved_app = deploy_lib.resolve(master, "prod")["app"]
+    penv = prod_compose_env(master, placeholder, resolved_app)
     sh(["docker", "compose", "-f", "compose.yaml", "-f", "compose.backup.yaml", "run", "--rm", "restore"],
-       cwd=str(ROOT), env=prod_env(env))
+       cwd=str(ROOT), env=penv)
 
 
 def _toml_str(value):
@@ -356,70 +392,91 @@ def _toml_str(value):
 
 
 def create_config():
-    """Interactively write app.config.toml (the config file that replaces .env)."""
-    f = ROOT / "app.config.toml"
+    """Interactively write app.config.toml (sectioned: [app] / [backup] / [deploy] / [dev])."""
+    f = CONFIG_FILE
     if f.exists() and input("app.config.toml already exists — overwrite? [y/N] ").strip().lower() != "y":
         die("aborted")
     port = input("port [5000]: ").strip() or "5000"
-    group = input("app_group (shared unix group that co-owns data + backups): ").strip()
+    group = input("[deploy].app_group (shared unix group that co-owns data + backups): ").strip()
     if not group:
         die("app_group is required")
-    backup = input("backup_dir (absolute host path for backups; blank = no backup): ").strip()
-    admin = getpass.getpass("admin_password (first-boot admin login): ")
+    backup = input("[backup].backup_dir (absolute host path for backups; blank = no backup): ").strip()
+    admin = getpass.getpass("[app].admin_password (first-boot admin login): ")
     while not admin:
-        admin = getpass.getpass("admin_password can't be empty: ")
+        admin = getpass.getpass("[app].admin_password can't be empty: ")
+
     lines = [
-        "# app.config.toml — config for the Leaf Annotation stack.",
-        "# GITIGNORED; contains secrets. CLI flags override these values.",
+        "# app.config.toml — config for the Leaf Annotation stack (sectioned).",
+        "# GITIGNORED; contains secrets. See app.config.toml.example for the schema.",
         "",
+        "[app]",
         f"port = {int(port)}",
-        f"app_group = {_toml_str(group)}",
-    ]
-    if backup:
-        lines.append(f"backup_dir = {_toml_str(backup)}")
-    lines += [
         f"secret_key = {_toml_str(secrets.token_urlsafe(32))}",
         f"admin_password = {_toml_str(admin)}",
+        "",
+    ]
+    if backup:
+        lines += ["[backup]", f"backup_dir = {_toml_str(backup)}", ""]
+    lines += [
+        "[deploy]",
+        f"app_group = {_toml_str(group)}",
         'compose_project_name = "leaf-annotation-tool"',
+        "",
+        "[dev]",
+        'host = "127.0.0.1"',
     ]
     f.write_text("\n".join(lines) + "\n")
     os.chmod(f, 0o600)
-    print(f"wrote {f} (secret_key generated for you). Next: ./deploy.py start prod")
+    print(f"wrote {f} (secret_key generated for you). Next: ./deploy.py prod")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    ps = sub.add_parser("start", help="build + run prod, or a throwaway test copy")
-    ps.add_argument("target", choices=["prod", "test"])
-    ps.add_argument("--with-backup", action="store_true", help="prod: also run the backup sidecars")
+
+    # `prod` — build + compose up.
+    pp = sub.add_parser("prod", help="build + run prod containers (compose)")
+    pp.add_argument("--with-backup", action="store_true", help="also run the backup sidecars")
+    pp.add_argument("--branch", default=None,
+                    help="git ref to build the image from (via a throwaway worktree), instead of "
+                         "the current checkout — e.g. deploy a feature branch without merging it.")
+
+    # `dev` — in-process, no container.
+    sub.add_parser("dev", help="in-process dev server (no container)")
+
+    # `start test` — kept as its own subcommand (throwaway container).
+    ps = sub.add_parser("start", help="throwaway test container (test only; prod is now `./deploy.py prod`)")
+    ps.add_argument("target", choices=["test"])
     ps.add_argument("--port", type=int, default=None,
-                    help="test: host port (default: auto-assigned free port, so multiple test "
-                         "envs don't collide); prod always uses app.config.toml's port")
+                    help="test: host port (default: auto-assigned free port, so multiple test envs don't collide)")
     ps.add_argument("--data-mode", choices=["keep", "reset", "restore", "fixture"], default=None,
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
                          "data), restore (populate from BACKUP_DIR), fixture (in-repo synthetic "
-                         "dataset, disjoint from prod — for subagents). No default (wipe-guard). "
-                         "Ignored for prod.")
+                         "dataset, disjoint from prod — for subagents). No default (wipe-guard).")
     ps.add_argument("--branch", default=None,
-                    help="git ref to build the image from (via a throwaway worktree), instead of "
-                         "the current checkout — e.g. deploy+test a feature branch without "
-                         "merging it. Default: build the current checkout, unchanged.")
+                    help="git ref to build the image from (via a throwaway worktree).")
+
     st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
-    sub.add_parser("create-config", help="interactively write app.config.toml (replaces .env)")
+    sub.add_parser("create-config", help="interactively write app.config.toml")
+
     a = ap.parse_args()
-    env = load_env()
     if a.cmd == "create-config":
         create_config()
+        return
+    master = load_master()
+    if a.cmd == "prod":
+        start_prod(master, a.with_backup, a.branch)
+    elif a.cmd == "dev":
+        rc = start_dev(master)
+        raise SystemExit(rc or 0)
     elif a.cmd == "start":
-        (start_prod(env, a.with_backup, a.branch) if a.target == "prod"
-         else start_test(env, a.port, a.data_mode, a.branch))
+        start_test(master, a.port, a.data_mode, a.branch)
     elif a.cmd == "stop":
-        stop(env, a.target)
+        stop(master, a.target)
     elif a.cmd == "restore":
-        restore(env)
+        restore(master)
 
 
 if __name__ == "__main__":

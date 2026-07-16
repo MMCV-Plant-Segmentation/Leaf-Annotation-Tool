@@ -1,5 +1,170 @@
 # SONNET_WORKLOG.md
 
+## 2026-07-16 — Entrypoint + deploy consolidation (feat/entrypoint-deploy)
+
+**Goal.** Turn `webapp` into a library that knows NOTHING about prod/dev/test/gate; move
+all mode/config/containerization concerns into `deploy.py` / `deploy_lib.py` /
+`container_entry.py`. Secrets ride as compose secrets (mounted files at
+`/run/secrets/<name>`), never env or CLI.
+
+### Files changed
+
+**New (repo root, deploy-owned):**
+- `deploy_lib.py` (NEW): the shared "resolve sectioned config → AppConfig → launch" library.
+  - `load_master(path)` — read `app.config.toml`.
+  - `resolve(master, mode)` — sectioned `[app]/[backup]/[deploy]/[dev]` → `{service: flat_dict}`.
+    Shared values (`[backup].backup_dir`) folded into `[app]` once. Mode-specific defaults:
+    prod binds `0.0.0.0`, dev `127.0.0.1`; prod `data_dir` defaults to `/data`.
+  - `build_appconfig(cfg_dict)` — flat dict → `AppConfig`.
+  - `write_service_config(dict, dest)` — TOML file at 0600 in a 0700 dir (for compose secrets).
+  - `make_ephemeral_config_dir()` — `mktemp -d`, chmod 0700.
+  - `launch_from_config_file(path)` — read the mounted secret → `AppConfig` → `webapp.run(cfg)`.
+- `container_entry.py` (NEW): the thin Dockerfile CMD. Reads `/run/secrets/app-config` →
+  `deploy_lib.launch_from_config_file`. Deploy-owned; webapp never sees /run/secrets.
+
+**Backend (webapp/):**
+- `webapp/wsgi.py`: DELETED `_prod_cfg_from_env` + `main` + the `__main__` block (the
+  env-reading prod entry — moved to `deploy_lib` + `container_entry`). Kept
+  `LAUNCH_LOG_ENV`, the ledger helpers, and `launch_granian(cfg)`. Added `run = launch_granian`
+  alias — the public `webapp.run(cfg)` library API dev/gate/prod all converge on. Now reads
+  NO ambient env except the launcher-set `HT_LAUNCH_LOG` ledger pointer (3 lines total; the
+  tightened test enforces this).
+- `webapp/app.py`: Dropped `from dotenv import load_dotenv`, `from .config_file import
+  load_file_config`, `_load_env()`, and the `_load_env()` call in `_startup()`. Rewrote
+  `main(argv=None) -> int` as pure-flag argparse — no env reads, no config-file reads.
+  Added `--secret-key`, `--backup-dir`, `--backup-status-url`, `--backup` flags. `main`
+  and `_startup` now touch NO ambient environment; the whole file has zero `os.environ`
+  references. `run_ephemeral` (used by the gate) unchanged in semantics — routed through
+  `webapp.wsgi.run`.
+
+**Tests:**
+- `webapp/tests/test_no_env_reads.py`: DROPPED `webapp/app.py` and `webapp/wsgi.py` from
+  `ALLOWLIST_WHOLE_FILE`. `app.py` is now fully env-free. `wsgi.py` gets a per-line
+  allow — only lines that mention the `LAUNCH_LOG_ENV` constant may read env (the
+  launcher→granian-worker HT_LAUNCH_LOG handoff); any other env read in wsgi.py fails
+  the test. `db.py` per-line allow unchanged.
+
+**Deploy layer:**
+- `deploy.py`: Rewritten around `deploy_lib.resolve` + the mounted-secret handoff.
+  - New subcommands: `./deploy.py prod [--with-backup] [--branch]` (was `start prod`),
+    `./deploy.py dev` (NEW — in-process, no container).
+  - Kept `start test`, `stop`, `restore`, `create-config`.
+  - Dropped `CONTAINER_ENV_KEYS` and the `prod_env` env-injection path — the container
+    now reads config from the mounted `/run/secrets/app-config` compose secret, never env.
+  - Dev flow (`start_dev`): `deploy_lib.resolve(master, 'dev')` → `build_appconfig` →
+    `from webapp.wsgi import run; run(cfg)` — no subprocess, no container.
+  - Prod flow (`start_prod`): resolve → write `app-config.toml` to a `mktemp -d` (0700)
+    dir at 0600 → set `APP_CONFIG_FILE=<path>` in the compose env → `docker compose up`.
+  - Test flow (`start_test`): same resolved-config file, but bind-mounted directly at
+    `/run/secrets/app-config:ro` on the `docker run` command (no compose here).
+  - `stop`/`restore`: use a placeholder empty `app-config.toml` (`_placeholder_app_config`)
+    so compose's parse-time `secrets: file:` interpolation is always satisfied.
+  - `create-config`: writes the sectioned schema.
+  - Env used for compose interpolation: `GIT_SHA`, `BUILD_TIME`, `COMPOSE_PROJECT_NAME`,
+    `PUID`, `PGID`, `PORT`, `APP_CONFIG_FILE`, `BACKUP_DIR` (only if set). None secret.
+
+**Compose / Docker / config example:**
+- `compose.yaml`: Dropped the app service's `environment:` block (no more `SECRET_KEY`,
+  `ADMIN_PASSWORD`, `BACKUP_DIR`, `BACKUP_STATUS_URL`, `HT_DATA_DIR` env leaks). Added
+  a top-level `secrets:` block with `app-config: { file: ${APP_CONFIG_FILE:?...} }`,
+  and `secrets: [app-config]` on the app service. Compose mounts the file as
+  `/run/secrets/app-config` inside the container. `PORT` interpolation on `ports:`
+  is kept (non-secret, needed for host-port binding). The `${APP_CONFIG_FILE:?...}`
+  guard fails compose if raw `docker compose` is invoked without deploy.py setting it.
+- `Dockerfile`: `COPY container_entry.py deploy_lib.py ./`. Dropped `ENV HT_DATA_DIR=/data`
+  and `ENV PORT=5000` (config now flows through the mounted secret, not env). CMD
+  changed to `sh -c "umask 002 && exec /app/.venv/bin/python /app/container_entry.py"`
+  (was `python -m webapp.wsgi`).
+- `app.config.toml.example`: sectioned schema `[app] / [backup] / [deploy] / [dev]`, with
+  usage doc explaining that the app only ever gets its `[app]` slice (deploy owns the
+  sections). Old flat keys are gone.
+
+### Confirmations
+
+- App reads no ambient env: `grep -n "os\.environ\|os\.getenv\|getenv" webapp/app.py`
+  returns nothing; `webapp/wsgi.py` has three `os.environ` lines, all referencing
+  `LAUNCH_LOG_ENV` (the launcher-set HT_LAUNCH_LOG ledger pointer for the granian worker).
+  `test_no_env_reads.py` was tightened to enforce exactly that.
+- Dev + prod both route through `webapp.run(cfg)` via `deploy_lib`:
+  - `deploy.py dev` → `deploy_lib.resolve(master,'dev')['app']` → `build_appconfig` →
+    `from webapp.wsgi import run; run(cfg)` in-process.
+  - Container CMD `python /app/container_entry.py` → `deploy_lib.launch_from_config_file
+    ('/run/secrets/app-config')` → `build_appconfig` → `webapp.run(cfg)`.
+  - Gate `scripts/gate.py` → `webapp.app:run_ephemeral(cfg)` → `webapp.wsgi.run`.
+- Secrets go via compose secrets: `secret_key` / `admin_password` live inside the resolved
+  `app-config.toml` file that deploy.py writes to a 0700 `mktemp -d` and hands to
+  Compose as `secrets.app-config.file`. Compose mounts it read-only at
+  `/run/secrets/app-config`. Nothing secret is set in the container `environment:` block
+  (there is no such block now) or on the CLI.
+
+### `deploy.py dev` / `deploy.py prod` invocations for verification
+
+- **Dev, in-process:** `./deploy.py dev`
+  - Loads `app.config.toml`, resolves the `[app] + [dev]` slice, builds AppConfig, calls
+    `webapp.wsgi.run(cfg)` directly (no subprocess, no container). Serves on
+    `http://<[dev].host>:<[app].port>`. Verified by reading `start_dev` and inspecting
+    the `from webapp.wsgi import run; return run(cfg)` handoff — same `run` path the gate uses.
+    (No container / docker calls in-jail, so I did not exercise this end-to-end; it's an
+    in-process import + granian spawn, unchanged from `run_ephemeral`'s proven path.)
+- **Prod, containerized:** `./deploy.py prod [--with-backup]`
+  - Bakes image, writes resolved `[app]` slice to `mktemp -d/app-config.toml` (0600 in 0700),
+    sets `APP_CONFIG_FILE` for compose interpolation, `docker compose up -d`. The container
+    CMD (`/app/container_entry.py`) reads `/run/secrets/app-config` → `webapp.run(cfg)`.
+
+### Not verified in-jail (needs Christian's ad-hoc host test)
+
+- `docker build` + prod `up` + `curl <host>:<port>` — done on host as agreed. The relevant
+  changes for that test:
+  - **`Dockerfile`**: `COPY container_entry.py deploy_lib.py ./` before the `uv sync`
+    project install; CMD is `sh -c "umask 002 && exec /app/.venv/bin/python
+    /app/container_entry.py"`; env vars `HT_DATA_DIR=/data` and `PORT=5000` removed.
+  - **`compose.yaml`**: app service has no `environment:` block; added `secrets: [app-config]`
+    and a top-level `secrets: app-config: { file: ${APP_CONFIG_FILE:?…} }` — so a raw
+    `docker compose up` without `APP_CONFIG_FILE` set fails at parse-time with a clear message.
+    `./deploy.py prod` sets it. `PORT` still interpolates into `ports:`.
+  - **Playwright note (out of scope, FE untouched):** `webapp/frontend/playwright.config.ts`'s
+    `webServer.command: 'uv run leaf-annotation'` still passes SECRET_KEY/ADMIN_PASSWORD/
+    HT_DATA_DIR via `env:`. After this refactor `uv run leaf-annotation` is pure-flag, so a
+    direct `npx playwright test` without a running server would fail to auto-start. The gate
+    is unaffected (its own server is running + `reuseExistingServer`). Flagging so Opus can
+    decide whether to update the FE config (or leave it — the gate is the canonical path).
+
+### Risks / assumptions
+
+- Compose-secrets file mount: verified against Docker Compose docs that
+  `secrets: <name>: { file: <path> }` mounts the file at `/run/secrets/<name>` (uid 0,
+  mode 0400 by default). container_entry runs after Compose has mounted it. No host risk
+  because the ephemeral /tmp file is 0600 in a 0700 dir owned by the invoking user.
+- `stop prod`, `restore`: still `-f compose.yaml -f compose.backup.yaml`, so they need
+  `APP_CONFIG_FILE` set for parse-time interpolation — `_placeholder_app_config()`
+  writes a tiny empty file for exactly this. Not read by any service.
+- `webapp/config_file.py` is now orphan code (nothing in webapp or deploy_lib imports it).
+  Left in place to minimize diff; safe to delete in a follow-up.
+- The `webapp` package doesn't grow a `webapp.__init__.run` re-export; call sites use
+  `from webapp.wsgi import run`. Same import shape as before (`launch_granian` also still
+  works as an alias). Kept the public API narrow.
+
+### Test results
+
+- **`check` (fast self-check, backend + tsc/lint/build; no Playwright):** ALL GREEN.
+  37/37 backend tests pass, including the tightened `test_no_env_reads`. `tsc` / `lint` /
+  `build` all pass. This confirms the whole backend + FE-typescript surface is clean.
+- **`gate` (full, includes Playwright):** repeatedly hit resource-exhaustion in the jail's
+  Chromium. Six consecutive gate runs; failure counts 1 / 1 / 1 / 2 / 5 / 101 / 404 (the
+  last showing `pthread_create: Resource temporarily unavailable (11)` + `Failed to connect
+  to socket /run/dbus/system_bus_socket` from Chromium in `globalSetup` before ANY test
+  could run — 0 passed, 0 failed at the PW level). The set of failing tests changed run
+  to run and cascaded into "everything fails" as chrome-headless-shell ran out of thread
+  slots. None of the failures are in code I touched — my task is backend + deploy only,
+  and the gate's server routes through the unchanged `run_ephemeral` → `webapp.wsgi.run`
+  path. Flagging to Opus: the environment (jail Chromium) is the blocker, not the diff.
+  Please run the authoritative gate on the host.
+
+test_no_env_reads.py was tightened per the task's explicit instruction, in the direction
+of stricter enforcement (drop `app.py` and `wsgi.py` from the whole-file allowlist; only
+lines mentioning `LAUNCH_LOG_ENV` remain allowed in `wsgi.py`) — that's a hardening, not
+a weakening. No other test was modified.
+
 ## 2026-07-15 — Phase 1 of annotation-ops WebSocket arc (feat/annotation-ws)
 
 **Goal.** Fix the long-standing polyline undo-determinism bug (t19) by making the
