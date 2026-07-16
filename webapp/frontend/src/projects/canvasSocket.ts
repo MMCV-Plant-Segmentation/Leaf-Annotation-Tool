@@ -1,7 +1,8 @@
 /**
- * Canvas WebSocket client — Phase 1 of the annotation-ops rebuild (feat/annotation-ws).
+ * Canvas WebSocket client — Phase 1+2 of the annotation-ops rebuild (feat/annotation-ws).
  *
- * The single ORDERED channel every mutation op (create / edit / reverse) funnels through.
+ * The single ORDERED channel every mutation op (create / edit / reverse / erase / relabel
+ * / mutate / reverse_merge) funnels through.
  * The server (webapp/asgi.py) processes ops strictly sequentially per connection; this
  * module mirrors that on the client by serialising every enqueue()-scheduled task on ONE
  * promise chain, and by waiting for each op's ack (or error) before the next send is
@@ -26,7 +27,10 @@
  */
 import { onCleanup } from 'solid-js';
 
-export type CanvasOp = 'create' | 'edit' | 'reverse';
+export type CanvasOp =
+  | 'create' | 'edit' | 'reverse'
+  // Phase 2 (feat/annotation-ws): the remaining mutations, all on the same FIFO channel.
+  | 'erase' | 'relabel' | 'mutate' | 'reverse_merge';
 
 /** Ack: {ok:true, result} carries the server's delta (same shape the REST endpoint
  * returned). Error: {ok:false, message} carries the server's message (or a synthesized

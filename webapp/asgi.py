@@ -21,15 +21,21 @@ Connection registry: `_connections` is keyed `(projectId, imageId)` → set of s
 callables. Phase 0 populates the shape but never broadcasts on it; Phase 2 will bind
 create/edit/erase/undo op-echos to that registry.
 
-WS ops (Phase 1 — the polyline undo-determinism fix): each connection also carries an
-ordered `op` channel — client→server `{type:"op", opId, op:"create|edit|reverse",
-payload}` → the SAME do_* mutators the REST routes call (webapp/projects.py) → server
-→client `{type:"ack", opId, result}` or `{type:"error", opId, message}`. Ops are
-processed STRICTLY SEQUENTIALLY per connection: each op's DB mutation completes and its
-ack is sent before the next frame is read. That FIFO ordering — plus the ONE mutation
-path — is what dissolves the two racing client-side chains that made polyline undoes
-non-deterministic. Admin viewers (BUGS #15) may NOT mutate: their ops are rejected here
-server-side (even though REST leaves admin-as-annotator seeding available).
+WS ops (Phase 1+2 — the polyline undo-determinism fix, extended to ALL annotation
+mutations): each connection also carries an ordered `op` channel — client→server
+`{type:"op", opId, op, payload}` where op is one of:
+  create | edit | reverse                  (Phase 1: paint/edit/stroke-reverse)
+  erase  | relabel | mutate | reverse_merge (Phase 2: brush eraser, label PATCH, bulk
+                                             delete/restore, merge-undo)
+Each op dispatches to the SAME do_* mutators the REST routes call (webapp/projects.py)
+→ server→client `{type:"ack", opId, result}` or `{type:"error", opId, message}`. Ops
+are processed STRICTLY SEQUENTIALLY per connection: each op's DB mutation completes and
+its ack is sent before the next frame is read. That FIFO ordering — plus the ONE
+mutation path — is what dissolves the two racing client-side chains that made polyline
+undoes non-deterministic; Phase 2 extends the same FIFO to every remaining mutation so
+draw-undo/redo, erase and relabel share the same ordering guarantee. Admin viewers
+(BUGS #15) may NOT mutate: their ops are rejected here server-side (even though REST
+leaves admin-as-annotator seeding available).
 """
 from __future__ import annotations
 
@@ -126,15 +132,22 @@ def _authed_session(scope: dict[str, Any]) -> dict | None:
     return _load_session(raw)
 
 
-# ── WS op dispatch (Phase 1 — single ordered channel for annotation mutations) ────
+# ── WS op dispatch (Phase 1+2 — single ordered channel for ALL annotation mutations) ─
 
 # op → do_* function on webapp.projects. Each mutator returns (result_dict, status).
 # Every op payload MUST match the body the equivalent REST endpoint accepts; per-op
-# extras (strokeId in the URL for edit/reverse) are pulled out of the payload here.
+# extras (strokeId / annotationId in the URL for edit/reverse/relabel) are pulled out
+# of the payload here.
 _OP_DISPATCH: dict[str, str] = {
-    'create': 'do_create_annotation',
-    'edit':   'do_edit_stroke',
-    'reverse': 'do_reverse_stroke_edit',
+    # Phase 1 — paint/edit paths.
+    'create':        'do_create_annotation',
+    'edit':          'do_edit_stroke',
+    'reverse':       'do_reverse_stroke_edit',
+    # Phase 2 — the remaining annotation mutations, on the SAME FIFO channel.
+    'erase':         'do_erase_stroke',
+    'relabel':       'do_update_annotation',
+    'mutate':        'do_mutate_annotations',
+    'reverse_merge': 'do_reverse_annotation_merge',
 }
 
 
@@ -143,16 +156,26 @@ def _apply_op_sync(op: str, project_id: str | None, payload: dict, *,
     """Blocking DB call — runs in a thread so the event loop stays responsive. Returns
     (result_dict, status_code). Any unexpected exception is caught and surfaced as a
     500-shaped tuple so the WS ack path can always send an error frame."""
-    if not project_id:
-        return {'error': 'projectId required (WS handshake query)'}, 400
     fn_name = _OP_DISPATCH.get(op)
     if fn_name is None:
         return {'error': f'unknown op: {op}'}, 400
+    # `relabel` is keyed by annotationId (not project_id) — its REST cousin lives at
+    # PATCH /api/annotations/<annotation_id> with no project in the URL. Every other op
+    # needs the handshake's project_id.
+    if op != 'relabel' and not project_id:
+        return {'error': 'projectId required (WS handshake query)'}, 400
     fn = getattr(_projects, fn_name)
     con = _db.get_db()
     try:
-        if op == 'create':
+        # Body-only ops (mirror the REST route bodies verbatim).
+        if op in ('create', 'erase', 'mutate', 'reverse_merge'):
             return fn(con, project_id, payload,
+                     username=username, user_id=user_id, is_admin=is_admin)
+        if op == 'relabel':
+            annotation_id = payload.get('annotationId')
+            if not annotation_id:
+                return {'error': 'annotationId required'}, 400
+            return fn(con, annotation_id, payload,
                      username=username, user_id=user_id, is_admin=is_admin)
         # edit / reverse: strokeId lives in the payload (WS ops don't use URL params).
         stroke_id = payload.get('strokeId')
