@@ -1,36 +1,74 @@
-# app.config.toml — configuration for the Leaf Annotation stack.
-# Copy this to `app.config.toml` (same dir) and fill it in. The real file is GITIGNORED and MAY
-# hold secrets (secret_key, admin_password); only this .example is committed.
+# app.config.toml — sectioned configuration for the Leaf Annotation stack.
+# Copy this to `app.config.toml` (same dir) and fill it in. The real file is GITIGNORED and
+# MAY hold secrets (secret_key, admin_password); only this .example is committed.
 #   cp app.config.toml.example app.config.toml     # ...or: ./deploy.py create-config
+#
+# The APP knows nothing about these sections — deploy.py / deploy_lib read this file,
+# flatten each service's slice, and hand the app just its `[app]` values. Prod passes them
+# in via a compose secret (mounted at /run/secrets/app-config); dev builds an AppConfig
+# in-process. Shared values live in ONE section (backup_dir in [backup]) and deploy_lib
+# folds them into the app slice automatically.
+#
+# The per-invocation MODE knobs (--data-mode/--seed, --strict-port/--auto-port,
+# --restore-from, --branch) are CLI-ONLY, not file keys — they express run intent, and
+# the --data-mode wipe-guard must not be silently pre-answered by a config file.
+
+
+# ── [app] ─────────────────────────────────────────────────────────────────────
+# The app-service slice — the flat AppConfig values. Prod and dev share this; the
+# [dev] section below can override any of these for dev.
+[app]
 
 # Port the app listens on / is published from.
 port = 5000
 
-# Bind host for the dev server (`leaf-annotation`). Prod (granian/Docker) binds 0.0.0.0 itself.
-# host = "127.0.0.1"
-
-# Flask session secret. REQUIRED to boot. Generate: python -c "import secrets;print(secrets.token_urlsafe(32))"
+# Flask session secret. REQUIRED to boot. Generate:
+#   python -c "import secrets;print(secrets.token_urlsafe(32))"
 secret_key = "CHANGE-ME-generate-a-random-32+-char-string"
 
 # Seeds the 'admin' user on FIRST boot only (never overwrites an existing admin — use the
 # `--admin-password` CLI flag for that). REQUIRED on a fresh deployment.
 admin_password = "CHANGE-ME"
 
-# Host backup root. Used by `deploy.py start prod --with-backup` (the litestream/lsyncd sidecars)
-# and by `--data-mode restore`; also shown in the admin settings panel. Set it to wherever this
-# host keeps <root>/db (litestream replica) + <root>/files (file mirror).
-# backup_dir = "/path/to/backup"
-
 # Optional. Override the backup-status sidecar URL polled by GET /api/sync-status.
 # backup_status_url = "http://backup-status:8098/status"
 
-# Shared unix group that co-owns data + backups (so any member can run/restore). REQUIRED for
-# `deploy.py start prod`. Not used by native dev.
+# The bind host defaults to 0.0.0.0 for prod (Docker) and 127.0.0.1 for dev (from [dev]).
+# host = "0.0.0.0"
+
+# Data dir for app.db/images/jsons/i18n. Optional; defaults to the NFS-safe local XDG dir.
+# The prod container mounts a Docker volume at /data, so this is usually unset in prod.
+# data_dir = "/data"
+
+
+# ── [backup] ──────────────────────────────────────────────────────────────────
+# Backup layer. `backup_dir` is the ONE source of truth (deploy_lib folds it into
+# [app].backup_dir so the admin panel can display it — no duplication).
+[backup]
+
+# Host backup root. Used by `deploy.py prod --with-backup` (the litestream/lsyncd sidecars)
+# and by `--data-mode restore`; also shown in the admin settings panel. Set it to wherever
+# this host keeps <root>/db (litestream replica) + <root>/files (file mirror).
+# backup_dir = "/path/to/backup"
+
+
+# ── [deploy] ──────────────────────────────────────────────────────────────────
+# Deploy-orchestration knobs — never seen by the app.
+[deploy]
+
+# Shared unix group that co-owns data + backups (so any member can run/restore).
+# REQUIRED for `deploy.py prod`. Not used by dev.
 app_group = "your-shared-group"
 
 # Docker Compose project name (container/volume prefix).
 compose_project_name = "leaf-annotation-tool"
 
-# NOTE: the per-run MODE knobs (--data-mode/--seed, --strict-port/--auto-port, --restore-from,
-# --branch) are CLI-ONLY, not file keys — they express run intent, and the --data-mode wipe-guard
-# must not be silently pre-answered by a config file.
+
+# ── [dev] ─────────────────────────────────────────────────────────────────────
+# Dev-only overrides to the [app] slice — applied by deploy_lib.resolve(master, 'dev')
+# on top of the [app] values. Typical: bind to localhost, use a personal data_dir.
+[dev]
+
+host = "127.0.0.1"
+# port = 5000
+# data_dir = "/home/you/.local/share/leaf-annotation"

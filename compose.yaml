@@ -4,7 +4,7 @@ services:
   app:
     image: leaf-annotation:latest
     # Run as the invoking user + shared group. PUID/PGID are injected by ./deploy.py (PUID=your uid,
-    # PGID=the APP_GROUP gid from .env) — not typed or committed. Defaults to root (0:0) if you call
+    # PGID=the [deploy].app_group gid) — not typed or committed. Defaults to root (0:0) if you call
     # `docker compose` directly without them, so this stays portable.
     user: "${PUID:-0}:${PGID:-0}"
     build:
@@ -13,22 +13,16 @@ services:
       args:
         GIT_SHA: "${GIT_SHA:-}"
         BUILD_TIME: "${BUILD_TIME:-}"
-    # Container config is interpolated from the environment deploy.py hands to `docker compose`
-    # (deploy.py resolves these from app.config.toml, or a legacy .env, via prod_env()). For a
-    # raw `docker compose up` (no deploy.py) with a .env present, Compose auto-loads ./.env into
-    # this interpolation context, so the legacy .env path keeps working unchanged. No `env_file:`
-    # entry, so a toml-only deployment (no .env on disk) doesn't error on a missing file.
-    environment:
-      HT_DATA_DIR: /data
-      PORT: "${PORT:-5000}"
-      SECRET_KEY: "${SECRET_KEY:-}"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
-      BACKUP_DIR: "${BACKUP_DIR:-}"
-      BACKUP_STATUS_URL: "${BACKUP_STATUS_URL:-}"
+    # NO `environment:` for app config. Secrets (secret_key, admin_password) never touch env
+    # or the CLI (both leak via `docker inspect` / `ps`) — the whole resolved app config
+    # rides as the `app-config` compose secret below, mounted at /run/secrets/app-config
+    # and read by container_entry.py (Dockerfile CMD).
     ports:
       - "${PORT:-5000}:${PORT:-5000}"
     volumes:
       - leaf-data:/data
+    secrets:
+      - app-config
     restart: unless-stopped
 
   # Backup sidecars (litestream, lsyncd, backup-status) and the one-shot `restore` service live
@@ -46,6 +40,18 @@ services:
     # /tmp in container: used by the Playwright fixture (FIXTURE_DIR = /tmp/leaf-e2e-fixture)
     # and by the webServer that Playwright starts internally (uv run leaf-annotation).
     # No volume mounts needed — entirely self-contained.
+
+# Top-level `secrets:` block. deploy.py writes the resolved app-service config to an
+# ephemeral /tmp file (mktemp -d, chmod 0700; the file itself 0600) and sets APP_CONFIG_FILE
+# to its path; Compose reads the file at container-start and mounts it as
+# /run/secrets/app-config (read-only) inside the app container. The container's
+# entrypoint (container_entry.py, deploy-owned) reads it back via
+# deploy_lib.launch_from_config_file and hands off to webapp.run(cfg). Secrets never leave
+# the file; `docker inspect` and `ps` see only APP_CONFIG_FILE (a /tmp path), never the
+# resolved values.
+secrets:
+  app-config:
+    file: ${APP_CONFIG_FILE:?APP_CONFIG_FILE must be set — use ./deploy.py, not raw `docker compose`}
 
 volumes:
   leaf-data:
