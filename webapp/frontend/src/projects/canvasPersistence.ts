@@ -1,5 +1,4 @@
 import type { Accessor } from 'solid-js';
-import { projectsApi } from './api';
 import type { CanvasAnnotation, CanvasImage, CreateAnnotationResult, TileStateUpdate } from './api';
 import type { EditStrokeResult } from './canvasStrokeEditApi';
 import { clampRect, mergeTileStates, strokeOutline } from './canvasShapes';
@@ -17,16 +16,17 @@ export interface CanvasPersistenceOpts {
   vb: Accessor<ViewBox>;
   updateImg: (fn: (im: CanvasImage) => CanvasImage) => void;
   history: ReturnType<typeof createCanvasHistory>;
-  /** Phase 1 (feat/annotation-ws): the ONE ordered channel every create/edit/reverse op
-   * flows through. Sharing it across commit/editStroke/polylineSession/history is what
-   * dissolves the polyline persist-vs-undo race — see canvasSocket.ts. */
+  /** Phase 1+2 (feat/annotation-ws): the ONE ordered channel every mutation op flows
+   * through. Sharing it across commit/editStroke/eraseStroke/relabel/polylineSession/
+   * history is what dissolves the polyline persist-vs-undo race — see canvasSocket.ts. */
   socket: CanvasSocket;
 }
 
 /**
  * Server round-trips for the canvas: paint-stroke commit + brush-eraser + stroke-vertex
- * edit + relabel. Split out of CanvasScreen (200-line cap). Phase 1 routes create/edit
- * over `socket` (single ordered channel) while erase/relabel stay on REST (out of scope).
+ * edit + relabel. Split out of CanvasScreen (200-line cap). Phase 2 routes ALL
+ * mutations (create/edit/reverse/erase/relabel) over `socket` — the single ordered
+ * channel — so every op observes the same FIFO ordering.
  */
 export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // BUGS #16: a mutation that lands in an already-completed tile re-opens it server-side.
@@ -91,39 +91,38 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       deletedGroups: r.deletedGroups, created: r.created, redoBody: body as never });
   };
 
-  // Brush eraser: one drag → one REST call that soft-deletes every mask the swept area
-  // intersects; single Ctrl+Z restores all. Not routed through the socket (Phase 1 op
-  // set is create/edit/reverse only) — no ordering conflict with the polyline race path.
+  // Brush eraser: one drag → one WS op that soft-deletes every mask the swept area
+  // intersects; single Ctrl+Z restores all. Phase 2: routed through the shared socket
+  // so it serialises behind any pending polyline/create ops on the same chain.
   const eraseStroke = async (points: number[][], strokeWidth: number) => {
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return;
-    try {
-      const outline = strokeOutline(points, strokeWidth);
-      const r = await projectsApi.eraseStroke(pid, {
-        imageId: im.imageId, annotator: o.annotator(), points, strokeWidth, outline,
-      });
-      const erased = im.annotations.filter((a) => r.deletedAnnotationIds.includes(a.id));
-      o.history.applyErase(erased, r.tileStates);
-    } catch (ex) {
-      alert(ex instanceof Error ? ex.message : 'Erase failed');
-    }
+    const outline = strokeOutline(points, strokeWidth);
+    const body = { imageId: im.imageId, annotator: o.annotator(),
+                   points, strokeWidth, outline };
+    await o.socket.enqueue(async (send) => {
+      const ack = await send<{ deletedAnnotationIds: string[]; tileStates: TileStateUpdate[] }>('erase', body);
+      if (!ack.ok) { alert(ack.message); return; }
+      const erased = im.annotations.filter((a) => ack.result.deletedAnnotationIds.includes(a.id));
+      o.history.applyErase(erased, ack.result.tileStates);
+    });
   };
 
-  // Compound labels: label-only PATCH via REST (out of Phase 1 scope). See
-  // canvasHistory.ts `relabel` action for undo/redo.
+  // Compound labels: label-only PATCH → Phase 2 WS op (`relabel`). See canvasHistory.ts
+  // `relabel` action for undo/redo (which also routes over the socket).
   const relabel = async (annotationId: string, label: string) => {
     const before = o.image()?.annotations.find((a) => a.id === annotationId)?.label ?? null;
     if (before === label) return;
-    try {
-      const updated = await projectsApi.updateAnnotation(annotationId, { label });
+    await o.socket.enqueue(async (send) => {
+      const ack = await send<CanvasAnnotation>('relabel', { annotationId, label });
+      if (!ack.ok) { alert(ack.message); return; }
+      const updated = ack.result;
       o.updateImg((im) => ({
         ...im,
         annotations: im.annotations.map((a) => a.id === annotationId ? { ...a, ...updated } : a),
       }));
       o.history.push({ kind: 'relabel', annotationId, before, after: updated.label });
-    } catch (ex) {
-      alert(ex instanceof Error ? ex.message : 'Relabel failed');
-    }
+    });
   };
 
   // Create/paint commit — routed over the socket. Erase stays REST (out of scope).

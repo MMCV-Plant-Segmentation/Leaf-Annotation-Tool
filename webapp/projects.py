@@ -2371,85 +2371,104 @@ def list_viewport_events(project_id: str, image_id: str):
         _db.close_db(con)
 
 
+def do_update_annotation(con, annotation_id: str, body: dict, *,
+                          username: str | None, user_id, is_admin: bool):
+    """Core of update_annotation — returns (response_dict, status). See the route shim's
+    docstring below for the full contract. Phase 2 (feat/annotation-ws): the WS op
+    handler in webapp/asgi.py calls this same function for the `relabel` op so mutations
+    serialize through the single WS channel."""
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
+    if not row or row['deleted_at']:
+        return {'error': 'not found'}, 404
+    if row['kind'] == 'stroke':
+        # Compound labels Phase 2b (relabel): a LABEL-ONLY patch (no `points` key) on a
+        # fused mask is allowed — it re-labels the lesion in place without touching its
+        # geometry. Any attempt to also edit `points`/geometry on a stroke still 422s
+        # (see docstring): erase + redraw is still the only way to reshape a fused mask.
+        if 'points' in body or 'label' not in body:
+            return {'error': 'a fused mask cannot be edited directly; erase and redraw'}, 422
+        err = (_member_or_403_direct(con, row['project_id'], username, user_id)
+               or _owner_or_403_direct(row['annotator'], username))
+        if err:
+            return err
+        label = body.get('label')
+        proj_row = _project(con, row['project_id'])
+        snap = taxonomy.snapshot_from_label(
+            proj_row.get('classes_json') if proj_row else None, label)
+        snapshot_json = json.dumps(snap) if snap else None
+        con.execute(
+            'UPDATE annotation SET label = ?, label_snapshot = ?, updated_at = ? WHERE id = ?',
+            (label, snapshot_json, _now(), annotation_id),
+        )
+        tile_ids = [r['tile_id'] for r in con.execute(
+            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+        ).fetchall()]
+        _mark_tiles_dirty(con, tile_ids, row['annotator'])
+        con.commit()
+        out = _annotation_out(con.execute(
+            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
+        out['tileIds'] = tile_ids
+        return out, 200
+    err = (_member_or_403_direct(con, row['project_id'], username, user_id)
+           or _owner_or_403_direct(row['annotator'], username))
+    if err:
+        return err
+    old_tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
+    label = body.get('label', row['label'])
+    # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
+    # selections stay in sync with the newly-assigned compound (Phase 1 has no
+    # relabel UI, but the PATCH endpoint stays correct for any caller).
+    snapshot_json = row.get('label_snapshot')
+    if body.get('label') is not None:
+        proj_row = _project(con, row['project_id'])
+        snap = taxonomy.snapshot_from_label(
+            proj_row.get('classes_json') if proj_row else None, label)
+        snapshot_json = json.dumps(snap) if snap else None
+    points_json = json.dumps(points)
+    con.execute(
+        'UPDATE annotation SET points_json = ?, label = ?, label_snapshot = ?, '
+        'updated_at = ? WHERE id = ?',
+        (points_json, label, snapshot_json, _now(), annotation_id),
+    )
+    con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
+               (points_json, annotation_id))
+    # Recompute tile membership and dirty every touched tile (old ∪ new).
+    new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
+    con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
+    for tid in new_tiles:
+        con.execute(
+            'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+            (annotation_id, tid),
+        )
+    _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
+    con.commit()
+    out = _annotation_out(con.execute(
+        'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
+    out['tileIds'] = new_tiles
+    return out, 200
+
+
 @projects_bp.patch('/api/annotations/<annotation_id>')
 @login_required
 def update_annotation(annotation_id: str):
     """Edit points/label in place. Only non-fusing kinds (point/line/polygon) support this
     — a `stroke` mask is fused geometry, not a single editable shape; erase + redraw
-    instead (see docs/plans/Plan — Annotation-stroke model (fused masks).md)."""
+    instead (see docs/plans/Plan — Annotation-stroke model (fused masks).md).
+
+    Thin shim around do_update_annotation — the WS op handler in webapp/asgi.py calls
+    the same core function so mutations serialize through the single WS channel (Phase 2)."""
     body = request.json or {}
     con = _db.get_db()
     try:
-        row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
-        if not row or row['deleted_at']:
-            return jsonify({'error': 'not found'}), 404
-        if row['kind'] == 'stroke':
-            # Compound labels Phase 2b (relabel): a LABEL-ONLY patch (no `points` key) on a
-            # fused mask is allowed — it re-labels the lesion in place without touching its
-            # geometry. Any attempt to also edit `points`/geometry on a stroke still 422s
-            # (see docstring): erase + redraw is still the only way to reshape a fused mask.
-            if 'points' in body or 'label' not in body:
-                return jsonify({'error': 'a fused mask cannot be edited directly; erase and redraw'}), 422
-            err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
-            if err:
-                return err
-            label = body.get('label')
-            proj_row = _project(con, row['project_id'])
-            snap = taxonomy.snapshot_from_label(
-                proj_row.get('classes_json') if proj_row else None, label)
-            snapshot_json = json.dumps(snap) if snap else None
-            con.execute(
-                'UPDATE annotation SET label = ?, label_snapshot = ?, updated_at = ? WHERE id = ?',
-                (label, snapshot_json, _now(), annotation_id),
-            )
-            tile_ids = [r['tile_id'] for r in con.execute(
-                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
-            ).fetchall()]
-            _mark_tiles_dirty(con, tile_ids, row['annotator'])
-            con.commit()
-            out = _annotation_out(con.execute(
-                'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
-            out['tileIds'] = tile_ids
-            return jsonify(out)
-        err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
-        if err:
-            return err
-        old_tiles = [r['tile_id'] for r in con.execute(
-            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
-        ).fetchall()]
-        points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
-        label = body.get('label', row['label'])
-        # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
-        # selections stay in sync with the newly-assigned compound (Phase 1 has no
-        # relabel UI, but the PATCH endpoint stays correct for any caller).
-        snapshot_json = row.get('label_snapshot')
-        if body.get('label') is not None:
-            proj_row = _project(con, row['project_id'])
-            snap = taxonomy.snapshot_from_label(
-                proj_row.get('classes_json') if proj_row else None, label)
-            snapshot_json = json.dumps(snap) if snap else None
-        points_json = json.dumps(points)
-        con.execute(
-            'UPDATE annotation SET points_json = ?, label = ?, label_snapshot = ?, '
-            'updated_at = ? WHERE id = ?',
-            (points_json, label, snapshot_json, _now(), annotation_id),
-        )
-        con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
-                   (points_json, annotation_id))
-        # Recompute tile membership and dirty every touched tile (old ∪ new).
-        new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
-        con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
-        for tid in new_tiles:
-            con.execute(
-                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                (annotation_id, tid),
-            )
-        _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
-        con.commit()
-        out = _annotation_out(con.execute(
-            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
-        out['tileIds'] = new_tiles
-        return jsonify(out)
+        result, status = do_update_annotation(
+            con, annotation_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
 
@@ -2479,6 +2498,60 @@ def delete_annotation(annotation_id: str):
 
 # ── bulk mutate (eraser-undo + draw-undo/redo) ────────────────────────────────
 
+def do_mutate_annotations(con, project_id: str, body: dict, *,
+                           username: str | None, user_id, is_admin: bool):
+    """Core of mutate_annotations — returns (response_dict, status). Phase 2
+    (feat/annotation-ws): the WS op handler in webapp/asgi.py calls this same function
+    for the `mutate` op so draw-undo/redo mutations serialize through the single WS
+    channel behind any in-flight polyline persist ops."""
+    op = body.get('op')
+    ids = body.get('ids') or []
+    if op not in ('delete', 'restore') or not ids:
+        return {'error': 'op (delete|restore) and ids required'}, 400
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    annotator = None
+    for ann_id in ids:
+        row = con.execute('SELECT * FROM annotation WHERE id = ?', (ann_id,)).fetchone()
+        if not row:
+            return {'error': f'annotation {ann_id} not found'}, 404
+        if row['project_id'] != project_id:
+            return {'error': 'forbidden'}, 403
+        e = _owner_or_403_direct(row['annotator'], username)
+        if e:
+            return e
+        if annotator is None:
+            annotator = row['annotator']
+    now = _now()
+    # BUGS #16: either direction (erase or undo/redo-restore) re-opens a completed tile
+    # it touches for this annotator. Dedupe by tileId across ids in case several
+    # annotations land in the same tile.
+    dirtied: dict[str, dict] = {}
+    if op == 'delete':
+        for ann_id in ids:
+            tiles = [r['tile_id'] for r in con.execute(
+                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
+            ).fetchall()]
+            con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
+            for d in _mark_tiles_dirty(con, tiles, annotator):
+                dirtied[d['tileId']] = d
+    else:  # restore
+        con.execute(
+            f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
+            ids,
+        )
+        qmarks = ','.join('?' * len(ids))
+        tiles = [r['tile_id'] for r in con.execute(
+            f'SELECT DISTINCT tile_id FROM annotation_tile WHERE annotation_id IN ({qmarks})',
+            ids,
+        ).fetchall()]
+        for d in _mark_tiles_dirty(con, tiles, annotator):
+            dirtied[d['tileId']] = d
+    con.commit()
+    return {'ok': True, 'ids': ids, 'tileStates': list(dirtied.values())}, 200
+
+
 @projects_bp.post('/api/projects/<project_id>/annotations/mutate')
 @login_required
 def mutate_annotations(project_id: str):
@@ -2491,58 +2564,72 @@ def mutate_annotations(project_id: str):
     All ids must belong to the same project_image_id and annotator (enforced by the
     eraser/undo design; a mismatch here is a client bug, not a valid request).
     Returns: { 'ok': True, 'ids': [...], 'tileStates': [...] }
+
+    Thin shim around do_mutate_annotations — the WS op handler in webapp/asgi.py calls
+    the same core function so mutations serialize through the single WS channel (Phase 2).
     """
     body = request.json or {}
-    op = body.get('op')
-    ids = body.get('ids') or []
-    if op not in ('delete', 'restore') or not ids:
-        return jsonify({'error': 'op (delete|restore) and ids required'}), 400
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
-        if err:
-            return err
-        annotator = None
-        for ann_id in ids:
-            row = con.execute('SELECT * FROM annotation WHERE id = ?', (ann_id,)).fetchone()
-            if not row:
-                return jsonify({'error': f'annotation {ann_id} not found'}), 404
-            if row['project_id'] != project_id:
-                return jsonify({'error': 'forbidden'}), 403
-            e = _owner_or_403(row['annotator'])
-            if e:
-                return e
-            if annotator is None:
-                annotator = row['annotator']
+        result, status = do_mutate_annotations(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def do_erase_stroke(con, project_id: str, body: dict, *,
+                     username: str | None, user_id, is_admin: bool):
+    """Core of erase_stroke — returns (response_dict, status). See the route shim's
+    docstring below for the full contract. Phase 2 (feat/annotation-ws): the WS op
+    handler in webapp/asgi.py calls this same function for the `erase` op so brush-
+    eraser mutations serialize through the single WS channel."""
+    image_id = body.get('imageId')
+    points = body.get('points') or []
+    stroke_width = body.get('strokeWidth')
+    outline = body.get('outline')
+    # Annotate-as-yourself, same admin bypass as create_annotation.
+    if is_admin:
+        annotator = (body.get('annotator') or '').strip()
+    else:
+        annotator = username or ''
+    if not (image_id and points and annotator):
+        return {'error': 'imageId, points, annotator required'}, 400
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    eraser_geom = _footprint(points, stroke_width, outline=outline)
+    if eraser_geom is None or eraser_geom.is_empty:
+        return {'deletedAnnotationIds': [], 'tileStates': []}, 200
+    rows = con.execute(
+        '''SELECT * FROM annotation
+           WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL''',
+        (image_id, annotator),
+    ).fetchall()
+    deleted_ids = []
+    for r in rows:
+        g = _annotation_geom(r)
+        if g is not None and not g.is_empty and g.intersects(eraser_geom):
+            deleted_ids.append(r['id'])
+    dirtied: dict[str, dict] = {}
+    if deleted_ids:
         now = _now()
-        # BUGS #16: either direction (erase or undo/redo-restore) re-opens a completed tile
-        # it touches for this annotator. Dedupe by tileId across ids in case several
-        # annotations land in the same tile.
-        dirtied: dict[str, dict] = {}
-        if op == 'delete':
-            for ann_id in ids:
-                tiles = [r['tile_id'] for r in con.execute(
-                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
-                ).fetchall()]
-                con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
-                for d in _mark_tiles_dirty(con, tiles, annotator):
-                    dirtied[d['tileId']] = d
-        else:  # restore
-            con.execute(
-                f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
-                ids,
-            )
-            qmarks = ','.join('?' * len(ids))
-            tiles = [r['tile_id'] for r in con.execute(
-                f'SELECT DISTINCT tile_id FROM annotation_tile WHERE annotation_id IN ({qmarks})',
-                ids,
+        qmarks = ','.join('?' * len(deleted_ids))
+        con.execute(
+            f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
+            (now, *deleted_ids),
+        )
+        for ann_id in deleted_ids:
+            tiles = [t['tile_id'] for t in con.execute(
+                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
             ).fetchall()]
             for d in _mark_tiles_dirty(con, tiles, annotator):
                 dirtied[d['tileId']] = d
         con.commit()
-        return jsonify({'ok': True, 'ids': ids, 'tileStates': list(dirtied.values())})
-    finally:
-        _db.close_db(con)
+    return {'deletedAnnotationIds': deleted_ids, 'tileStates': list(dirtied.values())}, 200
 
 
 @projects_bp.post('/api/projects/<project_id>/annotations/erase-stroke')
@@ -2565,55 +2652,78 @@ def erase_stroke(project_id: str):
     Body: { imageId, annotator, points, strokeWidth, outline? } — same shape as a paint
     stroke commit (points + brush size, optionally the perfect-freehand outline).
     Returns: { deletedAnnotationIds: [...], tileStates: [...] }
+
+    Thin shim around do_erase_stroke — the WS op handler in webapp/asgi.py calls the
+    same core function so mutations serialize through the single WS channel (Phase 2).
     """
     body = request.json or {}
-    image_id = body.get('imageId')
-    points = body.get('points') or []
-    stroke_width = body.get('strokeWidth')
-    outline = body.get('outline')
-    # Annotate-as-yourself, same admin bypass as create_annotation.
-    if session.get('username') == 'admin':
-        annotator = (body.get('annotator') or '').strip()
-    else:
-        annotator = session.get('username') or ''
-    if not (image_id and points and annotator):
-        return jsonify({'error': 'imageId, points, annotator required'}), 400
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
-        if err:
-            return err
-        eraser_geom = _footprint(points, stroke_width, outline=outline)
-        if eraser_geom is None or eraser_geom.is_empty:
-            return jsonify({'deletedAnnotationIds': [], 'tileStates': []})
-        rows = con.execute(
-            '''SELECT * FROM annotation
-               WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL''',
-            (image_id, annotator),
-        ).fetchall()
-        deleted_ids = []
-        for r in rows:
-            g = _annotation_geom(r)
-            if g is not None and not g.is_empty and g.intersects(eraser_geom):
-                deleted_ids.append(r['id'])
-        dirtied: dict[str, dict] = {}
-        if deleted_ids:
-            now = _now()
-            qmarks = ','.join('?' * len(deleted_ids))
-            con.execute(
-                f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
-                (now, *deleted_ids),
-            )
-            for ann_id in deleted_ids:
-                tiles = [t['tile_id'] for t in con.execute(
-                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
-                ).fetchall()]
-                for d in _mark_tiles_dirty(con, tiles, annotator):
-                    dirtied[d['tileId']] = d
-            con.commit()
-        return jsonify({'deletedAnnotationIds': deleted_ids, 'tileStates': list(dirtied.values())})
+        result, status = do_erase_stroke(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
+
+
+def do_reverse_annotation_merge(con, project_id: str, body: dict, *,
+                                 username: str | None, user_id, is_admin: bool):
+    """Core of reverse_annotation_merge — returns (response_dict, status). See the
+    route shim's docstring below for the full contract. Phase 2 (feat/annotation-ws):
+    the WS op handler in webapp/asgi.py calls this same function for the
+    `reverse_merge` op so merge-undo mutations serialize through the single WS channel."""
+    annotation_id = body.get('annotationId')
+    stroke_id = body.get('strokeId')
+    groups = body.get('consumedGroups') or []
+    if not (annotation_id and stroke_id and groups):
+        return {'error': 'annotationId, strokeId, consumedGroups required'}, 400
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
+    if not row:
+        return {'error': 'not found'}, 404
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or _owner_or_403_direct(row['annotator'], username))
+    if err:
+        return err
+    created_tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    con.execute('DELETE FROM stroke WHERE id = ?', (stroke_id,))
+    consumed_ids = [g['annotationId'] for g in groups]
+    for g in groups:
+        stroke_ids = g.get('strokeIds') or []
+        if stroke_ids:
+            qmarks = ','.join('?' * len(stroke_ids))
+            con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
+                       (g['annotationId'], *stroke_ids))
+    qmarks = ','.join('?' * len(consumed_ids))
+    con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qmarks})',
+               (_now(), *consumed_ids))
+    con.execute('DELETE FROM annotation WHERE id = ?', (annotation_id,))  # cascades annotation_tile
+
+    dirtied: dict[str, dict] = {}
+    resurrected = []
+    for cid in consumed_ids:
+        r = con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone()
+        if not r:
+            continue
+        tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
+        for tid in tile_ids:
+            con.execute(
+                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                (cid, tid),
+            )
+        for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
+            dirtied[d['tileId']] = d
+        resurrected.append(_annotation_out(r, con))
+    for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
+        dirtied[d['tileId']] = d
+    con.commit()
+    return {'ok': True, 'resurrected': resurrected,
+            'deletedAnnotationId': annotation_id,
+            'tileStates': list(dirtied.values())}, 200
 
 
 @projects_bp.post('/api/projects/<project_id>/annotations/reverse')
@@ -2630,57 +2740,20 @@ def reverse_annotation_merge(project_id: str):
 
     Body: { annotationId, strokeId, consumedGroups: [{annotationId, strokeIds}, ...] }
     Returns: { ok, resurrected: [...], deletedAnnotationId, tileStates: [...] }
+
+    Thin shim around do_reverse_annotation_merge — the WS op handler in webapp/asgi.py
+    calls the same core function so mutations serialize through the single WS channel
+    (Phase 2).
     """
     body = request.json or {}
-    annotation_id = body.get('annotationId')
-    stroke_id = body.get('strokeId')
-    groups = body.get('consumedGroups') or []
-    if not (annotation_id and stroke_id and groups):
-        return jsonify({'error': 'annotationId, strokeId, consumedGroups required'}), 400
     con = _db.get_db()
     try:
-        row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'not found'}), 404
-        err = _member_or_403(con, project_id) or _owner_or_403(row['annotator'])
-        if err:
-            return err
-        created_tiles = [r['tile_id'] for r in con.execute(
-            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
-        ).fetchall()]
-        con.execute('DELETE FROM stroke WHERE id = ?', (stroke_id,))
-        consumed_ids = [g['annotationId'] for g in groups]
-        for g in groups:
-            stroke_ids = g.get('strokeIds') or []
-            if stroke_ids:
-                qmarks = ','.join('?' * len(stroke_ids))
-                con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
-                           (g['annotationId'], *stroke_ids))
-        qmarks = ','.join('?' * len(consumed_ids))
-        con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qmarks})',
-                   (_now(), *consumed_ids))
-        con.execute('DELETE FROM annotation WHERE id = ?', (annotation_id,))  # cascades annotation_tile
-
-        dirtied: dict[str, dict] = {}
-        resurrected = []
-        for cid in consumed_ids:
-            r = con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone()
-            if not r:
-                continue
-            tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
-            for tid in tile_ids:
-                con.execute(
-                    'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                    (cid, tid),
-                )
-            for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
-                dirtied[d['tileId']] = d
-            resurrected.append(_annotation_out(r, con))
-        for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
-            dirtied[d['tileId']] = d
-        con.commit()
-        return jsonify({'ok': True, 'resurrected': resurrected,
-                        'deletedAnnotationId': annotation_id, 'tileStates': list(dirtied.values())})
+        result, status = do_reverse_annotation_merge(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
 
