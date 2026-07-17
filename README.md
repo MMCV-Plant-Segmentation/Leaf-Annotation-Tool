@@ -2,100 +2,123 @@
 
 > What this app *is* and how it works lives in [`docs/SPEC.md`](docs/SPEC.md). This file is
 > just how to stand it up. All commands run from this directory (`code/` — the one with
-> `compose.yaml` and `pyproject.toml`).
+> `compose.yaml`, `pyproject.toml`, and `deploy.py`).
 
-There are two ways to run it: **Docker** (production / collaborators) and **native** (local dev).
+Everything situational — build, containerization, config source, dev/test/prod — goes through
+**`./deploy.py`**. The `webapp` package itself knows nothing about modes or environments: it's a
+library that takes an explicit config and runs. `deploy.py` reads one file (`app.config.toml`),
+hands each service just its slice, and never runs anything as root.
 
----
-
-## Production (Docker)
-
-**Prerequisites:** Docker with `buildx` + `compose`, and membership in a shared Unix group that will
-co-own the data + backups. Everything goes through **`./deploy.py`** — it runs the stack as *you* +
-that group (never root, no sudo, no UID hardcoded), auto-computes the build version, and builds when
-needed. (Raw `docker compose` still works but defaults to running as **root**, which makes the data +
-backups root-owned — use `deploy.py`.)
-
-1. **Create `app.config.toml`** interactively — generates `SECRET_KEY` for you and prompts for the
-   rest (`port`, `app_group` = the shared group, `backup_dir` = optional backup path,
-   `admin_password` = the first-boot `admin` login). This replaces the old `.env` (a legacy `.env`
-   is still read as a deprecated fallback if the TOML is absent):
-
-   ```sh
-   ./deploy.py create-config
-   ```
-
-2. **Starting from an existing backup** (only when seeding a fresh/wiped host) — lay the DB + files
-   down first:
-
-   ```sh
-   ./deploy.py restore
-   ```
-
-3. **Start it** (builds the image if needed, then runs as you + `APP_GROUP`):
-
-   ```sh
-   ./deploy.py start prod                 # app only
-   ./deploy.py start prod --with-backup   # + litestream/lsyncd backups (needs BACKUP_DIR)
-   ```
-
-   Stop with `./deploy.py stop prod`.
-
-4. Open `http://<host>:<PORT>`, log in as **`admin`** with `ADMIN_PASSWORD`, then use the **Admin**
-   panel to create invite codes for collaborators.
-
-> Backup is **opt-in** (`--with-backup`, needs `BACKUP_DIR`); without it the app runs alone. Data
-> persists in the `leaf-data` Docker volume regardless. Only **one** host should back up to a given
-> `BACKUP_DIR`.
-
-### Testing (fully decoupled from prod)
-
-`./deploy.py start test --data-mode {keep|reset|restore|fixture}` runs the **real image** in a
-throwaway container/volume on an **auto-assigned free port** — so container-only issues
-(permissions, entrypoint) surface before you deploy. It does **not** require prod to be running and
-never reads prod's live volume; `--data-mode` is required (no default, since every mode except
-`keep` replaces the test volume's contents):
-
-- `keep` — reuse whatever's already in the test volume.
-- `reset` — fresh, empty volume (schema auto-creates on boot).
-- `restore` — populate from `BACKUP_DIR` (the same backup source prod restore uses).
-- `fixture` — the small **synthetic dataset** committed at
-  `webapp/tests/fixtures/subagent_dataset/` (seeded `admin` / `subagent` logins, one demo
-  project + images). It is a **disjoint data lineage from prod by construction** — never sourced
-  from prod's volume or backups — so it's the safe source for **subagent** test envs. Rebuild or
-  extend it with `uv run python webapp/tests/build_subagent_fixture.py`; a human can later replace
-  its contents with real data and give it its own backup lineage.
-
-Add `--branch <ref>` to build+test a feature branch without merging it to main. `./deploy.py stop
-test` tears it down.
+```
+./deploy.py create-config      # write app.config.toml interactively
+./deploy.py dev                # in-process dev server (no container)
+./deploy.py start test --data-mode <mode>   # throwaway test container (see below)
+./deploy.py prod [--with-backup]            # build + run prod containers
+./deploy.py stop test | prod
+./deploy.py restore            # seed a fresh prod host from a backup
+```
 
 ---
 
-## Native (local dev)
+## 1. Configure (`app.config.toml`) — do this once
 
-**Prerequisites:** [`uv`](https://docs.astral.sh/uv/) and Node 24 (with `npm`).
+All three modes read a **sectioned** `app.config.toml` in this directory. It's **gitignored** and
+may hold secrets (`secret_key`, `admin_password`); only [`app.config.toml.example`](app.config.toml.example)
+(the annotated template) is committed. Create it either way:
 
-1. **Install Python deps:**
+```sh
+./deploy.py create-config                    # interactive — generates secret_key, prompts for the rest
+# ...or:
+cp app.config.toml.example app.config.toml   # then edit it by hand
+```
 
-   ```sh
-   uv sync
-   ```
+The sections: **`[app]`** (the values the app actually gets — `port`, `secret_key`, `admin_password`),
+**`[backup]`** (`backup_dir`, the one source of truth for the backup path), **`[deploy]`**
+(`app_group` = the shared Unix group prod runs as; not used by dev/test), **`[dev]`** (dev-only
+overrides, e.g. bind to `127.0.0.1`). Per-run intent (`--data-mode`, `--branch`, `--port`) is
+**CLI-only**, never in the file.
 
-2. **Build the frontend bundle** (it's gitignored, so it must be built at least once; rebuild
-   after frontend changes — or use `npm run build:watch` in a second terminal):
+> Upgrading from the old flat `app.config.toml` (or a legacy `.env`)? The app no longer reads ambient
+> env at all — reformat into the sections above (or just re-run `create-config`). A flat file will
+> not resolve.
 
+---
+
+## 2. Deploy the test environment
+
+`./deploy.py start test` runs the **real production image** in a throwaway container (`leaf-testenv`)
+on its own volume (`leaf-test-data`) and an **auto-assigned free port** — so container-only issues
+(permissions, entrypoint, the compose-secret config path) surface exactly as prod would hit them.
+It runs as **you** (personal uid/gid), does **not** require prod to be running, and never reads
+prod's live volume.
+
+`--data-mode` is **required** (no default — it's a wipe-guard, since every mode but `keep` replaces
+the test volume):
+
+| mode | what it does |
+|------|--------------|
+| `fixture` | the committed **synthetic dataset** (`webapp/tests/fixtures/subagent_dataset/`) — seeded `admin` / `subagent` logins + a demo project. Disjoint from prod by construction. **Quickest way to a usable env.** |
+| `reset` | fresh, empty volume — schema auto-creates on boot; log in as `admin` with `[app].admin_password`. |
+| `restore` | populate from `[backup].backup_dir` (the same backup source prod restore uses). Real data. |
+| `keep` | reuse whatever's already in the test volume from a previous run. |
+
+**To test the current branch** (e.g. `test/integration`), just run it from that checkout:
+
+```sh
+./deploy.py start test --data-mode fixture      # seeded logins, fastest
+# or, for real data:  ./deploy.py start test --data-mode restore
+```
+
+It prints the URL (`http://localhost:<port>`), the `docker logs -f leaf-testenv` command, and the
+stop command. Tear it down with **`./deploy.py stop test`**.
+
+Add `--branch <ref>` to build+test a branch you're *not* checked out on (built via a throwaway
+worktree, nothing merged). Add `--port <N>` to pin the port instead of auto-assigning.
+
+> The `fixture` dataset is committed and ready. If you ever need to rebuild/extend it:
+> `uv run python webapp/tests/build_subagent_fixture.py`.
+
+---
+
+## 3. Production (Docker)
+
+**Prerequisites:** Docker with `buildx` + `compose`, and membership in the `[deploy].app_group`
+shared group that co-owns the data + backups. `deploy.py` runs the stack as *you* + that group
+(never root, no sudo), computes the build version, and builds when needed.
+
+```sh
+./deploy.py restore                 # ONLY when seeding a fresh/wiped host from a backup — lay data down first
+./deploy.py prod                    # build (if needed) + run the app
+./deploy.py prod --with-backup      # + the litestream/lsyncd backup sidecars (needs [backup].backup_dir)
+./deploy.py stop prod
+```
+
+Config rides into the container as a **compose secret** (mounted at `/run/secrets/app-config`) — no
+env block, no secrets on the command line. Open `http://<host>:<port>`, log in as **`admin`** with
+`[app].admin_password`, then use the **Admin** panel to invite collaborators.
+
+> Backup is opt-in (`--with-backup`); without it the app runs alone and data still persists in the
+> `leaf-data` Docker volume. Only **one** host should back up to a given `backup_dir`.
+
+---
+
+## 4. Native dev (no container)
+
+For fast local iteration, `./deploy.py dev` runs the app **in-process** (resolves `[app]` + `[dev]`
+→ an `AppConfig` → the same `webapp.run()` prod uses in-container). First-time setup:
+
+1. **Python deps:** `uv sync`
+2. **Frontend bundle** (gitignored — build it at least once; rebuild after FE changes, or run
+   `npm run build:watch` in a second terminal):
    ```sh
    cd webapp/frontend && npm install && npm run build && cd ../..
    ```
-
-3. **Create `.env`** with at least `SECRET_KEY` and `ADMIN_PASSWORD` (see the prod section for
-   how to generate `SECRET_KEY`).
-
-4. **Run it:**
-
+3. **Run it:**
    ```sh
-   uv run leaf-annotation
+   ./deploy.py dev            # serves on [app].port (default 5000), bound to [dev].host (127.0.0.1)
    ```
+   Data lives in the `[dev].data_dir` if set, else the NFS-safe local XDG dir
+   (`~/.local/share/leaf-annotation`).
 
-   Serves on `http://localhost:5000`. Data lives in a local XDG dir
-   (`~/.local/share/leaf-annotation` by default; override with `HT_DATA_DIR`).
+> `uv run leaf-annotation` still works but is now **flag-driven with no env fallback** (e.g.
+> `--secret-key … --admin-password …`); `./deploy.py dev` is the easy path.
