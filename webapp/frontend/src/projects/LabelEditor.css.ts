@@ -123,15 +123,33 @@ export const groupBlock = style({
   gap: '0.35rem',
 });
 
+// Members render inside a left-railed container (a tree trunk under the group) instead of
+// a flat bulleted list — see GroupEditor. The rail + indent read as "these belong to the group".
+export const memberList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.35rem',
+  marginLeft: '0.45rem',
+  paddingLeft: '0.7rem',
+  borderLeft: `2px solid ${vars.color.border}`,
+});
+
 export const memberRow = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
-  paddingLeft: '1rem',
-});
-
-export const memberBullet = style({
-  color: vars.color.textMuted,
+  position: 'relative',
+  // Short horizontal connector from the rail to the member row (the tree "branch").
+  selectors: {
+    '&::before': {
+      content: '""',
+      position: 'absolute',
+      left: '-0.7rem',
+      width: '0.5rem',
+      height: '2px',
+      background: vars.color.border,
+    },
+  },
 });
 
 export const checkLabel = style({
