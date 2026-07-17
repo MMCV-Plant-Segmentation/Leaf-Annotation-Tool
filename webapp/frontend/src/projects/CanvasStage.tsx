@@ -69,13 +69,16 @@ export const CanvasStage: Component<Props> = (props) => (
         >
           <image href={imageUrls.overview(im().imageId)} x="0" y="0"
             width={im().width} height={im().height} />
-          <CanvasTiles tiles={im().tiles} checkClass={styles.check} onToggle={props.onTileToggle} />
+          {/* Annotations render BELOW the tile UI (t58) so a painted stroke can't cover the
+              tile-complete checkmark and swallow its clicks. CanvasTiles' grid rect is
+              fill=none (doesn't block painting); its checkmark stops propagation. */}
           <Show when={props.imgLoaded()}>
             <For each={props.annotations}>
               {(a) => <AnnotationShape ann={a} color={props.annotationColor(a)} blind={props.blind}
                 erased={props.annotationErased?.(a)} />}
             </For>
           </Show>
+          <CanvasTiles tiles={im().tiles} checkClass={styles.check} onToggle={props.onTileToggle} />
           {props.children}
         </svg>
         {props.panel}
