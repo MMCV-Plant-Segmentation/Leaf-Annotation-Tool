@@ -52,40 +52,45 @@ export const CanvasHints: Component<Props> = (props) => {
 
   return (
     <div class={styles.hints}>
-      <button
-        ref={triggerRef}
-        type="button"
-        class={styles.trigger}
-        aria-haspopup="dialog"
-        aria-expanded={open()}
-        aria-label="Controls"
-        data-testid="canvas-hints-trigger"
-        onClick={toggle}
-      >
-        ?
-      </button>
-      <Show when={open()}>
-        <div ref={panelRef} class={styles.panel} role="dialog" aria-label="Controls" data-testid="canvas-hints-panel">
-          <button
-            type="button"
-            class={styles.close}
-            aria-label="Close controls"
-            data-testid="canvas-hints-close"
-            onClick={close}
-          >
-            ✕
-          </button>
-          <div class={styles.help}>{t('canvas.help')}</div>
-          <div class={styles.readout} data-testid="canvas-viewport-readout">
-            {t('canvas.viewport', {
-              x: Math.round(props.vb().x),
-              y: Math.round(props.vb().y),
-              w: Math.round(props.vb().w),
-              h: Math.round(props.vb().h),
-            })}
+      {/* Bottom-left: the "?" opens the help popup. */}
+      <div class={styles.triggerWrap}>
+        <button
+          ref={triggerRef}
+          type="button"
+          class={styles.trigger}
+          aria-haspopup="dialog"
+          aria-expanded={open()}
+          aria-label="Controls"
+          data-testid="canvas-hints-trigger"
+          onClick={toggle}
+        >
+          ?
+        </button>
+        <Show when={open()}>
+          <div ref={panelRef} class={styles.panel} role="dialog" aria-label="Controls" data-testid="canvas-hints-panel">
+            <button
+              type="button"
+              class={styles.close}
+              aria-label="Close controls"
+              data-testid="canvas-hints-close"
+              onClick={close}
+            >
+              ✕
+            </button>
+            <div class={styles.help}>{t('canvas.help')}</div>
           </div>
-        </div>
-      </Show>
+        </Show>
+      </div>
+      {/* Bottom-right: the live viewport x/y/w/h readout — ALWAYS visible (t63), not hidden
+          behind the "?" as it briefly was under BUG #30's popup. */}
+      <div class={styles.readout} data-testid="canvas-viewport-readout">
+        {t('canvas.viewport', {
+          x: Math.round(props.vb().x),
+          y: Math.round(props.vb().y),
+          w: Math.round(props.vb().w),
+          h: Math.round(props.vb().h),
+        })}
+      </div>
     </div>
   );
 };
