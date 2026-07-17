@@ -258,16 +258,21 @@ test('I7: the grid refetches progressively during upload, not just once at the e
   await expect.poll(() => getCount, { timeout: 3000 }).toBeGreaterThan(1);
 });
 
-// ── I8: the label editor lives on the hub, not the Images screen ────────────────
+// ── I8: the label editor lives on its own /labels route, reachable from the hub ──
 
-test('I8: label editor is reachable from the project hub and absent from the Images screen', async ({ page }) => {
+test('I8: label editor is on its own /labels route, reachable from the hub, absent elsewhere', async ({ page }) => {
   const projResp = await page.request.post('/api/projects', { data: { name: 'LabelHub e2e' } });
   const { id } = (await projResp.json()) as { id: string };
 
+  // Hub: the editor is no longer embedded here — a "Labels" step card links to its route.
   await page.goto(`/projects/${id}`);
+  await expect(page.getByTestId('label-editor')).toHaveCount(0);
+  await page.getByTestId('card-labels').click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${id}/labels`));
   await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('label-edit')).toBeVisible();
 
+  // Images screen: still no editor.
   await page.goto(`/projects/${id}/images`);
   await expect(page.getByTestId('upload-btn')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('label-editor')).toHaveCount(0);

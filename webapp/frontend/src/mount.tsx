@@ -17,6 +17,7 @@ import ProjectsScreen from './projects/ProjectsScreen';
 import ProjectHubScreen from './projects/ProjectHubScreen';
 import ProjectImagesScreen from './projects/ProjectImagesScreen';
 import ProjectTilingScreen from './projects/ProjectTilingScreen';
+import ProjectLabelsScreen from './projects/ProjectLabelsScreen';
 import ProjectBatchesScreen from './projects/ProjectBatchesScreen';
 import CanvasScreen from './projects/CanvasScreen';
 import MergeCanvasScreen from './projects/MergeCanvasScreen';
@@ -47,6 +48,7 @@ void initI18n().then(() => {
         <Route path="/projects/:id" component={ProjectHubScreen} />
         <Route path="/projects/:id/images" component={ProjectImagesScreen} />
         <Route path="/projects/:id/tiling" component={ProjectTilingScreen} />
+        <Route path="/projects/:id/labels" component={ProjectLabelsScreen} />
         <Route path="/projects/:id/batches" component={ProjectBatchesScreen} />
         <Route path="/projects/:id/batches/:batchId/merge" component={MergeCanvasScreen} />
         <Route path="/projects/:id/batches/:batchId" component={CanvasScreen} />
