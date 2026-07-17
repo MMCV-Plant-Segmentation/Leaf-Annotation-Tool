@@ -12,9 +12,9 @@ Covers the three behaviours the taxonomy layer must guarantee:
       order filled in. We plant the legacy string directly into the DB column and read
       the project back through the API.
 
-  T3. A brand-new / empty project defaults to a single REMOVABLE `unknown` label — no
+  T3. A brand-new / empty project defaults to a single REMOVABLE `thing` label — no
       hardcoded lesion/midrib/uncertain. Creating a project with no `classes` (and with
-      an explicit empty list) yields exactly one `unknown` label.
+      an explicit empty list) yields exactly one `thing` label.
 
 Standalone-script style (mirrors test_backend.py / test_health.py): env-first setup,
 ephemeral temp data dir, auto_create_schema(), Flask test client, print PASS lines,
@@ -139,28 +139,28 @@ assert stored['compounds'][0].get('color', '').startswith('#'), stored
 print('  ✓  write persists the upgraded taxonomy-v2 object form to classes_json')
 
 
-# ── T3: new/empty project defaults to a single removable `unknown` label ────
-print('\n── T3: new/empty project seeds a single removable `unknown` ──')
+# ── T3: new/empty project defaults to a single removable `thing` label ────
+print('\n── T3: new/empty project seeds a single removable `thing` ──')
 
 # (a) no `classes` key at all.
 r = client.post('/api/projects', json={'name': 'TaxEmpty1', 'tile_size_px': 64})
 assert r.status_code == 201, _j(r)
 c1 = _j(r)['classes']
 print('  no-classes default =', c1)
-assert len(c1) == 1 and c1[0]['name'] == 'unknown', c1
+assert len(c1) == 1 and c1[0]['name'] == 'thing', c1
 assert {'lesion', 'midrib', 'uncertain'}.isdisjoint({x['name'] for x in c1}), c1
-print('  ✓  omitted classes → single unknown (no lesion/midrib/uncertain)')
+print('  ✓  omitted classes → single thing (no lesion/midrib/uncertain)')
 
 # (b) explicit empty list.
 r = client.post('/api/projects', json={'name': 'TaxEmpty2', 'tile_size_px': 64, 'classes': []})
 assert r.status_code == 201, _j(r)
 c2 = _j(r)['classes']
 print('  empty-list default =', c2)
-assert len(c2) == 1 and c2[0]['name'] == 'unknown', c2
-print('  ✓  explicit [] → single unknown')
+assert len(c2) == 1 and c2[0]['name'] == 'thing', c2
+print('  ✓  explicit [] → single thing')
 
-# (c) "unknown" is REMOVABLE: deleting it (writing an empty flat list) leaves the stored
-#     column with NO compounds, and a subsequent read re-seeds 'unknown' (the project is
+# (c) "thing" is REMOVABLE: deleting it (writing an empty flat list) leaves the stored
+#     column with NO compounds, and a subsequent read re-seeds 'thing' (the project is
 #     never truly label-less). Under taxonomy v2 an empty flat write is stored as the v2
 #     object with an empty compounds list (the legacy literal '[]' is gone; the read
 #     re-seed contract is what matters and is preserved).
@@ -174,14 +174,14 @@ stored3 = json.loads(raw3)
 assert isinstance(stored3, dict) and stored3.get('compounds') == [], stored3
 re_read = _j(client.get(f'/api/projects/{pid3}'))['classes']
 print('  after deleting all, read-back =', re_read)
-assert len(re_read) == 1 and re_read[0]['name'] == 'unknown', re_read
-print('  ✓  unknown is removable (empty write stores no compounds; read re-seeds unknown)')
+assert len(re_read) == 1 and re_read[0]['name'] == 'thing', re_read
+print('  ✓  thing is removable (empty write stores no compounds; read re-seeds thing)')
 
 # (d) sanity: the module-level normalise_classes agrees (no hardcoded trio anywhere).
 seeded = taxonomy.normalise_classes(None)
-assert [s['name'] for s in seeded] == ['unknown'], seeded
+assert [s['name'] for s in seeded] == ['thing'], seeded
 assert 'lesion' not in [s['name'] for s in seeded]
-print('  ✓  taxonomy.normalise_classes(None) seeds only unknown')
+print('  ✓  taxonomy.normalise_classes(None) seeds only thing')
 
 
 print('\n\nALL TAXONOMY BACKEND TESTS PASSED ✓  (data dir:', TMP, ')')

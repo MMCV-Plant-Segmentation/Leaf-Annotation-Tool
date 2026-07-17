@@ -296,7 +296,7 @@
   "detail.labels.addMember": "Add member",
   "detail.labels.addCompound": "Add compound",
   "detail.labels.compoundNamePlaceholder": "Compound name",
-  "detail.labels.saveCompound": "Save compound",
+  "detail.labels.saveCompound": "Add compound",
   "detail.labels.invalidCompound": "Pick a member for every required group",
   "detail.labels.emptyError": "A project needs at least one label — add a compound before saving.",
   "detail.labels.pickNone": "— none —",

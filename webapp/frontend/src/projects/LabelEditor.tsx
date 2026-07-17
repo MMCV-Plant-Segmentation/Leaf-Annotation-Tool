@@ -48,9 +48,9 @@ export const LabelEditor: Component<Props> = (props) => {
   const save = async () => {
     const { groups, compounds } = restampOrder(draftGroups(), draftCompounds());
     // A project's paintable labels ARE its compounds. Refuse to save an empty set — the
-    // backend would otherwise re-seed the default 'unknown' compound on read, which reads
+    // backend would otherwise re-seed the default 'thing' compound on read, which reads
     // as the deleted label "coming back". Blocking here keeps the taxonomy non-empty by
-    // construction (a fresh project still starts with the default 'unknown').
+    // construction (a fresh project still starts with the default 'thing').
     if (compounds.length === 0) {
       setErr(t('detail.labels.emptyError'));
       return;

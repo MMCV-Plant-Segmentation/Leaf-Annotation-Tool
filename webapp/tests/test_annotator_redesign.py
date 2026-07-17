@@ -86,8 +86,8 @@ assert p['name'] == 'Name-only project'
 assert p['tile_size_px'] == 128, f'Expected default 128, got {p["tile_size_px"]}'
 assert p['black_threshold'] == 0, f'Expected default 0 (MLT), got {p["black_threshold"]}'
 # Per-project taxonomy (Option A): a name-only/empty project seeds a single
-# REMOVABLE 'unknown' label (no more hardcoded lesion/midrib/uncertain).
-assert len(p['classes']) == 1 and p['classes'][0]['name'] == 'unknown', \
+# REMOVABLE 'thing' label (no more hardcoded lesion/midrib/uncertain).
+assert len(p['classes']) == 1 and p['classes'][0]['name'] == 'thing', \
     f'Expected single unknown label, got {p["classes"]}'
 pid = p['id']
 print(f'  ✓  project created with defaults: tile_size={p["tile_size_px"]}, threshold={p["black_threshold"]}')

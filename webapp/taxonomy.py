@@ -56,7 +56,7 @@ from typing import Any
 
 # Default label for new/empty projects. REMOVABLE like any other — there is no
 # forced/undeletable label. Re-seeded on read so the project is never truly label-less.
-UNKNOWN_LABEL = 'unknown'
+DEFAULT_LABEL = 'thing'
 
 # Schema discriminator stored in `classes_json` to mark a taxonomy-v2 value. The legacy
 # forms (string-array / object-array) have NO discriminator and are detected by shape.
@@ -248,10 +248,10 @@ def _seed_unknown() -> dict:
     cid = _uid()
     group = {
         'id': gid, 'name': DEFAULT_GROUP_NAME, 'order': 0, 'required': True,
-        'members': [{'id': mid, 'name': UNKNOWN_LABEL, 'order': 0}],
+        'members': [{'id': mid, 'name': DEFAULT_LABEL, 'order': 0}],
     }
     compound = {
-        'id': cid, 'name': UNKNOWN_LABEL, 'color': _default_color(0),
+        'id': cid, 'name': DEFAULT_LABEL, 'color': _default_color(0),
         'selections': {gid: mid},
     }
     return {'schema': SCHEMA_V2, 'groups': [group], 'compounds': [compound]}
