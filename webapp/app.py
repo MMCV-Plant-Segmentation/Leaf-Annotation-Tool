@@ -19,7 +19,6 @@ import argparse
 import hashlib
 import io
 import json
-import os
 import shutil
 import sys
 import uuid
@@ -27,7 +26,6 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
-from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, request, send_file, session
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
@@ -37,9 +35,7 @@ from werkzeug.security import generate_password_hash
 from . import db as _db
 from .auth import admin_required, auth_bp, login_required
 from .config import AppConfig, default_data_dir
-from .config_file import load_file_config
 from .projects import projects_bp
-from .seed import resolve_port, seed_data
 from .sync_status import fetch_sync_status
 from .version import get_version
 
@@ -273,14 +269,6 @@ def _warn_if_bundle_stale() -> None:
         pass  # a dev-convenience check must never break startup
 
 
-def _load_env() -> None:
-    """Load the legacy .env from the project root into os.environ (existing vars take priority).
-
-    DEPRECATED path: only used when app.config.toml is absent. The preferred source is
-    app.config.toml, read via webapp/config_file.py and merged explicitly in main()."""
-    load_dotenv(BASE / '.env')
-
-
 def _configure_app(cfg: AppConfig) -> None:
     if not cfg.secret_key:
         raise RuntimeError('AppConfig.secret_key is required — set secret_key in app.config.toml '
@@ -335,10 +323,10 @@ def _startup(cfg: AppConfig) -> None:
     Restore-from-backup is NOT here — it's an explicit orchestration step
     (`docker compose run --rm restore`, or seed_data(cfg) for the native path).
 
-    Only ever called from create_app(cfg) — all three server entries (main(), wsgi:app,
-    scripts/gate.py's run_ephemeral()) build an explicit AppConfig before reaching here.
+    Only ever called from create_app(cfg) — all three server entries (dev via deploy.py,
+    prod via container_entry.py, and the gate's run_ephemeral()) build an explicit AppConfig
+    before reaching here. No ambient environment is read from this path.
     """
-    _load_env()
     _configure_app(cfg)
     _migrate_data_to_local(cfg)
     _db.auto_create_schema()   # Alembic upgrade/stamp — see webapp/db.py
@@ -1194,47 +1182,48 @@ def run_ephemeral(cfg: AppConfig) -> None:
     → wait. Used by scripts/gate.py (and any other harness that wants a concurrency-safe,
     sandbox-safe test instance — pass a per-run temp data_dir).
 
+    Same launch path as every other caller — dev, prod-in-container, and the gate all
+    ultimately hit webapp.run(cfg).
+
     CRITICAL — sandbox reaper: granian internally forks a worker, and the harness/host
-    sandbox reaps same-session forked children with SIGSTKFLT (exit 144). launch_granian
+    sandbox reaps same-session forked children with SIGSTKFLT (exit 144). run/launch_granian
     solves this by spawning granian in its OWN session via start_new_session=True (and
     tearing it down through killpg on SIGTERM/SIGINT). Do NOT swap in a same-session,
     forking Werkzeug path — that's the old failure mode.
     """
-    from .wsgi import launch_granian
-    rc = launch_granian(cfg)
+    from .wsgi import run
+    rc = run(cfg)
     if rc != 0:
         raise SystemExit(rc)
 
 
-def main() -> None:
-    """Dev entry point (`uv run leaf-annotation [flags]`): resolve AppConfig from pure
-    flags → hand off to launch_granian → granian-asgi serves webapp.asgi:app.
+def main(argv: list[str] | None = None) -> int:
+    """Human dev CLI (`uv run leaf-annotation [flags]`): pure-flag argparse → AppConfig →
+    webapp.run(cfg). Reads ONLY flags — never the ambient environment, never a config file.
+    That's the library boundary: the webapp package knows nothing about prod/dev/test/gate
+    modes, or about app.config.toml.
 
-    This is the SAME serve path prod and the gate use — one process, one SQLite writer,
-    HTTP + WebSocket over one composite ASGI app. The launch ledger under
-    <data_dir>/launch-log.jsonl carries the resolved config to the granian worker (which
-    re-imports the target and can't receive a live AppConfig object).
+    The situational entry paths (dev with app.config.toml, prod in-container with a mounted
+    compose secret, gate with an ephemeral test dir) all live in deploy.py / deploy_lib /
+    container_entry — each of them builds an AppConfig from its own source and calls
+    webapp.run(cfg). This CLI is just the bare-flags library harness on top.
 
-    Every knob is its own explicit flag (pure flags, no --profile presets — see
-    docs/plans/Task — Entrypoint + environment consolidation (build).md, D2). Port/host
-    default from $HT_PORT/$HT_HOST, data-dir from $HT_DATA_DIR — same env fallbacks as
-    before, so a plain `uv run leaf-annotation` keeps landing on 127.0.0.1:5000 with no
-    flags. We deliberately do NOT read the generic $PORT (that's the Docker/.env port).
-    Run a second instance for testing with: `uv run leaf-annotation --port 5001`.
+    Every knob is its own explicit flag (pure flags, no --profile presets). A plain
+    `uv run leaf-annotation` will crash with "AppConfig.secret_key is required" — that's
+    intentional: the CLI has no config-file to fall back to. Real dev goes through
+    `./deploy.py dev` (which reads app.config.toml [app]+[dev]).
     """
     parser = argparse.ArgumentParser(
-        prog='leaf-annotation', description='Run the leaf-annotation dev server.')
-    # Defaults are None here so we can distinguish "user passed a flag" from "fall back to the
-    # config file / env / built-in default", merged post-parse below (CLI > file > env > default).
+        prog='leaf-annotation',
+        description='Run the leaf-annotation server from CLI flags (library entrypoint; '
+                    'real dev/prod flows go through deploy.py).')
     parser.add_argument(
         '--data-dir', type=Path, default=None,
-        help='Data dir for app.db/images/jsons/i18n (default: app.config.toml data_dir, else '
-             '$HT_DATA_DIR, else the NFS-safe XDG default).')
-    parser.add_argument('--port', type=int, default=None,
-                        help='TCP port to bind (default: app.config.toml port, else $HT_PORT, else 5000).')
-    parser.add_argument('--host', default=None,
-                        help='Host/interface to bind (default: app.config.toml host, else $HT_HOST, '
-                             'else 127.0.0.1).')
+        help='Data dir for app.db/images/jsons/i18n (default: the NFS-safe local XDG dir).')
+    parser.add_argument('--port', type=int, default=5000,
+                        help='TCP port to bind (default: 5000).')
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='Host/interface to bind (default: 127.0.0.1).')
     port_policy = parser.add_mutually_exclusive_group()
     port_policy.add_argument('--strict-port', dest='port_policy', action='store_const', const='strict',
                               help='Fail if --port is already taken (default).')
@@ -1246,57 +1235,41 @@ def main() -> None:
                              "empty), 'restore' (populate from the host backup).")
     parser.add_argument('--restore-from', type=Path, default=None,
                         help='Litestream replica dir for --seed restore (default: the standard host backup).')
+    parser.add_argument('--secret-key', default=None,
+                        help='Flask session secret. REQUIRED (create_app raises if unset).')
     parser.add_argument(
         '--admin-password', default=None,
-        help="Force-set the 'admin' user's password, overwriting an existing admin "
-             '(unlike $ADMIN_PASSWORD, which only seeds admin on first boot).')
-    args = parser.parse_args()
-    file_cfg = load_file_config(BASE)
-    if file_cfg.source != 'toml':
-        _load_env()   # legacy: populate os.environ from .env (no-op if absent). Skipped when
-                      # app.config.toml is present so the TOML file is the single source.
+        help="Force-set the 'admin' user's password, overwriting an existing admin.")
+    parser.add_argument('--backup-dir', default=None,
+                        help='Host backup root (displayed in the admin settings panel).')
+    parser.add_argument('--backup-status-url', default=None,
+                        help='URL of the backup-status sidecar polled by /api/sync-status.')
+    parser.add_argument('--backup', action='store_true',
+                        help='Assert the backup-invariant is on (informational; the sidecars '
+                             'themselves are compose-managed, not this process).')
+    args = parser.parse_args(argv)
 
-    def pick(cli_val, *env_keys, default=None):
-        """CLI flag > config file > env var(s) > built-in default. env_keys tried in order
-        against both the file (canonical ENV name) and os.environ."""
-        if cli_val is not None:
-            return cli_val
-        for key in env_keys:
-            fv = file_cfg.get(key)
-            if fv is not None:
-                return fv
-        for key in env_keys:
-            ev = os.environ.get(key)
-            if ev is not None:
-                return ev
-        return default
-
-    data_dir_val = pick(args.data_dir, 'HT_DATA_DIR')
-    data_dir = Path(data_dir_val) if data_dir_val is not None else default_data_dir()
-    host = pick(args.host, 'HT_HOST', default='127.0.0.1')
-    port = int(pick(args.port, 'PORT', 'HT_PORT', default=5000))
-    admin_password = args.admin_password or pick(None, 'ADMIN_PASSWORD')
     cfg = AppConfig(
-        data_dir=data_dir,
-        host=host,
-        port=port,
+        data_dir=args.data_dir if args.data_dir is not None else default_data_dir(),
+        host=args.host,
+        port=args.port,
         port_policy=args.port_policy,
         db_seed=args.seed,
         restore_source=args.restore_from,
-        secret_key=pick(None, 'SECRET_KEY'),
-        admin_password=admin_password,
+        backup=args.backup,
+        secret_key=args.secret_key,
+        admin_password=args.admin_password,
         admin_password_force=bool(args.admin_password),
-        backup_dir=pick(None, 'BACKUP_DIR'),
-        backup_status_url=pick(None, 'BACKUP_STATUS_URL'),
+        backup_dir=args.backup_dir,
+        backup_status_url=args.backup_status_url,
     )
-    from .wsgi import launch_granian
+    from .wsgi import run
     try:
-        rc = launch_granian(cfg)
+        return run(cfg)
     except RuntimeError as exc:
         print(f'\n\033[31mERROR: {exc}\033[0m\n', file=sys.stderr)
-        raise SystemExit(1)
-    raise SystemExit(rc)
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

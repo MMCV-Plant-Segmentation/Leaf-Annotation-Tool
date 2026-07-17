@@ -10,24 +10,25 @@ into auth.py or a route handler) fails this test immediately.
 
 Allowed (legitimate env boundaries):
   webapp/config.py         — default_data_dir()'s XDG_DATA_HOME read (a boundary default).
-  webapp/wsgi.py            — launcher + prod AppConfig builder; the launcher-set
-                              HT_LAUNCH_LOG worker handoff and prod env-sourced cfg both
-                              read env here at the boundary.
-  webapp/asgi.py            — the granian-asgi worker boot: reads the ONE launcher-set
-                              env var (HT_LAUNCH_LOG) pointing at the launch ledger to
-                              reconstitute AppConfig. No other env reads.
-  webapp/app.py             — the dev/CLI AppConfig builder (argparse defaults +
-                              the AppConfig(...) construction in main()).
-  webapp/version.py         — build identity (APP_VERSION/GIT_SHA/BUILD_TIME) is
-                              legitimately env-baked.
-  webapp/backup_status.py   — a SEPARATE sidecar process/entrypoint, not the main app.
-  webapp/db.py              — only _env_default_config()'s HT_DATA_DIR fallback, used
-                              when db.configure() was never called.
-  webapp/tests/**           — test setup, not app code.
+  webapp/asgi.py           — the granian-asgi worker boot: reads the ONE launcher-set
+                             env var (HT_LAUNCH_LOG) pointing at the launch ledger to
+                             reconstitute AppConfig. No other env reads.
+  webapp/version.py        — build identity (APP_VERSION/GIT_SHA/BUILD_TIME) is
+                             legitimately env-baked.
+  webapp/backup_status.py  — a SEPARATE sidecar process/entrypoint, not the main app.
+  webapp/wsgi.py           — HANDLED SPECIALLY (per-line, not whole-file): the launcher
+                             is allowed to read/pass the launcher-set HT_LAUNCH_LOG
+                             ledger pointer to the granian worker, and NOTHING ELSE. Any
+                             env read that doesn't reference LAUNCH_LOG_ENV in the SAME
+                             line here fails this test.
+  webapp/db.py             — HANDLED SPECIALLY (per-line): only _env_default_config()'s
+                             HT_DATA_DIR fallback, used when db.configure() was never called.
 
-Everything else (auth.py, sync_status.py, projects.py, tiling.py, ...) must read
-`cfg`/AppConfig only. If this test fails, either route the new read through AppConfig
-(preferred) or, if it's a genuine new boundary, add it to ALLOWLIST above with a reason.
+Everything else — including webapp/app.py, which after the entrypoint-consolidation
+refactor is a pure-flag CLI (deploy_lib and container_entry own the file/secret sources)
+— must read `cfg`/AppConfig only. If this test fails, either route the new read through
+AppConfig (preferred) or, if it's a genuine new boundary, add it to ALLOWLIST above with
+a reason.
 
 Run with: uv run python3 webapp/tests/test_no_env_reads.py
 """
@@ -37,16 +38,22 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 WEBAPP = REPO / 'webapp'
 
-# Files allowed to read env directly, in full. (webapp/db.py is handled separately
-# below since only ONE function in that file is a legitimate boundary.)
+# Files allowed to read env directly, in full. (webapp/wsgi.py and webapp/db.py are
+# handled separately below since only a NAMED set of lines in each file is a legitimate
+# boundary — everything else in those files must remain env-free.)
 ALLOWLIST_WHOLE_FILE = {
     WEBAPP / 'config.py',
-    WEBAPP / 'wsgi.py',
     WEBAPP / 'asgi.py',
-    WEBAPP / 'app.py',
     WEBAPP / 'version.py',
     WEBAPP / 'backup_status.py',
 }
+
+# webapp/wsgi.py: ONLY lines that reference the launcher-set HT_LAUNCH_LOG env var (via
+# the LAUNCH_LOG_ENV constant) are allowed. This is the launcher→granian-worker handoff
+# — the single env var wsgi.py may touch after the deploy consolidation moved the
+# prod/env-sourced AppConfig builder out of this file entirely. Any OTHER env read added
+# to wsgi.py still fails this test.
+WSGI_ALLOWED_TOKEN = 'LAUNCH_LOG_ENV'
 
 # webapp/db.py: only the _env_default_config() fallback may read env. Matched by exact
 # (stripped) line text so any OTHER env read added to db.py still fails this test.
@@ -71,6 +78,8 @@ for path in _py_files():
     text = path.read_text()
     for lineno, line in enumerate(text.splitlines(), start=1):
         if not ENV_READ_RE.search(line):
+            continue
+        if path == WEBAPP / 'wsgi.py' and WSGI_ALLOWED_TOKEN in line:
             continue
         if path == WEBAPP / 'db.py' and line.strip() in DB_PY_ALLOWED_LINES:
             continue
