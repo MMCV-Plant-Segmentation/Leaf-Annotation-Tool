@@ -17,7 +17,8 @@ prod path writes to an ephemeral /tmp dir and hands to compose as an `app-config
 mounted read-only at /run/secrets/app-config — never via env, which leaks through
 `docker inspect`).
 
-  ./deploy.py create-config                    # interactively write app.config.toml (versioned)
+  ./deploy.py create-config                    # wizard: asks deployment kind (dev/test/prod) first
+  ./deploy.py create-config --kind test --yes  # non-interactive (flags + defaults, no prompts)
   ./deploy.py migrate-config                   # upgrade a legacy/flat config to the current schema
   ./deploy.py dev                              # in-process dev server (no container)
   ./deploy.py prod                             # build + run prod containers
@@ -419,72 +420,91 @@ def restore(master):
        cwd=str(ROOT), env=penv)
 
 
-def create_config():
-    """Interactively write a versioned, sectioned app.config.toml. Non-destructive: pre-fills
-    from any existing config (flat or sectioned), collects everything first, and only confirms
-    the overwrite at the END — the old file is untouched until you say yes. admin_password is
-    NOT stored (CLI-only); the wizard prompts for it on the FRESH path only, to seed the admin."""
+def create_config(args):
+    """Write a versioned, sectioned app.config.toml. Asks the DEPLOYMENT KIND first (dev/test/prod)
+    and only prompts for what that kind needs: `app_group` is prod-only; test skips the port (it's
+    auto-assigned at `start test`); the test-env setup offer is test-only. Non-destructive: pre-fills
+    from any existing config and confirms the overwrite at the END. With `--yes` (+ flags) it runs
+    fully NON-INTERACTIVELY for scripting. admin_password is never stored (CLI-only)."""
     existing = deploy_lib.load_master_raw(CONFIG_FILE)              # tolerant — may be flat/legacy
     pre, _ = deploy_lib.migrate_master(existing) if existing else ({}, False)  # reuse routing to pre-fill
     pre_app, pre_backup, pre_deploy = pre.get("app", {}), pre.get("backup", {}), pre.get("deploy", {})
+    quiet = args.yes  # non-interactive: take flags/defaults, no prompts, no overwrite ask, no run-offer
 
-    print(f"Configuring {CONFIG_FILE}")
-    print("(writes ONLY this file, in this directory — does not touch any other clone.)\n")
-
-    def ask(prompt, default=""):
+    def ask(prompt, default="", flag=None):
+        if flag:
+            return flag
+        if quiet:
+            return default
         d = f" [{default}]" if default else ""
         return input(f"{prompt}{d}: ").strip() or default
 
-    port = ask("port", str(pre_app.get("port", 5000)))
-    group = ask("[deploy].app_group (shared unix group that co-owns data + backups)", pre_deploy.get("app_group", ""))
-    if not group:
-        die("app_group is required")
-    backup = ask("[backup].backup_dir (absolute host path for backups; blank = none)", pre_backup.get("backup_dir", ""))
-    cpn = pre_deploy.get("compose_project_name", "leaf-annotation-tool")
-    secret_key = pre_app.get("secret_key") or secrets.token_urlsafe(32)
+    print(f"Configuring {CONFIG_FILE} (this file only — no other clone is touched).\n")
+    kind = (args.kind or ask("deployment kind — dev / test / prod", "test")).lower()
+    if kind not in ("dev", "test", "prod"):
+        die(f"unknown deployment kind {kind!r} (expected dev|test|prod)")
 
-    data_source = ""
-    while data_source not in ("fresh", "restore"):
-        data_source = (ask("data source — 'fresh' (new empty DB) or 'restore' (from a backup)", "fresh")).lower()
-    admin_password = None
-    if data_source == "fresh":
-        admin_password = getpass.getpass("admin_password to set for the 'admin' user on the fresh DB (NOT stored in the config): ")
-        while not admin_password:
-            admin_password = getpass.getpass("admin_password can't be empty for a fresh DB: ")
-    elif not backup:
-        die("restore needs a backup_dir — re-run and set [backup].backup_dir")
-
+    secret_key = args.secret_key or pre_app.get("secret_key") or secrets.token_urlsafe(32)
+    # test uses an auto-assigned free port (start_test overrides [app].port), so don't ask for it.
+    port = 5000 if kind == "test" else int(
+        ask("port", str(pre_app.get("port", 5000)), str(args.port) if args.port else None))
     master = {
         "config_version": deploy_lib.CURRENT_CONFIG_VERSION,
         "app": {"port": int(port), "secret_key": secret_key},
-        "deploy": {"app_group": group, "compose_project_name": cpn},
         "dev": {"host": "127.0.0.1"},
     }
+    if kind == "prod":
+        group = ask("[deploy].app_group (shared unix group that co-owns data + backups)",
+                    pre_deploy.get("app_group", ""), args.app_group)
+        if not group:
+            die("app_group is required for a prod deployment (pass --app-group in non-interactive mode)")
+        master["deploy"] = {"app_group": group,
+                            "compose_project_name": pre_deploy.get("compose_project_name", "leaf-annotation-tool")}
+    # backup_dir is relevant to test (restore) + prod (sidecars/restore); dev never uses it.
+    backup = ask("[backup].backup_dir (absolute host path; blank = none)",
+                 pre_backup.get("backup_dir", ""), args.backup_dir) if kind in ("test", "prod") else ""
     if backup:
         master["backup"] = {"backup_dir": backup}
-    text = deploy_lib.dumps_master(master)
 
+    text = deploy_lib.dumps_master(master)
     print("\n--- about to write app.config.toml ---")
     print(text)
-    if CONFIG_FILE.exists() and input(f"{CONFIG_FILE} exists — overwrite it? [y/N] ").strip().lower() != "y":
+    if CONFIG_FILE.exists() and not quiet and \
+            input(f"{CONFIG_FILE} exists — overwrite it? [y/N] ").strip().lower() != "y":
         die("aborted — existing config left untouched")
     CONFIG_FILE.write_text(text)
     os.chmod(CONFIG_FILE, 0o600)
     print(f"wrote {CONFIG_FILE} (secret_key {'kept' if pre_app.get('secret_key') else 'generated'}).")
+    if not quiet:
+        _post_create_next_steps(kind, backup, args.admin_password)
 
-    # Offer to set up a test env end-to-end (config + data + admin), per the intended flow.
-    mode = "reset" if data_source == "fresh" else "restore"
-    if input(f"\nset up a test environment now (start test --data-mode {mode})? [y/N] ").strip().lower() == "y":
-        master = load_master()  # reload the just-written (now-valid) config
-        start_test(master, None, mode, None, admin_password)
-    else:
-        if data_source == "fresh":
-            print("\nNext — seed the admin on a fresh DB (admin_password is a CLI flag, not stored):")
-            print("  ./deploy.py start test --data-mode reset --admin-password '<the password you entered>'")
-            print("  # prod equivalent:  ./deploy.py prod --admin-password '…'")
+
+def _post_create_next_steps(kind, backup, admin_flag):
+    """Kind-specific 'what now': prod prints the seed command, dev offers to run, test offers to
+    stand up an env (fresh/restore) end-to-end."""
+    if kind == "prod":
+        print("\nNext (prod):  ./deploy.py prod --admin-password '…'   (first boot seeds the admin)")
+        return
+    if kind == "dev":
+        if input("\nstart the dev server now? [y/N] ").strip().lower() == "y":
+            start_dev(load_master(), admin_flag)
         else:
-            print("\nNext — restore data + admin from your backup:")
-            print("  ./deploy.py start test --data-mode restore")
+            print("\nNext:  ./deploy.py dev   (first run needs --admin-password to seed the admin)")
+        return
+    # test: offer to set up an env now
+    ds = (input("\nset up a test env now — 'fresh', 'restore', or 'no'? [no] ").strip().lower() or "no")
+    if ds not in ("fresh", "restore"):
+        print("\nNext:  ./deploy.py start test --data-mode reset --admin-password '…'   (or --data-mode restore)")
+        return
+    if ds == "restore" and not backup:
+        print("restore needs a [backup].backup_dir — re-run create-config to set it, or use 'fresh'.")
+        return
+    admin_password = admin_flag
+    if ds == "fresh" and not admin_password:
+        admin_password = getpass.getpass("admin_password for the fresh test DB (not stored): ")
+        while not admin_password:
+            admin_password = getpass.getpass("admin_password can't be empty: ")
+    start_test(load_master(), None, "reset" if ds == "fresh" else "restore", None, admin_password)
 
 
 def migrate_config():
@@ -551,12 +571,22 @@ def main():
 
     st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
-    sub.add_parser("create-config", help="interactively write app.config.toml (versioned, sectioned)")
+    cc = sub.add_parser("create-config",
+                        help="write app.config.toml (asks deployment kind first; --yes for non-interactive)")
+    cc.add_argument("--kind", choices=["dev", "test", "prod"], default=None,
+                    help="deployment kind for this clone — tailors which questions are asked")
+    cc.add_argument("--port", type=int, default=None, help="app port (dev/prod; test auto-assigns)")
+    cc.add_argument("--secret-key", default=None, help="Flask secret_key (default: keep existing or generate)")
+    cc.add_argument("--app-group", default=None, help="[deploy].app_group (prod only)")
+    cc.add_argument("--backup-dir", default=None, help="[backup].backup_dir (test/prod)")
+    cc.add_argument("--admin-password", default=None, help=admin_help)
+    cc.add_argument("--yes", action="store_true",
+                    help="non-interactive: take flags/defaults, no prompts, no overwrite ask, no run-offer")
     sub.add_parser("migrate-config", help="upgrade a legacy/flat app.config.toml to the current schema")
 
     a = ap.parse_args()
     if a.cmd == "create-config":
-        create_config()
+        create_config(a)
         return
     if a.cmd == "migrate-config":
         migrate_config()
