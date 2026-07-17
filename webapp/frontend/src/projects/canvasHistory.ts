@@ -107,7 +107,14 @@ function _makeRestBridgeSocket(getProjectId: () => string): CanvasSocket {
   return {
     send,
     enqueue: <T,>(task: (s: SocketSend) => Promise<T>): Promise<T> => task(send),
-    close:   () => { /* no-op */ },
+    // Phase 3 (feat/annotation-ws): the REST bridge exists only for unit tests that
+    // don't wire a real socket. Fire-and-forget viewport telemetry has no REST target
+    // to bridge to (that FE path is deleted), and no unit test exercises it via this
+    // bridge — so `post` is a silent no-op. `hasPending` is always false here: the
+    // bridge's send() awaits its own fetch inline, so nothing outlives the caller.
+    post:       () => { /* no-op: no telemetry bridge in tests */ },
+    hasPending: () => false,
+    close:      () => { /* no-op */ },
   };
 }
 

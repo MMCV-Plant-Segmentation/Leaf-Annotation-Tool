@@ -2264,6 +2264,53 @@ def reverse_stroke_edit(project_id: str, stroke_id: str):
         _db.close_db(con)
 
 
+def do_create_viewport_events(con, project_id: str, body: dict, *,
+                               username: str | None, user_id, is_admin: bool):
+    """Core of create_viewport_events — returns (response_dict, status). See the route
+    shim's docstring below for the full contract.
+
+    Called BOTH by the REST route AND by the WS `viewport` fire-and-forget message
+    handler in webapp/asgi.py, so the single mutation path stays in one place. Admin
+    sessions are dropped server-side (unchanged behaviour) — the REST test pins this,
+    and the WS handler skips the call entirely for admin connections.
+    """
+    image_id = body.get('imageId')
+    events = body.get('events') or []
+    acting = username or ''
+    if not (image_id and acting and isinstance(events, list) and events):
+        return {'error': 'imageId, events required'}, 400
+    if is_admin:
+        # Admins are read-only when viewing an annotator's canvas — never record telemetry
+        # "as" admin. AFTER body-validation so a malformed admin body still 400s like a
+        # non-admin's. Keep this guard confined to THIS endpoint; see docstring above.
+        return {'ok': True, 'count': 0}, 201
+    err = _member_or_403_direct(con, project_id, acting, user_id)
+    if err:
+        return err
+    received_at = _now()
+    rows = []
+    for ev in events:
+        try:
+            rows.append((
+                project_id, image_id, acting,
+                str(ev.get('clientTs') or ''), received_at,
+                float(ev['x']), float(ev['y']), float(ev['w']), float(ev['h']),
+                float(ev['cssW']), float(ev['cssH']), float(ev['dpr']),
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue  # malformed sample — skip it, never fail the whole batch
+    if rows:
+        con.executemany(
+            '''INSERT INTO viewport_event
+                 (project_id, image_id, user_id, client_ts, received_at,
+                  x, y, w, h, css_w, css_h, dpr)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            rows,
+        )
+        con.commit()
+    return {'ok': True, 'count': len(rows)}, 201
+
+
 @projects_bp.post('/api/projects/<project_id>/viewport-events')
 @login_required
 def create_viewport_events(project_id: str):
@@ -2282,45 +2329,20 @@ def create_viewport_events(project_id: str):
 
     Body: {imageId, events: [{clientTs, x, y, w, h, cssW, cssH, dpr}, ...]}.
     Response: {ok: true, count: N}.
+
+    Thin shim around do_create_viewport_events — the WS handler in webapp/asgi.py calls
+    the same core over a fire-and-forget `{type:"viewport"}` message so ALL viewport
+    telemetry funnels through one mutation path.
     """
     body = request.json or {}
-    image_id = body.get('imageId')
-    events = body.get('events') or []
-    user_id = session.get('username') or ''
-    if not (image_id and user_id and isinstance(events, list) and events):
-        return jsonify({'error': 'imageId, events required'}), 400
-    if session.get('username') == 'admin':
-        # Admins are read-only when viewing an annotator's canvas — never record telemetry
-        # "as" admin. AFTER body-validation so a malformed admin body still 400s like a
-        # non-admin's. Keep this guard confined to THIS endpoint; see docstring above.
-        return jsonify({'ok': True, 'count': 0}), 201
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
-        if err:
-            return err
-        received_at = _now()
-        rows = []
-        for ev in events:
-            try:
-                rows.append((
-                    project_id, image_id, user_id,
-                    str(ev.get('clientTs') or ''), received_at,
-                    float(ev['x']), float(ev['y']), float(ev['w']), float(ev['h']),
-                    float(ev['cssW']), float(ev['cssH']), float(ev['dpr']),
-                ))
-            except (KeyError, TypeError, ValueError):
-                continue  # malformed sample — skip it, never fail the whole batch
-        if rows:
-            con.executemany(
-                '''INSERT INTO viewport_event
-                     (project_id, image_id, user_id, client_ts, received_at,
-                      x, y, w, h, css_w, css_h, dpr)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                rows,
-            )
-            con.commit()
-        return jsonify({'ok': True, 'count': len(rows)}), 201
+        result, status = do_create_viewport_events(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
 

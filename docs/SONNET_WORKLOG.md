@@ -226,3 +226,105 @@ all three runs.
   only; broadcast tie-in belongs to the shared-viewport feature.
 - **`asyncio.to_thread` sqlite dispatch and admin-viewer WS reject** carry over
   unchanged from Phase 1; the four new ops inherit both.
+
+
+## 2026-07-16 — Phase 3: viewport telemetry over the socket + unsaved-data guard
+
+**Goal.** Finish "everything on the socket": route viewport (pan/zoom) telemetry
+over the same `canvasSocket` as annotation ops, drop the REST/beacon paths from
+the FE, and add a `beforeunload` guard that warns the user iff a real mutation op
+is still enqueued or in-flight (never on stray unflushed telemetry).
+
+**Design.** Fire-and-forget: `{type:'viewport', projectId, imageId, events}` — no
+ack, no FIFO slot; the WS handler dispatches the batch on a background task so a
+real op arriving next is never head-of-line-blocked. Admin connections drop
+frames silently (matches the REST admin-skip in `do_create_viewport_events`).
+
+### Files changed
+
+**Backend**
+- `webapp/projects.py`: Extracted `do_create_viewport_events(con, project_id,
+  body, *, username, user_id, is_admin) -> (dict, status)` from
+  `create_viewport_events`; route is a thin shim that jsonifies the tuple. Admin
+  skip lives ONLY here (post body-validation). REST contract unchanged
+  (test_viewport_events + test_admin_safety + test_viewport_heatmap stay green).
+- `webapp/asgi.py`: New `_apply_viewport_sync` (blocking DB call that runs in a
+  thread) + `_handle_viewport_frame` (fire-and-forget: `asyncio.create_task` +
+  returns immediately). The `_ws_handler` receive loop routes `type=='viewport'`
+  frames through it. Admin usernames drop the frame with no thread spawned.
+
+**Frontend (`webapp/frontend/src/projects/**`)**
+- `canvasSocket.ts`: Added `post(type, payload)` — synchronous `ws.send` when the
+  socket is ALREADY OPEN (works from a `beforeunload` handler); best-effort
+  async-open-then-send otherwise. Added `hasPending()` — true iff any mutation
+  op is enqueued (counter bumped in `enqueue`) or a raw `send()` is awaiting an
+  ack (counter also incremented per raw send). Post never touches the counter.
+- `viewportTelemetry.ts`: `flush()` now calls `socket.post('viewport', {...})`.
+  Deleted the `sendBeacon` branch, the `pagehide`/`visibilitychange` listeners
+  that only fed the beacon, and the `canvasApi.postViewportEvents` call. Takes
+  `socket` in opts. `canvasApi.postViewportEvents` intentionally kept in
+  `canvasApi.ts` — external callers + REST endpoint still exist.
+- `canvasUnsavedGuard.ts` (NEW): Small `createUnsavedGuard({hasPending, message})`
+  hook. Attaches a `beforeunload` listener that calls `preventDefault()` + sets
+  `returnValue` to `message()` IFF `hasPending()` returns true. Removes the
+  listener on cleanup. Extracted out of `CanvasScreen` to keep both under 200
+  lines.
+- `CanvasScreen.tsx`: Passes `socket` into `createViewportTelemetry`; mounts
+  `createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () =>
+  t('canvas.unsavedWarn') })`.
+
+**i18n**
+- `webapp/static/i18n/en.json`: New `canvas.unsavedWarn` key ("You have unsaved
+  annotation changes. Leave anyway?") — mirrors the existing `tiling.unsavedWarn`.
+
+### Tests (NEW)
+
+- `webapp/tests/test_ws_viewport.py`: pins the WS viewport handler end-to-end.
+  Annotator frame → 2 rows via `do_create_viewport_events`; admin frame → 0 rows;
+  malformed frames dropped (missing imageId / empty events / non-list); handler
+  returns in <200ms for a 200-sample batch (fire-and-forget dispatch); REST
+  endpoint still returns `{ok:true, count:1}`.
+- `webapp/frontend/e2e/unit/canvasSocket.spec.ts`: browserless unit tests for the
+  new `hasPending()` + `post()` API. Fakes WebSocket + window; enqueues ops and
+  drives ack frames; asserts `hasPending()` true from enqueue-time until the
+  task settles, true across a burst, true while a raw `send()` awaits its ack;
+  `post()` sends synchronously when the socket is OPEN; `post()` never touches
+  `hasPending()`; `post()` before open() is best-effort and doesn't throw.
+- `webapp/frontend/e2e/unit/canvasUnsavedGuard.spec.ts`: registers/removes the
+  listener; with no pending → no prompt (no `returnValue`, no `preventDefault`);
+  with pending → sets `returnValue` to the message + calls `preventDefault`.
+- `webapp/frontend/e2e/unit/viewportTelemetry.spec.ts`: a live flush lands on
+  `socket.post()` with `{type:'viewport', projectId, imageId, events:[...]}` —
+  and stubbed `fetch` / `sendBeacon` throw if called (regression guard against
+  re-introducing the deleted REST/beacon path). Admin session posts nothing.
+
+### Risks / assumptions
+
+- The `hasPending()` counter tracks enqueue slots + raw `send()` awaits — it does
+  NOT count fire-and-forget `post()` frames. Confirmed by unit tests.
+- The `beforeunload` warning message is browser-driven for most engines (Chrome
+  shows a generic prompt regardless of the string); Firefox echoes the message.
+- The WS handler drops admin frames at the socket layer BEFORE the DB path so
+  admin viewport telemetry is a pure no-op — no thread, no DB touch. The core
+  function ALSO admin-skips for defence-in-depth (matches REST behaviour).
+- The Playwright `unit` project resolves `solid-js` to the SSR build
+  (`dist/server.js`) — under that entry, `createEffect` and `onMount` are
+  no-ops. So the FE unit test for viewportTelemetry is a STATIC regression
+  guard (no `sendBeacon`, no `postViewportEvents`, no `fetch(`, no runtime
+  `canvasApi` import; DOES import CanvasSocket + calls `socket.post`) rather
+  than a behavioural driver of the reactive graph — the behavioural pin is
+  the backend `test_ws_viewport.py` + the socket-level `canvasSocket.spec.ts`.
+- `canvasUnsavedGuard` registers its `beforeunload` listener SYNCHRONOUSLY
+  inside the reactive owner (no `onMount`) so unit tests can exercise it under
+  the SSR entry without needing an effect scheduler tick.
+
+### Gate result
+
+Final `gate` run: backend 38/38 PASS, tsc + lint + build PASS, Playwright
+416 pass. The 3 pre-existing `@full`-tier flakes that surfaced (auth-username
+visibility timeouts on `browser/auth`, `browser/merge-mode`, `browser/relabel`)
+each timed out on the `getByTestId('auth-username')` LOGIN wait — the same
+infrastructure flake shape as noted in the backlog. They also shifted across
+runs (polyline-perclick / I3-admin-server-path / merge-grouping / merge-gate /
+relabel / auth all cycled), which is the giveaway. None touch canvas socket,
+viewport telemetry, or the beforeunload guard.

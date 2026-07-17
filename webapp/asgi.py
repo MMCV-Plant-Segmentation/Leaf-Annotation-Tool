@@ -36,6 +36,15 @@ undoes non-deterministic; Phase 2 extends the same FIFO to every remaining mutat
 draw-undo/redo, erase and relabel share the same ordering guarantee. Admin viewers
 (BUGS #15) may NOT mutate: their ops are rejected here server-side (even though REST
 leaves admin-as-annotator seeding available).
+
+Fire-and-forget viewport telemetry (Phase 3 — the final "everything on the socket"
+piece): each connection ALSO accepts `{type:"viewport", projectId, events:[...]}`
+frames. These are best-effort — NO ack is sent, and the frame is DISPATCHED on a
+background task so it never head-of-line-blocks a real op. Admin connections drop the
+frame silently (matches the REST admin-skip in do_create_viewport_events). A frame is
+persisted via the SAME do_create_viewport_events core the REST route calls, so viewport
+telemetry has one mutation path (REST endpoint kept for the current backend test +
+external callers).
 """
 from __future__ import annotations
 
@@ -234,6 +243,48 @@ async def _handle_op_frame(frame: dict, project_id: str | None, session_data: di
         await _err((result or {}).get('error') or 'op failed')
 
 
+# ── Fire-and-forget viewport telemetry (no ack, background dispatch) ──────────
+
+def _apply_viewport_sync(project_id: str | None, payload: dict, *,
+                          username: str | None, user_id, is_admin: bool) -> None:
+    """Blocking DB call for a viewport telemetry frame — runs in a thread so we NEVER
+    stall the event loop OR head-of-line-block a real op behind a batch of samples.
+    Any error is swallowed (telemetry is best-effort, not a mutation)."""
+    if not project_id:
+        return
+    con = _db.get_db()
+    try:
+        _projects.do_create_viewport_events(
+            con, project_id, payload,
+            username=username, user_id=user_id, is_admin=is_admin)
+    except Exception:  # noqa: BLE001 — best-effort; never surface to the client
+        traceback.print_exc()
+    finally:
+        _db.close_db(con)
+
+
+def _handle_viewport_frame(frame: dict, project_id: str | None,
+                            session_data: dict) -> None:
+    """Fire-and-forget: schedule the batch insert as a background task and RETURN
+    immediately so the caller can keep processing real ops (a real op arriving right
+    after a viewport frame must not wait on the DB write). Admin connections are
+    dropped here — no thread spawned, no DB touched."""
+    username = session_data.get('username') or ''
+    if username == 'admin':
+        return
+    events = frame.get('events') or []
+    image_id = frame.get('imageId')
+    if not (image_id and isinstance(events, list) and events):
+        return
+    body = {'imageId': image_id, 'events': events}
+    user_id  = session_data.get('user_id')
+    # asyncio.to_thread returns a coroutine; wrap in a Task so it runs in the background
+    # WITHOUT the _ws_handler receive loop having to await it. No ack is ever sent.
+    asyncio.create_task(asyncio.to_thread(
+        _apply_viewport_sync, project_id, body,
+        username=username, user_id=user_id, is_admin=False))
+
+
 # ── WS handler ────────────────────────────────────────────────────────────────
 
 async def _ws_handler(scope, receive, send) -> None:
@@ -288,6 +339,10 @@ async def _ws_handler(scope, receive, send) -> None:
                 # Await the whole op (DB mutation + ack) before reading the next frame
                 # — this is what makes the per-connection channel strictly FIFO.
                 await _handle_op_frame(payload, project_id, session_data, send)
+            elif ptype == 'viewport':
+                # Fire-and-forget: dispatched as a background task so a burst of
+                # telemetry NEVER head-of-line-blocks a real op arriving next. No ack.
+                _handle_viewport_frame(payload, project_id, session_data)
     finally:
         _connections[key].discard(send)
         if not _connections[key]:
