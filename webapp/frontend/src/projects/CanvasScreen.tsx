@@ -10,12 +10,14 @@ import { VertexHandles } from './VertexHandles';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
+import { createCanvasSocket } from './canvasSocket';
 import { createRelabelDropdown } from './relabelDropdown';
 import { createCanvasKeyboard } from './canvasKeyboard';
 import { createTileToggle } from './tileComplete';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
+import { createUnsavedGuard } from './canvasUnsavedGuard';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasStage } from './CanvasStage';
 import { CanvasHints } from './CanvasHints';
@@ -73,31 +75,30 @@ const CanvasScreen: Component = () => {
   const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
 
-  const history = createCanvasHistory(
-    () => canvas()?.projectId ?? '',
-    updateImg,
-  );
-
-  const { commit, relabel, editStroke } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history,
+  // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
+  const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
+  const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
+  const { commit, relabel, editStroke, polylineStep, resetPolyline } = createCanvasPersistence({
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
+  // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
+  createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); }));
 
-  // BUGS #15: an admin viewing another user's annotations may look but must NOT add or
-  // delete anything for that user. When isAdmin() is true, the commit handed to the canvas
-  // interaction is a no-op, so drawing/erasing produces no server write — regardless of
-  // which tool is selected. (Admin's API-level ability is intentionally left intact; this
-  // is FE enforcement only, consistent with readOnly={isAdmin()} used elsewhere.)
+  // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin() is
+  // true, so no gesture writes for the admin (API access left intact for future edits).
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
     brushSize, setBrushSize, maxBrushSize,
     commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
+    polylineStep: (pts, sw) => { if (!isAdmin()) polylineStep(pts, sw); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
-  // Best-effort viewport (pan/zoom) telemetry — see viewportTelemetry.ts. No UI; feeds
-  // future analysis of per-user "vision level" tile sizing.
-  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin });
+  // Best-effort viewport telemetry over the shared socket (viewportTelemetry.ts) + unload
+  // guard that warns iff a mutation op is still enqueued/in-flight (canvasUnsavedGuard.ts).
+  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
+  createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
 

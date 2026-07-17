@@ -1,4 +1,4 @@
-import { type Component, For, Show } from 'solid-js';
+import { type Component, Show } from 'solid-js';
 import { buildStrokePath, ringsToPath, type Tool } from './canvasShapes';
 import { polylineOutline } from './canvasPolylineGeometry';
 
@@ -17,16 +17,18 @@ export const LIVE_DRAFT = {
   strokeWidth: 2,
   previewHaloWidth: 4.5,
   previewStrokeWidth: 2.5,
-  polylineVertexR: 3,
   polylineDash: '6 4',
 };
 
-/** Live in-progress brush/eraser/polyline stroke + hover-radius preview. Rendered on
- * top of everything else while drawing; not shown for committed strokes.
+/** Live in-progress brush/eraser stroke + hover-radius preview and the polyline preview.
  *
- * For a polyline (a11y click-brush): the placed vertices are shown as solid dots, the
- * committed segments as a solid line, and a DASHED rubber-band segment previews the
- * next segment from the last vertex to the current cursor. */
+ * For polyline (per-click rebuild, 2026-07-13): every click persists+fuses immediately, so the
+ * PLACED vertices already show through the normal AnnotationShape rendering — we must NOT redraw
+ * the whole draft here (it would double-render the committed strokes). The only ephemeral things
+ * are: a cursor circle showing the brush width (like brush/eraser, so the user sees thickness
+ * before dropping a vertex), and the PENDING segment (last placed vertex → cursor) drawn as the
+ * SAME width-buffered outline that will be committed on the next click (its real thickness, not a
+ * hairline) plus a dashed centerline as a direction cue. ESC/tool-switch clears the draft. */
 export const LiveDraftOverlay: Component<{
   tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
 }> = (props) => (
@@ -54,10 +56,9 @@ export const LiveDraftOverlay: Component<{
         </>
       )}
     </Show>
-    {/* Polyline hover-radius preview (a11y #40): mirrors the brush/eraser cursor circle so
-        the user SEES the stroke thickness before dropping a vertex — a polyline is a brush
-        driven by clicks, so its preview should convey width the same way. Shown whenever
-        polyline is active + hovering (no draft required), same as brush/eraser. */}
+    {/* Polyline cursor-width preview (a11y #40): mirrors the brush/eraser cursor circle so the
+        user SEES the stroke thickness before dropping a vertex. Shown whenever polyline is
+        active + hovering (no draft required). */}
     <Show when={props.tool === 'polyline' && props.hover}>
       {(c) => (
         <>
@@ -71,30 +72,13 @@ export const LiveDraftOverlay: Component<{
         </>
       )}
     </Show>
-    <Show when={props.tool === 'polyline' && props.draft.length > 0}>
-      {/* The THICK filled shape the commit will store (polylineOutline == the sent outline),
-          so the preview matches the stored geometry exactly. nonzero fill so a reflex/looped
-          ring still fills. Vertex dots + a dashed rubber-band preview the pending segment. */}
-      <path data-testid="polyline-live"
-        d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill="none"
-        stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={ringsToPath([polylineOutline(props.draft, props.brushSize)])} fill-rule="nonzero"
-        fill={LIVE_DRAFT.brushFill} stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <For each={props.draft}>{(pt) => (
-        <circle cx={pt[0]} cy={pt[1]} r={LIVE_DRAFT.polylineVertexR}
-          fill={LIVE_DRAFT.brushStroke} stroke={LIVE_DRAFT.haloColor} stroke-width={1}
-          vector-effect="non-scaling-stroke" pointer-events="none" />
-      )}</For>
-      <Show when={props.hover}>{(c) => {
+    {/* Per-click model: placed clicks are ALREADY committed masks (AnnotationShape), so the only
+        ephemeral thing is the PENDING segment (last placed vertex → cursor) — the width-buffered
+        band (its committed thickness) plus a dashed centerline. We do NOT re-render the whole draft
+        as a thick shape / vertex dots — that would double-render the committed strokes. */}
+    <Show when={props.tool === 'polyline' && props.draft.length > 0 && props.hover}>
+      {(c) => {
         const last = props.draft[props.draft.length - 1];
-        // Pending segment (last placed vertex → cursor) rendered as the SAME width-buffered
-        // outline that would be committed on the next click — so the user sees the actual
-        // thickness of the next segment, not just a hairline direction cue. `polylineOutline`
-        // handles the degenerate cursor-on-vertex case by returning a disc. Halo goes under
-        // so the shape reads against both light and dark leaf backgrounds. The existing dashed
-        // centerline stays on top as a direction guide.
         const bandPath = () => ringsToPath([polylineOutline([last, c()], props.brushSize)]);
         return (
           <>
@@ -112,7 +96,7 @@ export const LiveDraftOverlay: Component<{
               vector-effect="non-scaling-stroke" pointer-events="none" />
           </>
         );
-      }}</Show>
+      }}
     </Show>
   </>
 );

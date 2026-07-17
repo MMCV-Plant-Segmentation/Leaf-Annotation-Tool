@@ -224,6 +224,13 @@ def render(stages: list[Stage], log_dir: Path, level: int) -> None:
                     print(f'  {s.name}: {title}')
             else:
                 print(f'  {s.name} → {s.log}')
+                # Emit a log-tail on any log-only failure so in-jail agents (which can't
+                # read the /tmp log dir) can still diagnose. Bounded (last 40 lines) to
+                # keep the digest token-cheap.
+                if s.log and s.log.exists():
+                    tail = s.log.read_text(errors='replace').splitlines()[-40:]
+                    for line in tail:
+                        print(f'    | {line}')
 
     print('GATE: ALL GREEN' if all_ok else 'GATE: FAILURES')
 

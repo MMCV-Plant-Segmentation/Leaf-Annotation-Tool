@@ -1190,29 +1190,30 @@ def api_analyze_set(set_id: str):
 
 
 def run_ephemeral(cfg: AppConfig) -> None:
-    """The ephemeral launcher: seed → create_app → bind → run, the same non-forking way
-    scripts/gate.py has always needed. Used by the gate (and any other harness that wants
-    a concurrency-safe, sandbox-safe test instance — pass a per-run temp data_dir).
+    """The ephemeral launcher: write launch ledger → spawn granian-asgi (detached session)
+    → wait. Used by scripts/gate.py (and any other harness that wants a concurrency-safe,
+    sandbox-safe test instance — pass a per-run temp data_dir).
 
-    CRITICAL: use_reloader=False + a single process. The Werkzeug reloader forks a child
-    process; the sandbox harness reaps forked children with SIGSTKFLT (exit 144), so a
-    forking server never comes back up cleanly under it. debug=False keeps the reloader
-    off even if this ever changes upstream — do not flip either without re-checking that.
+    CRITICAL — sandbox reaper: granian internally forks a worker, and the harness/host
+    sandbox reaps same-session forked children with SIGSTKFLT (exit 144). launch_granian
+    solves this by spawning granian in its OWN session via start_new_session=True (and
+    tearing it down through killpg on SIGTERM/SIGINT). Do NOT swap in a same-session,
+    forking Werkzeug path — that's the old failure mode.
     """
-    seed_data(cfg)
-    create_app(cfg)
-    port = resolve_port(cfg)
-    app.run(debug=False, use_reloader=False, host=cfg.host, port=port, threaded=True)
+    from .wsgi import launch_granian
+    rc = launch_granian(cfg)
+    if rc != 0:
+        raise SystemExit(rc)
 
 
 def main() -> None:
-    """Dev entry point (`uv run leaf-annotation [flags]`): resolve config → seed DB →
-    create_app → bind port per policy → dev server.
+    """Dev entry point (`uv run leaf-annotation [flags]`): resolve AppConfig from pure
+    flags → hand off to launch_granian → granian-asgi serves webapp.asgi:app.
 
-    threaded=True lets the streaming import endpoint serve its long-lived response without
-    blocking other requests (e.g. the thumbnails the page fetches while importing). Safe
-    because get_db is connection-per-request, WAL is on, and busy_timeout queues writers.
-    Production (Granian) is unaffected — this is the dev server only.
+    This is the SAME serve path prod and the gate use — one process, one SQLite writer,
+    HTTP + WebSocket over one composite ASGI app. The launch ledger under
+    <data_dir>/launch-log.jsonl carries the resolved config to the granian worker (which
+    re-imports the target and can't receive a live AppConfig object).
 
     Every knob is its own explicit flag (pure flags, no --profile presets — see
     docs/plans/Task — Entrypoint + environment consolidation (build).md, D2). Port/host
@@ -1288,14 +1289,13 @@ def main() -> None:
         backup_dir=pick(None, 'BACKUP_DIR'),
         backup_status_url=pick(None, 'BACKUP_STATUS_URL'),
     )
+    from .wsgi import launch_granian
     try:
-        seed_data(cfg)
+        rc = launch_granian(cfg)
     except RuntimeError as exc:
         print(f'\n\033[31mERROR: {exc}\033[0m\n', file=sys.stderr)
         raise SystemExit(1)
-    create_app(cfg)
-    port = resolve_port(cfg)
-    app.run(debug=True, host=cfg.host, port=port, threaded=True)
+    raise SystemExit(rc)
 
 
 if __name__ == '__main__':
