@@ -254,6 +254,7 @@
   "project.backToList": "← Back to projects",
   "tiling.unsavedWarn": "You have unsaved tiling changes. Leave anyway?",
   "canvas.noAnnotator": "No annotator selected — open this batch from the project page.",
+  "canvas.unsavedWarn": "You have unsaved annotation changes. Leave anyway?",
   "canvas.back": "← Back",
   "canvas.as": "as",
   "canvas.class": "class",

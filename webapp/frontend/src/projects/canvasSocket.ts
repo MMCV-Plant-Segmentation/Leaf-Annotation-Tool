@@ -15,15 +15,18 @@
  * socket-owned queue removes the race by construction.
  *
  * API:
- *   send<T>(op, payload)         — send ONE op frame, resolve with the ack/error result.
- *                                   Callers pass FULLY-BUILT payloads.
- *   enqueue<T>(task(send))       — reserve the next FIFO slot for a task that may need
- *                                   to make decisions based on state that only settles
- *                                   AFTER the previous op's ack (e.g. polyline session:
- *                                   "did click #1's create already return me a strokeId
- *                                   to extend?"). The task receives `send` and may call
- *                                   it one or more times inside the slot.
- *   close()                       — tear down (canvas unmount / image change).
+ *   send<T>(op, payload)   — ONE op frame; resolves with ack/error result (never rejects).
+ *   enqueue<T>(task(send)) — reserve the next FIFO slot for a task that decides based on
+ *                             state settled AFTER the previous op's ack (e.g. polyline
+ *                             session: "did click #1 return me a strokeId to extend?").
+ *   post(type, payload)    — fire-and-forget, no ack, no FIFO slot. Sync ws.send() when
+ *                             the socket is ALREADY OPEN (works on unload); else best-
+ *                             effort async open-then-send. Never counts toward hasPending.
+ *   hasPending()           — true iff a mutation op has been enqueued or sent and has NOT
+ *                             yet acked/errored. Drives the CanvasScreen beforeunload
+ *                             guard so we warn the user before they drop unsaved
+ *                             annotation data on the floor. post() is best-effort → false.
+ *   close()                — tear down (canvas unmount / image change).
  */
 import { onCleanup } from 'solid-js';
 
@@ -50,6 +53,10 @@ export interface CanvasSocketOpts {
 export interface CanvasSocket {
   send:    SocketSend;
   enqueue: <T>(task: (send: SocketSend) => Promise<T>) => Promise<T>;
+  /** Fire-and-forget frame (no ack, no FIFO). See module docstring for semantics. */
+  post:    (type: string, payload: Record<string, unknown>) => void;
+  /** True while any mutation op is enqueued/in-flight (drives unload guard). */
+  hasPending: () => boolean;
   close:   () => void;
 }
 
@@ -63,6 +70,11 @@ export function createCanvasSocket(o: CanvasSocketOpts): CanvasSocket {
   // — so the next enqueue task's `send()` naturally can't fire until the current one is
   // done. This is the ordering the whole design hangs on.
   let chain: Promise<unknown> = Promise.resolve();
+  // Pending-mutation counter — bumped when a task is enqueued, dropped when it settles.
+  // Drives hasPending() for the CanvasScreen beforeunload guard. Also counts raw
+  // send()s (used by history undo/redo which call send directly, not via enqueue).
+  // Fire-and-forget viewport telemetry does NOT touch this counter.
+  let enqueuedTasks = 0;
 
   const url = (): string | null => {
     const pid = o.projectId(); const iid = o.imageId();
@@ -130,14 +142,41 @@ export function createCanvasSocket(o: CanvasSocketOpts): CanvasSocket {
   };
 
   const enqueue = <T,>(task: (s: SocketSend) => Promise<T>): Promise<T> => {
+    // Count the task as pending from the moment it's enqueued (NOT from when it starts
+    // running) — a rapid burst of clicks that all queue up before the first ack must
+    // all show as pending, else the beforeunload guard could miss queued-but-not-yet-
+    // sent ops. Decrement when the task's own promise settles.
+    enqueuedTasks += 1;
     const run = () => task(send);
     // Serial run: `then(run, run)` runs the next task regardless of the prior's outcome,
     // so a single failure doesn't lock the chain. The chain tracks the task's completion
     // (not its resolved VALUE) so subsequent tasks wait for it to settle.
     const p = chain.then(run, run);
+    // Track completion for the counter separately from the ordering chain so a caller
+    // that throws inside `task` still drops its slot.
+    p.then(() => { enqueuedTasks -= 1; }, () => { enqueuedTasks -= 1; });
     chain = p.then(() => undefined, () => undefined);
     return p;
   };
+
+  const post = (type: string, payload: Record<string, unknown>): void => {
+    if (disposed) return;
+    const frame = JSON.stringify({ type, ...payload });
+    // Sync path: if the socket is ALREADY OPEN we can send from a beforeunload/pagehide
+    // handler and the browser will actually put it on the wire. This is why we DON'T
+    // await open() — an async open never completes on unload.
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(frame); } catch { /* fail-quiet: telemetry is best-effort */ }
+      return;
+    }
+    // Async fallback: open lazily and send once ready. If the tab is unloading this
+    // will simply never complete — acceptable for viewport telemetry (no annotation
+    // happened; losing the last sample is fine).
+    open().then((s) => { try { s.send(frame); } catch { /* fail-quiet */ } })
+          .catch(() => { /* fail-quiet: telemetry never surfaces errors to the user */ });
+  };
+
+  const hasPending = (): boolean => pending.size > 0 || enqueuedTasks > 0;
 
   const close = () => {
     disposed = true;
@@ -149,5 +188,5 @@ export function createCanvasSocket(o: CanvasSocketOpts): CanvasSocket {
 
   onCleanup(close);
 
-  return { send, enqueue, close };
+  return { send, enqueue, post, hasPending, close };
 }

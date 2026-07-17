@@ -17,6 +17,7 @@ import { createTileToggle } from './tileComplete';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
+import { createUnsavedGuard } from './canvasUnsavedGuard';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasStage } from './CanvasStage';
 import { CanvasHints } from './CanvasHints';
@@ -94,9 +95,10 @@ const CanvasScreen: Component = () => {
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
-  // Best-effort viewport (pan/zoom) telemetry — see viewportTelemetry.ts. No UI; feeds
-  // future analysis of per-user "vision level" tile sizing.
-  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin });
+  // Best-effort viewport telemetry over the shared socket (viewportTelemetry.ts) + unload
+  // guard that warns iff a mutation op is still enqueued/in-flight (canvasUnsavedGuard.ts).
+  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
+  createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
 
