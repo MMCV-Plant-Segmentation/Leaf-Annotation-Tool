@@ -125,3 +125,46 @@ test('polyline live preview shows brush width, not a hairline @full', async ({ p
   const r = Number(await cursor.getAttribute('r'));
   expect(r).toBeGreaterThan(0);
 });
+
+test('polyline: size slider + scroll resize work, and rubber-band anchors to the LAST vertex @full',
+  async ({ page, browser }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  test.setTimeout(90_000);
+  const p = await setupCanvasAsAnnotator(page, browser);
+  const canvasSvg = p.locator('[data-screen="canvas"] svg').first();
+  await expect(canvasSvg).toBeVisible({ timeout: 15_000 });
+  p.on('dialog', (d) => void d.dismiss());
+  await p.getByTestId('tool-polyline').click();
+
+  // P-1a: the brush-size slider must APPEAR for polyline (was brush/eraser-only).
+  await expect(p.getByTestId('brush-size-slider')).toBeVisible();
+
+  // P-1b: plain scroll over the canvas must change the polyline brush size (contextual
+  // resize, like brush/eraser). Pre-fix the wheel handler ignored polyline.
+  const sizeInput = p.getByTestId('brush-size-input');
+  const before = Number(await sizeInput.inputValue());
+  const box = await canvasSvg.boundingBox();
+  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
+  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
+  await p.mouse.move(cx, cy);
+  await p.mouse.wheel(0, -100);                 // scroll up → larger brush
+  await expect.poll(async () => Number(await sizeInput.inputValue())).toBeGreaterThan(before);
+
+  // P-2: the rubber band must anchor to the MOST-RECENTLY placed vertex, not the first.
+  // Pre-fix `last` was captured once (frozen at vertex #1); adding vertex #2 left the anchor
+  // stuck. We record the anchor after vertex #1, then assert it MOVES after vertex #2.
+  const rubber = p.locator('[data-testid="polyline-rubberband"]');
+  await p.mouse.click(cx - 30, cy - 30);        // vertex #1
+  await p.mouse.move(cx + 60, cy + 60, { steps: 6 });
+  await expect(rubber).toBeVisible();
+  const a1x = Number(await rubber.getAttribute('x1'));
+  const a1y = Number(await rubber.getAttribute('y1'));
+  await p.mouse.click(cx + 25, cy - 8);         // vertex #2 (distinct spot, same neighbourhood)
+  await p.mouse.move(cx + 70, cy + 70, { steps: 6 });
+  await expect.poll(async () => {
+    const x = Number(await rubber.getAttribute('x1'));
+    const y = Number(await rubber.getAttribute('y1'));
+    return Math.hypot(x - a1x, y - a1y);
+  }, 'rubber-band anchor must move to the newest vertex').toBeGreaterThan(0.5);
+});
+

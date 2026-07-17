@@ -81,8 +81,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
     if (strokeInProgress) return;  // §D: pan + size-scroll locked mid-stroke
-    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && !e.shiftKey) {
-      // Brush/eraser/group mode plain scroll → adjust size (§B); merge-group shares the control.
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group' || o.tool() === 'polyline') && !e.shiftKey) {
+      // Plain scroll on a sizeable tool → adjust brush size (§B); polyline shares brush's control.
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }

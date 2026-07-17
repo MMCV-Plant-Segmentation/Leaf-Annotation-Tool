@@ -78,8 +78,11 @@ export const LiveDraftOverlay: Component<{
         as a thick shape / vertex dots — that would double-render the committed strokes. */}
     <Show when={props.tool === 'polyline' && props.draft.length > 0 && props.hover}>
       {(c) => {
-        const last = props.draft[props.draft.length - 1];
-        const bandPath = () => ringsToPath([polylineOutline([last, c()], props.brushSize)]);
+        // Reactive: the <Show> body runs once (the condition stays truthy as vertices are added),
+        // so `last` must be an accessor — a captured value would freeze on the FIRST vertex and the
+        // rubber band would anchor there instead of the most-recently-placed one.
+        const last = () => props.draft[props.draft.length - 1];
+        const bandPath = () => ringsToPath([polylineOutline([last(), c()], props.brushSize)]);
         return (
           <>
             <path d={bandPath()} fill="none"
@@ -90,7 +93,7 @@ export const LiveDraftOverlay: Component<{
               stroke-width={LIVE_DRAFT.strokeWidth}
               vector-effect="non-scaling-stroke" pointer-events="none" />
             <line data-testid="polyline-rubberband"
-              x1={last[0]} y1={last[1]} x2={c()[0]} y2={c()[1]}
+              x1={last()[0]} y1={last()[1]} x2={c()[0]} y2={c()[1]}
               stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
               stroke-dasharray={LIVE_DRAFT.polylineDash}
               vector-effect="non-scaling-stroke" pointer-events="none" />
