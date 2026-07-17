@@ -22,21 +22,43 @@ hands each service just its slice, and never runs anything as root.
 
 ## 1. Configure (`app.config.toml`) — do this once
 
-All three modes read a **sectioned** `app.config.toml` in this directory. It's **gitignored** and
-may hold secrets (`secret_key`, `admin_password`); only [`app.config.toml.example`](app.config.toml.example)
-(the annotated template) is committed. Create it either way:
+Each checkout has its **own** `app.config.toml` in its directory (it's **gitignored** and may
+hold `secret_key`). Configs are **per-clone** — a separate prod clone and testing clone have
+independent configs that never touch each other. The wizard writes only the current directory's
+file, prompts before overwriting, and generates the `secret_key` for you:
 
 ```sh
-./deploy.py create-config                    # interactive — generates secret_key, prompts for the rest
-# ...or:
-cp app.config.toml.example app.config.toml   # then edit it by hand
+./deploy.py create-config
 ```
 
-The sections: **`[app]`** (the values the app actually gets — `port`, `secret_key`, `admin_password`),
-**`[backup]`** (`backup_dir`, the one source of truth for the backup path), **`[deploy]`**
-(`app_group` = the shared Unix group prod runs as; not used by dev/test), **`[dev]`** (dev-only
-overrides, e.g. bind to `127.0.0.1`). Per-run intent (`--data-mode`, `--branch`, `--port`) is
-**CLI-only**, never in the file.
+It's **sectioned + versioned**:
+
+```toml
+config_version = 1
+
+[app]                       # the values the app itself gets
+port = 5000
+secret_key = "…"            # required; generated for you
+
+[backup]                    # optional
+backup_dir = "/path/to/backup"   # one source of truth for the backup path
+
+[deploy]                    # never seen by the app
+app_group = "your-group"    # shared Unix group prod runs as (not used by dev/test)
+compose_project_name = "leaf-annotation-tool"
+
+[dev]                       # dev-only overrides for [app]
+host = "127.0.0.1"
+```
+
+- **`admin_password` is NOT in the config** — it's **CLI-only** (`--admin-password`), used once to
+  seed the admin on a fresh DB and never persisted. See §2/§3.
+- **Per-run intent** (`--data-mode`, `--branch`, `--port`, `--admin-password`) is CLI-only, never
+  in the file.
+- **Upgrading an old config?** If `deploy.py` says your config is out of date (missing/old
+  `config_version` — e.g. a pre-sectioned flat file), run **`./deploy.py migrate-config`**: it
+  regroups it losslessly into the schema above, drops `admin_password` (now CLI-only), and backs up
+  the original first. No more obscure parse failures on a stale config.
 
 > Upgrading from the old flat `app.config.toml` (or a legacy `.env`)? The app no longer reads ambient
 > env at all — reformat into the sections above (or just re-run `create-config`). A flat file will
@@ -58,19 +80,21 @@ the test volume):
 | mode | what it does |
 |------|--------------|
 | `fixture` | the committed **synthetic dataset** (`webapp/tests/fixtures/subagent_dataset/`) — seeded `admin` / `subagent` logins + a demo project. Disjoint from prod by construction. **Quickest way to a usable env.** |
-| `reset` | fresh, empty volume — schema auto-creates on boot; log in as `admin` with `[app].admin_password`. |
+| `reset` | fresh, empty volume — schema auto-creates on boot. Pass `--admin-password '…'` to seed the `admin` login (there's no data otherwise). |
 | `restore` | populate from `[backup].backup_dir` (the same backup source prod restore uses). Real data. |
 | `keep` | reuse whatever's already in the test volume from a previous run. |
 
 **To test the current branch** (e.g. `test/integration`), just run it from that checkout:
 
 ```sh
-./deploy.py start test --data-mode fixture      # seeded logins, fastest
-# or, for real data:  ./deploy.py start test --data-mode restore
+./deploy.py start test --data-mode fixture                       # seeded logins, fastest
+# real data (admin comes with it):   ./deploy.py start test --data-mode restore
+# fresh empty DB, seed your own admin: ./deploy.py start test --data-mode reset --admin-password '…'
 ```
 
 It prints the URL (`http://localhost:<port>`), the `docker logs -f leaf-testenv` command, and the
-stop command. Tear it down with **`./deploy.py stop test`**.
+stop command. Tear it down with **`./deploy.py stop test`**. (`create-config` can also do this
+end-to-end — it offers to stand up the test env right after writing the config.)
 
 Add `--branch <ref>` to build+test a branch you're *not* checked out on (built via a throwaway
 worktree, nothing merged). Add `--port <N>` to pin the port instead of auto-assigning.
@@ -94,8 +118,10 @@ shared group that co-owns the data + backups. `deploy.py` runs the stack as *you
 ```
 
 Config rides into the container as a **compose secret** (mounted at `/run/secrets/app-config`) — no
-env block, no secrets on the command line. Open `http://<host>:<port>`, log in as **`admin`** with
-`[app].admin_password`, then use the **Admin** panel to invite collaborators.
+env block, no secrets on the command line. On a **fresh** prod DB, seed the admin with
+`./deploy.py prod --admin-password '…'` (first boot only — it never overwrites an existing admin).
+Open `http://<host>:<port>`, log in as **`admin`**, then use the **Admin** panel to invite
+collaborators.
 
 > Backup is opt-in (`--with-backup`); without it the app runs alone and data still persists in the
 > `leaf-data` Docker volume. Only **one** host should back up to a given `backup_dir`.

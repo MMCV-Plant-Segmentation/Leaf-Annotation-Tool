@@ -10,23 +10,30 @@ Runs prod as YOU + a shared group (app_group in the [deploy] section of app.conf
 so data + backups are group-owned, never root — no UID typed or hardcoded, and no sudo
 needed (works even on a host you don't own, as long as you're in app_group).
 
-Config: sectioned app.config.toml (see app.config.toml.example). deploy_lib.resolve()
+Config: sectioned, versioned app.config.toml (create/upgrade via create-config / migrate-config).
+deploy_lib.resolve()
 flattens each service's slice; secrets never leave the resolved config file (which the
 prod path writes to an ephemeral /tmp dir and hands to compose as an `app-config` secret,
 mounted read-only at /run/secrets/app-config — never via env, which leaks through
 `docker inspect`).
 
-  ./deploy.py create-config                    # interactively write app.config.toml
+  ./deploy.py create-config                    # interactively write app.config.toml (versioned)
+  ./deploy.py migrate-config                   # upgrade a legacy/flat config to the current schema
   ./deploy.py dev                              # in-process dev server (no container)
   ./deploy.py prod                             # build + run prod containers
   ./deploy.py prod --with-backup               # + the litestream/lsyncd backup sidecars
-  ./deploy.py start test --data-mode reset     # throwaway container against a fresh volume
-  ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR
+  ./deploy.py prod --admin-password '…'        # + seed the admin on a FRESH DB (never overwrites one)
+  ./deploy.py start test --data-mode reset --admin-password '…'  # fresh volume + seed the admin
+  ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR (admin comes with it)
   ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
   ./deploy.py start test --data-mode fixture   # ...on the in-repo synthetic dataset (subagents)
   ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch
   ./deploy.py stop prod | test
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
+
+admin_password is CLI-ONLY (never in the config file): --admin-password seeds the admin on a
+fresh/empty DB and is a no-op on an existing one. `config_version` guards against reading a stale
+config — run migrate-config if deploy.py says your config is out of date.
 """
 import argparse
 import getpass
@@ -58,8 +65,25 @@ def die(msg):
 
 
 def load_master():
-    """Load the sectioned master config file (app.config.toml)."""
-    return deploy_lib.load_master(CONFIG_FILE)
+    """Load + version-validate the sectioned master config. On a missing/old config_version,
+    fail loudly with the migrate-config instruction (never a downstream parse crash)."""
+    try:
+        master = deploy_lib.load_master(CONFIG_FILE)
+    except deploy_lib.ConfigVersionError as e:
+        die(str(e))
+    if (master.get("app") or {}).get("admin_password"):
+        print("deploy.py: WARNING — [app].admin_password is set but IGNORED (admin_password is "
+              "CLI-only now; pass --admin-password to seed a fresh admin). Remove it from the config.",
+              file=sys.stderr)
+    return master
+
+
+def _inject_admin_password(resolved, admin_password):
+    """Put the operator's --admin-password into the resolved app slice for THIS run only
+    (seed semantics: build_appconfig sets admin_password without force, so it creates the
+    admin only when none exists and never overwrites one). Never written to app.config.toml."""
+    if admin_password:
+        resolved["app"]["admin_password"] = admin_password
 
 
 def sh(cmd, **kw):
@@ -185,10 +209,11 @@ def _ensure_prod_volume(penv, name):
         "chown", "-R", f"{penv['PUID']}:{penv['PGID']}", "/data"])
 
 
-def start_prod(master, with_backup, branch):
+def start_prod(master, with_backup, branch, admin_password=None):
     """Build image + write resolved app config to an ephemeral /tmp secret file + compose up.
     The container reads its config from the mounted /run/secrets/app-config, not from env."""
     resolved = deploy_lib.resolve(master, "prod")
+    _inject_admin_password(resolved, admin_password)
     resolved_app = resolved["app"]
     # Required-ness validated AFTER resolve. secret_key is mandatory for the app to boot;
     # fail here with a clear message rather than letting the container crash-loop.
@@ -224,11 +249,12 @@ def start_prod(master, with_backup, branch):
     print(f"  app-config secret: {app_config_file}  (0600, ephemeral)")
 
 
-def start_dev(master):
+def start_dev(master, admin_password=None):
     """Dev = in-process, no container. Resolve [app]+[dev] → AppConfig → webapp.run(cfg).
     Same webapp.run path prod uses in-container and the gate uses ephemerally — differ only
     in the config source."""
     resolved = deploy_lib.resolve(master, "dev")
+    _inject_admin_password(resolved, admin_password)
     resolved_app = resolved["app"]
     if not resolved_app.get("secret_key"):
         die("[app].secret_key not set in app.config.toml — dev can't start without it. "
@@ -316,7 +342,7 @@ def _prep_test_data(mode, master, puid, pgid):
         raise ValueError(f"unknown data-mode: {mode!r}")
 
 
-def start_test(master, port, data_mode, branch):
+def start_test(master, port, data_mode, branch, admin_password=None):
     """Throwaway test container against the SAME image prod would get. Test mounts its own
     resolved-config file at /run/secrets/app-config via a plain bind-mount (no compose here —
     this is a bare `docker run` for concurrency-safety and simpler teardown). Config values
@@ -342,6 +368,10 @@ def start_test(master, port, data_mode, branch):
     resolved_app = dict(resolved["app"])
     resolved_app["port"] = port
     resolved_app["secret_key"] = f"testenv-{secrets.token_hex(8)}"
+    # --admin-password seeds the admin ONLY on a fresh/empty DB (reset/fixture) — never
+    # overwrites one, so it's a no-op on restore/keep (whose DBs already carry their admin).
+    if admin_password:
+        resolved_app["admin_password"] = admin_password
 
     tmpdir = deploy_lib.make_ephemeral_config_dir()
     app_config_file = tmpdir / "app-config.toml"
@@ -385,49 +415,98 @@ def restore(master):
        cwd=str(ROOT), env=penv)
 
 
-def _toml_str(value):
-    """Minimal TOML string literal — good enough for the values we write (paths, group names,
-    generated secrets). Escapes backslash and double-quote for a basic double-quoted string."""
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def create_config():
-    """Interactively write app.config.toml (sectioned: [app] / [backup] / [deploy] / [dev])."""
-    f = CONFIG_FILE
-    if f.exists() and input("app.config.toml already exists — overwrite? [y/N] ").strip().lower() != "y":
-        die("aborted")
-    port = input("port [5000]: ").strip() or "5000"
-    group = input("[deploy].app_group (shared unix group that co-owns data + backups): ").strip()
+    """Interactively write a versioned, sectioned app.config.toml. Non-destructive: pre-fills
+    from any existing config (flat or sectioned), collects everything first, and only confirms
+    the overwrite at the END — the old file is untouched until you say yes. admin_password is
+    NOT stored (CLI-only); the wizard prompts for it on the FRESH path only, to seed the admin."""
+    existing = deploy_lib.load_master_raw(CONFIG_FILE)              # tolerant — may be flat/legacy
+    pre, _ = deploy_lib.migrate_master(existing) if existing else ({}, False)  # reuse routing to pre-fill
+    pre_app, pre_backup, pre_deploy = pre.get("app", {}), pre.get("backup", {}), pre.get("deploy", {})
+
+    print(f"Configuring {CONFIG_FILE}")
+    print("(writes ONLY this file, in this directory — does not touch any other clone.)\n")
+
+    def ask(prompt, default=""):
+        d = f" [{default}]" if default else ""
+        return input(f"{prompt}{d}: ").strip() or default
+
+    port = ask("port", str(pre_app.get("port", 5000)))
+    group = ask("[deploy].app_group (shared unix group that co-owns data + backups)", pre_deploy.get("app_group", ""))
     if not group:
         die("app_group is required")
-    backup = input("[backup].backup_dir (absolute host path for backups; blank = no backup): ").strip()
-    admin = getpass.getpass("[app].admin_password (first-boot admin login): ")
-    while not admin:
-        admin = getpass.getpass("[app].admin_password can't be empty: ")
+    backup = ask("[backup].backup_dir (absolute host path for backups; blank = none)", pre_backup.get("backup_dir", ""))
+    cpn = pre_deploy.get("compose_project_name", "leaf-annotation-tool")
+    secret_key = pre_app.get("secret_key") or secrets.token_urlsafe(32)
 
-    lines = [
-        "# app.config.toml — config for the Leaf Annotation stack (sectioned).",
-        "# GITIGNORED; contains secrets. See app.config.toml.example for the schema.",
-        "",
-        "[app]",
-        f"port = {int(port)}",
-        f"secret_key = {_toml_str(secrets.token_urlsafe(32))}",
-        f"admin_password = {_toml_str(admin)}",
-        "",
-    ]
+    data_source = ""
+    while data_source not in ("fresh", "restore"):
+        data_source = (ask("data source — 'fresh' (new empty DB) or 'restore' (from a backup)", "fresh")).lower()
+    admin_password = None
+    if data_source == "fresh":
+        admin_password = getpass.getpass("admin_password to SEED the new admin (used once on the fresh DB, NOT stored in the config): ")
+        while not admin_password:
+            admin_password = getpass.getpass("admin_password can't be empty for a fresh DB: ")
+    elif not backup:
+        die("restore needs a backup_dir — re-run and set [backup].backup_dir")
+
+    master = {
+        "config_version": deploy_lib.CURRENT_CONFIG_VERSION,
+        "app": {"port": int(port), "secret_key": secret_key},
+        "deploy": {"app_group": group, "compose_project_name": cpn},
+        "dev": {"host": "127.0.0.1"},
+    }
     if backup:
-        lines += ["[backup]", f"backup_dir = {_toml_str(backup)}", ""]
-    lines += [
-        "[deploy]",
-        f"app_group = {_toml_str(group)}",
-        'compose_project_name = "leaf-annotation-tool"',
-        "",
-        "[dev]",
-        'host = "127.0.0.1"',
-    ]
-    f.write_text("\n".join(lines) + "\n")
-    os.chmod(f, 0o600)
-    print(f"wrote {f} (secret_key generated for you). Next: ./deploy.py prod")
+        master["backup"] = {"backup_dir": backup}
+    text = deploy_lib.dumps_master(master)
+
+    print("\n--- about to write app.config.toml ---")
+    print(text)
+    if CONFIG_FILE.exists() and input(f"{CONFIG_FILE} exists — overwrite it? [y/N] ").strip().lower() != "y":
+        die("aborted — existing config left untouched")
+    CONFIG_FILE.write_text(text)
+    os.chmod(CONFIG_FILE, 0o600)
+    print(f"wrote {CONFIG_FILE} (secret_key {'kept' if pre_app.get('secret_key') else 'generated'}).")
+
+    # Offer to set up a test env end-to-end (config + data + admin), per the intended flow.
+    mode = "reset" if data_source == "fresh" else "restore"
+    if input(f"\nset up a test environment now (start test --data-mode {mode})? [y/N] ").strip().lower() == "y":
+        master = load_master()  # reload the just-written (now-valid) config
+        start_test(master, None, mode, None, admin_password)
+    else:
+        if data_source == "fresh":
+            print("\nNext — seed the admin on a fresh DB (admin_password is a CLI flag, not stored):")
+            print("  ./deploy.py start test --data-mode reset --admin-password '<the password you entered>'")
+            print("  # prod equivalent:  ./deploy.py prod --admin-password '…'")
+        else:
+            print("\nNext — restore data + admin from your backup:")
+            print("  ./deploy.py start test --data-mode restore")
+
+
+def migrate_config():
+    """Upgrade a legacy (flat or unversioned) app.config.toml to the current sectioned,
+    versioned schema. Lossless except admin_password, which is dropped (CLI-only now). Backs
+    up the original first."""
+    if not CONFIG_FILE.exists():
+        die(f"no {CONFIG_FILE} to migrate — run ./deploy.py create-config for a fresh one.")
+    raw = deploy_lib.load_master_raw(CONFIG_FILE)
+    if raw.get("config_version") == deploy_lib.CURRENT_CONFIG_VERSION:
+        print(f"{CONFIG_FILE} is already config_version {deploy_lib.CURRENT_CONFIG_VERSION} — nothing to do.")
+        return
+    migrated, dropped = deploy_lib.migrate_master(raw)
+    backup = CONFIG_FILE.with_name(CONFIG_FILE.name + ".bak")
+    n = 1
+    while backup.exists():
+        backup = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.bak{n}")
+        n += 1
+    shutil.copy2(CONFIG_FILE, backup)
+    CONFIG_FILE.write_text(deploy_lib.dumps_master(migrated))
+    os.chmod(CONFIG_FILE, 0o600)
+    print(f"migrated {CONFIG_FILE} -> config_version {deploy_lib.CURRENT_CONFIG_VERSION}. original backed up: {backup}")
+    if dropped:
+        print("\nNOTE: admin_password was removed — it is CLI-only now. This does NOT change any\n"
+              "existing admin. On a FRESH DB, seed the admin with:\n"
+              "  ./deploy.py start test --data-mode reset --admin-password '…'   (or ./deploy.py prod --admin-password '…')")
 
 
 def main():
@@ -435,15 +514,22 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # admin_password is CLI-only (never in the config file); --admin-password SEEDS the admin
+    # on a fresh/empty DB and is a no-op on an existing one (restore/keep). Shared by prod/dev/start.
+    admin_help = ("seed the 'admin' user's password on a FRESH/empty DB (never overwrites an "
+                  "existing admin; omit when restoring — the backup carries the admin). Not stored.")
+
     # `prod` — build + compose up.
     pp = sub.add_parser("prod", help="build + run prod containers (compose)")
     pp.add_argument("--with-backup", action="store_true", help="also run the backup sidecars")
+    pp.add_argument("--admin-password", default=None, help=admin_help)
     pp.add_argument("--branch", default=None,
                     help="git ref to build the image from (via a throwaway worktree), instead of "
                          "the current checkout — e.g. deploy a feature branch without merging it.")
 
     # `dev` — in-process, no container.
-    sub.add_parser("dev", help="in-process dev server (no container)")
+    pd = sub.add_parser("dev", help="in-process dev server (no container)")
+    pd.add_argument("--admin-password", default=None, help=admin_help)
 
     # `start test` — kept as its own subcommand (throwaway container).
     ps = sub.add_parser("start", help="throwaway test container (test only; prod is now `./deploy.py prod`)")
@@ -454,25 +540,30 @@ def main():
                     help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
                          "data), restore (populate from BACKUP_DIR), fixture (in-repo synthetic "
                          "dataset, disjoint from prod — for subagents). No default (wipe-guard).")
+    ps.add_argument("--admin-password", default=None, help=admin_help)
     ps.add_argument("--branch", default=None,
                     help="git ref to build the image from (via a throwaway worktree).")
 
     st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
-    sub.add_parser("create-config", help="interactively write app.config.toml")
+    sub.add_parser("create-config", help="interactively write app.config.toml (versioned, sectioned)")
+    sub.add_parser("migrate-config", help="upgrade a legacy/flat app.config.toml to the current schema")
 
     a = ap.parse_args()
     if a.cmd == "create-config":
         create_config()
         return
+    if a.cmd == "migrate-config":
+        migrate_config()
+        return
     master = load_master()
     if a.cmd == "prod":
-        start_prod(master, a.with_backup, a.branch)
+        start_prod(master, a.with_backup, a.branch, a.admin_password)
     elif a.cmd == "dev":
-        rc = start_dev(master)
+        rc = start_dev(master, a.admin_password)
         raise SystemExit(rc or 0)
     elif a.cmd == "start":
-        start_test(master, a.port, a.data_mode, a.branch)
+        start_test(master, a.port, a.data_mode, a.branch, a.admin_password)
     elif a.cmd == "stop":
         stop(master, a.target)
     elif a.cmd == "restore":
