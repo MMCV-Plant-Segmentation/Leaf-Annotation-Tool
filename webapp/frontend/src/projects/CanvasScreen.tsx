@@ -79,7 +79,7 @@ const CanvasScreen: Component = () => {
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
   const { commit, relabel, editStroke, polylineStep, resetPolyline } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket,
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
   // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
@@ -176,8 +176,8 @@ const CanvasScreen: Component = () => {
         annotationColor={(a) => labelColor(a.label, a.labelColor)}
         panel={heat ? <ViewportHeatmapPanel heat={heat} /> : undefined}
       >
-        <Show when={imgLoaded() && selId()}>{(id) =>
-          <SelectionHighlight ann={image()!.annotations.find((a) => a.id === id())!} />
+        <Show when={imgLoaded() && image()?.annotations.find((a) => a.id === selId())}>{(sel) =>
+          <SelectionHighlight ann={sel()} />
         }</Show>
         <Show when={imgLoaded() && tool() === 'select' && selectedStrokeAnn()}>{(ann) =>
           // a11y #40 v1b: vertex-editing handles for the selected stroke mask.
