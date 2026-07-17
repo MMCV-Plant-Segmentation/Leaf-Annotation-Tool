@@ -1,19 +1,19 @@
 /**
- * Polyline click-brush — interaction contract (BROWSERLESS unit, duck-typed events).
+ * Polyline per-click persistence — interaction contract (BROWSERLESS unit).
  *
- * A polyline is a brush you drive by CLICKING: each click drops a vertex (no drag), a
- * committed stroke carries tool='polyline', and closing the loop (clicking back onto the
- * start) commits a self-closing path that fills solid downstream. See root
- * docs/plans/Plan — Polyline click-brush tool (a11y #40).md.
+ * Christian's decided model (2026-07-13): a polyline click behaves like a brush stroke
+ * on finger-lift — persist + fuse per click. The FE's `polylineStep` callback runs on
+ * every click with the growing point list; the persistence layer resolves it as create
+ * (1st click) or editStroke (subsequent clicks). No buffered draft that only commits at
+ * ESC; no snap-to-first-vertex auto-close; Enter does nothing for polyline; ESC just
+ * switches to the select tool (the rubber band vanishes, placed clicks stay persisted).
  *
- * Pins the logic that differs from the brush; rendering (rubber-band, visible vertex dots,
- * fill) is verified end-to-end elsewhere. The commit callback gains a trailing `tool` arg.
+ * The commit callback still carries tool='polyline' in a trailing arg for the FIRST
+ * click (the create path), so persistence tags the stroke's provenance. Subsequent
+ * clicks drive editStroke via `polylineStep`, not `commit`.
  */
 import { test, expect } from '@playwright/test';
 
-function kbEvent(key: string, extra: Record<string, unknown> = {}) {
-  return { key, ctrlKey: false, metaKey: false, shiftKey: false, preventDefault: () => {}, ...extra };
-}
 function ptrEvent(clientX: number, clientY: number, pointerId: number) {
   return { clientX, clientY, pointerId, target: { setPointerCapture: () => {} } };
 }
@@ -26,12 +26,14 @@ function fakeSvg() {
 }
 
 type Commit = { kind: string; pts: number[][]; passNo?: number; sw?: number; tool?: string };
+type Step = { pts: number[][]; sw: number };
 
 async function makePolyline(brushSize = 20) {
   const { createCanvasInteraction } = await import('../../src/projects/canvasInteraction');
   let _vb = { x: 0, y: 0, w: 800, h: 600 };
   let _draft: number[][] = [];
   const committed: Commit[] = [];
+  const stepped: Step[] = [];
   const cx = createCanvasInteraction({
     getSvg: () => fakeSvg(),
     vb: () => _vb,
@@ -42,71 +44,87 @@ async function makePolyline(brushSize = 20) {
     maxBrushSize: () => 1000,
     draft: () => _draft,
     setDraft: (d) => { _draft = typeof d === 'function' ? (d as (p: number[][]) => number[][])(_draft) : d; },
-    // NOTE: the commit callback gains a trailing `tool` arg for polyline vs brush provenance.
     commit: (kind: string, pts: number[][], passNo?: number, sw?: number, tool?: string) =>
       committed.push({ kind, pts, passNo, sw, tool }),
+    // NEW: per-click persistence hook. The interaction fires this on every polyline click
+    // with the growing point list; the persistence layer chooses create vs. editStroke.
+    polylineStep: (pts: number[][], sw: number) => stepped.push({ pts, sw }),
   } as never);
   const click = (x: number, y: number, id = 1) => {
     cx.onPointerDown(ptrEvent(x, y, id) as unknown as PointerEvent);
     cx.onPointerUp(ptrEvent(x, y, id) as unknown as PointerEvent);
   };
-  return { cx, click, draft: () => _draft, committed };
+  return { cx, click, draft: () => _draft, committed, stepped };
 }
 
-test.describe('polyline click-brush interaction', () => {
-  test('a click drops a vertex and does NOT commit yet', async () => {
-    const { click, draft, committed } = await makePolyline();
+test.describe('polyline per-click persistence', () => {
+  test('a click drops a vertex AND fires polylineStep with that vertex', async () => {
+    const { click, draft, committed, stepped } = await makePolyline();
     click(400, 300);                       // → image (400, 200)
     expect(draft()).toHaveLength(1);
     expect(draft()[0][0]).toBeCloseTo(400);
     expect(draft()[0][1]).toBeCloseTo(200);
+    // Per-click persistence: the step callback fires once with a 1-vertex list.
+    expect(stepped).toHaveLength(1);
+    expect(stepped[0].pts).toHaveLength(1);
+    expect(stepped[0].sw).toBe(20);
+    // The old commit path did the create; per-click routes create THROUGH polylineStep,
+    // NOT through `commit` (persistence sees polylineStep and internally calls create).
     expect(committed).toHaveLength(0);
   });
 
-  test('further clicks accumulate vertices; a move between clicks adds nothing', async () => {
-    const { cx, click, draft, committed } = await makePolyline();
+  test('further clicks fire polylineStep with the GROWING point list — no commit', async () => {
+    const { cx, click, draft, committed, stepped } = await makePolyline();
     click(400, 300);
     click(500, 300);                       // → image (500, 200)
     cx.onPointerMove(ptrEvent(550, 320, 1) as unknown as PointerEvent);   // hover only
     expect(draft()).toHaveLength(2);
+    expect(stepped).toHaveLength(2);
+    expect(stepped[1].pts).toHaveLength(2);
+    expect(stepped[1].pts[1][0]).toBeCloseTo(500);
+    expect(stepped[1].pts[1][1]).toBeCloseTo(200);
+    // A pointer-move (hover) fires no click, so no extra step — the rubber band is FE-only.
+    expect(stepped).toHaveLength(2);
     expect(committed).toHaveLength(0);
   });
 
-  test('finishing an OPEN polyline commits a stroke tagged tool=polyline', async () => {
-    const { cx, click, draft, committed } = await makePolyline();
+  test('finishDraft is a NO-OP for polyline — no commit, no step, placed clicks stay', async () => {
+    const { cx, click, draft, committed, stepped } = await makePolyline();
     click(400, 300);
     click(500, 300);
     click(500, 350);
-    cx.finishDraft();                      // ESC / tool-switch path
-    expect(committed).toHaveLength(1);
-    expect(committed[0].kind).toBe('stroke');
-    expect(committed[0].tool).toBe('polyline');
-    expect(committed[0].pts).toHaveLength(3);
-    expect(committed[0].sw).toBe(20);
-    expect(draft()).toHaveLength(0);
+    const stepsBefore = stepped.length;
+    cx.finishDraft();                      // ESC / tool-switch / Enter path
+    // The polyline branch is gone from finishDraft — nothing commits.
+    expect(committed).toHaveLength(0);
+    expect(stepped).toHaveLength(stepsBefore);
+    // The draft (source of the rubber-band) is left to the caller (ESC clears it).
+    expect(draft()).toHaveLength(3);
   });
 
-  test('clicking back on the start vertex CLOSES the shape and auto-commits a loop', async () => {
-    const { click, draft, committed } = await makePolyline();
+  test('clicking near the first vertex does NOT auto-close — it is just another step', async () => {
+    const { click, draft, committed, stepped } = await makePolyline();
     click(400, 300);                       // start → image (400, 200)
     click(500, 300);
     click(500, 350);
-    click(403, 302);                       // within radius of the start → snap-close
-    expect(committed).toHaveLength(1);
-    expect(committed[0].tool).toBe('polyline');
-    // The committed path is a closed loop: its last point returns to the start vertex.
-    const pts = committed[0].pts;
-    expect(pts[pts.length - 1][0]).toBeCloseTo(400);
-    expect(pts[pts.length - 1][1]).toBeCloseTo(200);
-    expect(draft()).toHaveLength(0);
+    click(403, 302);                       // within the OLD snap radius, but still a plain click
+    // No auto-commit; just a normal step with 4 vertices (the last near the first).
+    expect(committed).toHaveLength(0);
+    expect(stepped).toHaveLength(4);
+    expect(stepped[3].pts).toHaveLength(4);
+    // The path stays OPEN — the last vertex is the snapped click itself, NOT the start.
+    const last = stepped[3].pts[3];
+    expect(last[0]).toBeCloseTo(403);
+    expect(last[1]).toBeCloseTo(202);
+    expect(draft()).toHaveLength(4);
   });
 
-  test('a lone vertex finishes as a single-point stroke (a dot, like the brush)', async () => {
-    const { cx, click, committed } = await makePolyline();
+  test('a lone click still triggers polylineStep with a 1-vertex list (a dot)', async () => {
+    const { click, committed, stepped } = await makePolyline();
     click(400, 300);
-    cx.finishDraft();
-    expect(committed).toHaveLength(1);
-    expect(committed[0].tool).toBe('polyline');
-    expect(committed[0].pts).toHaveLength(1);   // one click = one dot of the current radius
+    expect(stepped).toHaveLength(1);
+    expect(stepped[0].pts).toHaveLength(1);
+    // No `commit` — the create path goes THROUGH polylineStep now, not the direct commit.
+    expect(committed).toHaveLength(0);
   });
 });
