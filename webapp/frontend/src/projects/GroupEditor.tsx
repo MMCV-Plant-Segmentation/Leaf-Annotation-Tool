@@ -96,28 +96,29 @@ export const GroupEditor: Component<Props> = (props) => {
                 title={t('detail.labels.remove')} data-testid="group-remove"
                 onClick={() => removeGroup(g().id)}>✕</button>
             </div>
-            <Index each={g().members}>
-              {(m, mi) => (
-                <div class={styles.memberRow} data-testid="member-row">
-                  <span class={styles.memberBullet}>·</span>
-                  <input class={styles.name} type="text" value={m().name}
-                    placeholder={t('detail.labels.memberNamePlaceholder')}
-                    data-testid="member-name"
-                    onInput={(e) => renameMember(g().id, m().id, e.currentTarget.value)} />
-                  <button class={styles.iconBtn} title={t('detail.labels.up')}
-                    disabled={mi === 0} onClick={() => moveMember(g().id, m().id, -1)}>↑</button>
-                  <button class={styles.iconBtn} title={t('detail.labels.down')}
-                    disabled={mi === g().members.length - 1} onClick={() => moveMember(g().id, m().id, 1)}>↓</button>
-                  <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
-                    title={t('detail.labels.remove')} data-testid="member-remove"
-                    onClick={() => removeMember(g().id, m().id)}>✕</button>
-                </div>
-              )}
-            </Index>
-            <button class={styles.addBtn} data-testid="member-add"
-              onClick={() => addMember(g().id)}>
-              {t('detail.labels.addMember')}
-            </button>
+            <div class={styles.memberList}>
+              <Index each={g().members}>
+                {(m, mi) => (
+                  <div class={styles.memberRow} data-testid="member-row">
+                    <input class={styles.name} type="text" value={m().name}
+                      placeholder={t('detail.labels.memberNamePlaceholder')}
+                      data-testid="member-name"
+                      onInput={(e) => renameMember(g().id, m().id, e.currentTarget.value)} />
+                    <button class={styles.iconBtn} title={t('detail.labels.up')}
+                      disabled={mi === 0} onClick={() => moveMember(g().id, m().id, -1)}>↑</button>
+                    <button class={styles.iconBtn} title={t('detail.labels.down')}
+                      disabled={mi === g().members.length - 1} onClick={() => moveMember(g().id, m().id, 1)}>↓</button>
+                    <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
+                      title={t('detail.labels.remove')} data-testid="member-remove"
+                      onClick={() => removeMember(g().id, m().id)}>✕</button>
+                  </div>
+                )}
+              </Index>
+              <button class={styles.addBtn} data-testid="member-add"
+                onClick={() => addMember(g().id)}>
+                {t('detail.labels.addMember')}
+              </button>
+            </div>
           </div>
         )}
       </Index>
