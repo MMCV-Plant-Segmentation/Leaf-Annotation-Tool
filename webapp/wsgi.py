@@ -56,7 +56,6 @@ def _serialize_cfg(cfg: AppConfig) -> dict:
         'backup':               cfg.backup,
         'secret_key':           cfg.secret_key,
         'admin_password':       cfg.admin_password,
-        'admin_password_force': cfg.admin_password_force,
         'backup_dir':           cfg.backup_dir,
         'backup_status_url':    cfg.backup_status_url,
     }
@@ -73,7 +72,6 @@ def _deserialize_cfg(d: dict) -> AppConfig:
         backup=bool(d.get('backup', False)),
         secret_key=d.get('secret_key'),
         admin_password=d.get('admin_password'),
-        admin_password_force=bool(d.get('admin_password_force', False)),
         backup_dir=d.get('backup_dir'),
         backup_status_url=d.get('backup_status_url'),
     )

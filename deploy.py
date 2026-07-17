@@ -22,7 +22,7 @@ mounted read-only at /run/secrets/app-config — never via env, which leaks thro
   ./deploy.py dev                              # in-process dev server (no container)
   ./deploy.py prod                             # build + run prod containers
   ./deploy.py prod --with-backup               # + the litestream/lsyncd backup sidecars
-  ./deploy.py prod --admin-password '…'        # + seed the admin on a FRESH DB (never overwrites one)
+  ./deploy.py prod --admin-password '…'        # set the admin password (creates on a fresh DB; overwrites otherwise)
   ./deploy.py start test --data-mode reset --admin-password '…'  # fresh volume + seed the admin
   ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR (admin comes with it)
   ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
@@ -31,9 +31,11 @@ mounted read-only at /run/secrets/app-config — never via env, which leaks thro
   ./deploy.py stop prod | test
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
 
-admin_password is CLI-ONLY (never in the config file): --admin-password seeds the admin on a
-fresh/empty DB and is a no-op on an existing one. `config_version` guards against reading a stale
-config — run migrate-config if deploy.py says your config is out of date.
+admin_password is CLI-ONLY (never in the config file): --admin-password SETS the admin password —
+it creates the admin on a fresh/empty DB and OVERWRITES an existing one. Omit it to leave the admin
+alone (restart / restore-from-backup); a first deployment must provide it, or boot fails loudly.
+`config_version` guards against reading a stale config — re-run create-config (or migrate-config)
+if deploy.py says your config is out of date.
 """
 import argparse
 import getpass
@@ -79,9 +81,10 @@ def load_master():
 
 
 def _inject_admin_password(resolved, admin_password):
-    """Put the operator's --admin-password into the resolved app slice for THIS run only
-    (seed semantics: build_appconfig sets admin_password without force, so it creates the
-    admin only when none exists and never overwrites one). Never written to app.config.toml."""
+    """Put the operator's --admin-password into the resolved app slice for THIS run only. It
+    SETS the admin password (creates the admin on an empty DB, overwrites an existing one) —
+    explicit operator intent. Omitting the flag leaves the admin untouched. Never written to
+    app.config.toml (CLI-only)."""
     if admin_password:
         resolved["app"]["admin_password"] = admin_password
 
@@ -362,14 +365,15 @@ def start_test(master, port, data_mode, branch, admin_password=None):
         port = free_port()
 
     # Resolve a "prod-shaped" test app config, then override the transient bits (port,
-    # secret_key) for this test run. admin_password inherits from [app] (harmless — only
-    # takes effect on fresh 'reset' data; no-op on keep/restore).
+    # secret_key) for this test run. admin_password is never in the config — it's injected
+    # below only if --admin-password was given.
     resolved = deploy_lib.resolve(master, "prod")
     resolved_app = dict(resolved["app"])
     resolved_app["port"] = port
     resolved_app["secret_key"] = f"testenv-{secrets.token_hex(8)}"
-    # --admin-password seeds the admin ONLY on a fresh/empty DB (reset/fixture) — never
-    # overwrites one, so it's a no-op on restore/keep (whose DBs already carry their admin).
+    # --admin-password SETS the admin: creates it on a fresh/empty DB (reset/fixture) and would
+    # OVERWRITE one on keep/restore — so only pass it when you mean to (re)set the admin. On
+    # restore you normally omit it (the backup carries the admin).
     if admin_password:
         resolved_app["admin_password"] = admin_password
 
@@ -444,7 +448,7 @@ def create_config():
         data_source = (ask("data source — 'fresh' (new empty DB) or 'restore' (from a backup)", "fresh")).lower()
     admin_password = None
     if data_source == "fresh":
-        admin_password = getpass.getpass("admin_password to SEED the new admin (used once on the fresh DB, NOT stored in the config): ")
+        admin_password = getpass.getpass("admin_password to set for the 'admin' user on the fresh DB (NOT stored in the config): ")
         while not admin_password:
             admin_password = getpass.getpass("admin_password can't be empty for a fresh DB: ")
     elif not backup:
@@ -514,10 +518,11 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    # admin_password is CLI-only (never in the config file); --admin-password SEEDS the admin
-    # on a fresh/empty DB and is a no-op on an existing one (restore/keep). Shared by prod/dev/start.
-    admin_help = ("seed the 'admin' user's password on a FRESH/empty DB (never overwrites an "
-                  "existing admin; omit when restoring — the backup carries the admin). Not stored.")
+    # admin_password is CLI-only (never in the config file); --admin-password SETS the admin
+    # password (creates on an empty DB, overwrites otherwise). Shared by prod/dev/start.
+    admin_help = ("set the 'admin' password — creates the admin on a fresh/empty DB and OVERWRITES "
+                  "an existing one. Omit it to leave the admin alone (restart/restore); required on "
+                  "a first deployment. Not stored in the config.")
 
     # `prod` — build + compose up.
     pp = sub.add_parser("prod", help="build + run prod containers (compose)")

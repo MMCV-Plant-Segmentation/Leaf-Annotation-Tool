@@ -54,14 +54,13 @@ class AppConfig:
     backup          Asserted invariant only — prod refuses to run silently without it.
                     Backup itself (Litestream/lsyncd) is a compose sidecar, not this code.
     secret_key      Flask session secret. Required by create_app().
-    admin_password  Seeds the 'admin' user on first boot if set (no admin exists yet).
-                    Does NOT overwrite an existing admin's password — see
-                    admin_password_force.
-    admin_password_force
-                    When True, admin_password force-updates an already-existing admin's
-                    password instead of only seeding on first boot. Set by an explicit
-                    `--admin-password` CLI flag (operator intent), never by the env-sourced
-                    ADMIN_PASSWORD default.
+    admin_password  Operator-supplied 'admin' password, CLI-only (deploy.py's --admin-password).
+                    When set, it CREATES-or-UPDATES the admin (explicit operator intent — there
+                    is no separate "seed" mode). When unset and an admin already exists, the
+                    admin is left untouched (the restore/restart path). When unset AND no admin
+                    exists, boot fails loudly — a first deployment MUST set it. It is never
+                    sourced from the config file (see deploy_lib.resolve), so it can't silently
+                    clobber a restored admin; you only ever change the admin by passing the flag.
     backup_dir      Host backup root. deploy.py uses it for real — the litestream/lsyncd
                     sidecars (start prod --with-backup) and --data-mode restore both read it
                     (as BACKUP_DIR); the webapp only DISPLAYS it in the admin settings panel
@@ -79,6 +78,5 @@ class AppConfig:
     backup: bool = False
     secret_key: str | None = None
     admin_password: str | None = None
-    admin_password_force: bool = False
     backup_dir: str | None = None
     backup_status_url: str | None = None

@@ -51,8 +51,9 @@ compose_project_name = "leaf-annotation-tool"
 host = "127.0.0.1"
 ```
 
-- **`admin_password` is NOT in the config** — it's **CLI-only** (`--admin-password`), used once to
-  seed the admin on a fresh DB and never persisted. See §2/§3.
+- **`admin_password` is NOT in the config** — it's **CLI-only** (`--admin-password`): it **sets**
+  the admin password (creates the admin on a fresh DB, overwrites an existing one), is required on a
+  first deployment, and is never persisted. Omit it on restarts/restores. See §2/§3.
 - **Per-run intent** (`--data-mode`, `--branch`, `--port`, `--admin-password`) is CLI-only, never
   in the file.
 - **Upgrading an old config?** If `deploy.py` says your config is out of date (missing/old
@@ -118,10 +119,10 @@ shared group that co-owns the data + backups. `deploy.py` runs the stack as *you
 ```
 
 Config rides into the container as a **compose secret** (mounted at `/run/secrets/app-config`) — no
-env block, no secrets on the command line. On a **fresh** prod DB, seed the admin with
-`./deploy.py prod --admin-password '…'` (first boot only — it never overwrites an existing admin).
-Open `http://<host>:<port>`, log in as **`admin`**, then use the **Admin** panel to invite
-collaborators.
+env block, no secrets on the command line. **A first deployment must set the admin password:**
+`./deploy.py prod --admin-password '…'` — it creates the `admin` user (and would overwrite an
+existing one, so omit it on later restarts/restores to leave the admin alone). Open
+`http://<host>:<port>`, log in as **`admin`**, then use the **Admin** panel to invite collaborators.
 
 > Backup is opt-in (`--with-backup`); without it the app runs alone and data still persists in the
 > `leaf-data` Docker volume. Only **one** host should back up to a given `backup_dir`.
