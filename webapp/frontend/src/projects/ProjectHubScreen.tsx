@@ -13,7 +13,6 @@ import ProjectProgressTable from './ProjectProgressTable';
 import ProjectRosterSection from './ProjectRosterSection';
 import ProjectStepCards from './ProjectStepCards';
 import ProjectNotFound from './ProjectNotFound';
-import LabelEditor from './LabelEditor';
 import * as styles from './ProjectHubScreen.css';
 
 const ProjectHubScreen: Component = () => {
@@ -62,10 +61,6 @@ const ProjectHubScreen: Component = () => {
             />
 
             <ProjectRosterSection projectId={id()} annotators={p().annotators} onReload={reload} />
-
-            {/* ── Label taxonomy editor (any project member — not admin-only) ── */}
-            <LabelEditor projectId={id()} labels={p().classes} groups={p().groups ?? []}
-              compounds={p().compounds ?? []} onSaved={reload} />
 
             <ProjectProgressTable progress={p().progress} />
 

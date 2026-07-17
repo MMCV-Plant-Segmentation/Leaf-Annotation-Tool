@@ -58,6 +58,12 @@ const ProjectStepCards: Component<Props> = (props) => {
           <span class={styles.meta}>{t('projects.batches', { count: props.batchCount })}</span>
         </button>
       </Show>
+
+      {/* Labels/taxonomy — always available (not a gated setup step). */}
+      <button class={styles.card} data-testid="card-labels" onClick={() => go('labels')}>
+        <strong>{t('detail.card.labels')}</strong>
+        <span class={styles.meta}>{t('detail.card.labelsReady')}</span>
+      </button>
     </div>
   );
 };

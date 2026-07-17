@@ -193,6 +193,8 @@
   "detail.card.images": "Images",
   "detail.card.tiling": "Tiling",
   "detail.card.tilingReady": "Configure tile size & background",
+  "detail.card.labels": "Labels",
+  "detail.card.labelsReady": "Groups & compound labels",
   "detail.card.batches": "Batches",
   "detail.delete.button": "Delete project",
   "detail.delete.confirm": "Delete \"{name}\" and all its rows? (images on disk are kept)",
