@@ -277,29 +277,29 @@ def _configure_app(cfg: AppConfig) -> None:
 
 
 def _sync_admin(cfg: AppConfig) -> None:
-    """Seed or force-update the admin user from cfg.admin_password.
-
-    cfg.admin_password is SEED-only: it creates the admin row on first boot (no admin
-    exists yet) but never touches an already-existing admin's password — so an
-    env-sourced ADMIN_PASSWORD (e.g. the dev .env's placeholder) can't silently clobber
-    an admin restored from a prod snapshot. cfg.admin_password_force opts into
-    overwriting an existing admin too — set only by the explicit `--admin-password` CLI
-    flag, never by the env fallback (see main()/wsgi.py).
+    """Apply cfg.admin_password to the 'admin' user. There is no "seed-only" mode — an
+    admin_password is always explicit operator intent (it's CLI-only, --admin-password, never
+    sourced from a config file), so it CREATES the admin if none exists and OVERWRITES an
+    existing admin's password otherwise. When no password is given:
+      - an existing admin is left untouched (the normal restart / restore-from-backup path); but
+      - if NO admin exists, boot fails loudly — a first deployment MUST set --admin-password.
+    You only ever change the admin by passing the flag, so a restore (flag omitted) is safe.
     """
     password = cfg.admin_password
     con = _db.get_db()
     try:
         row = con.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
-        if row and password and cfg.admin_password_force:
+        if password:
             phash = generate_password_hash(password)
-            con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
+            if row:
+                con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
+            else:
+                con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
             con.commit()
         elif not row:
-            if not password:
-                raise RuntimeError('ADMIN_PASSWORD must be set on first boot (no admin user exists)')
-            phash = generate_password_hash(password)
-            con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
-            con.commit()
+            raise RuntimeError(
+                'no admin user exists and no admin password was given — a first deployment must '
+                'set one (deploy.py --admin-password).')
     finally:
         _db.close_db(con)
 
@@ -1259,7 +1259,6 @@ def main(argv: list[str] | None = None) -> int:
         backup=args.backup,
         secret_key=args.secret_key,
         admin_password=args.admin_password,
-        admin_password_force=bool(args.admin_password),
         backup_dir=args.backup_dir,
         backup_status_url=args.backup_status_url,
     )

@@ -73,10 +73,12 @@ def validate_master_version(master: dict[str, Any], path: Path | str = 'app.conf
     if version is None:
         raise ConfigVersionError(
             f'{path} has no `config_version` — it looks like a pre-{CURRENT_CONFIG_VERSION} '
-            f'(legacy/flat) config. Run:  ./deploy.py migrate-config')
+            f'(legacy/flat) config. Re-run  ./deploy.py create-config  (it pre-fills from your '
+            f'existing values), or  ./deploy.py migrate-config  to upgrade it in place.')
     raise ConfigVersionError(
         f'{path} is config_version {version}, but this deploy.py expects '
-        f'{CURRENT_CONFIG_VERSION}. Run:  ./deploy.py migrate-config')
+        f'{CURRENT_CONFIG_VERSION}. Re-run  ./deploy.py create-config  (pre-fills from your '
+        f'existing values), or  ./deploy.py migrate-config  to upgrade it in place.')
 
 
 def load_master(path: Path) -> dict[str, Any]:
@@ -161,8 +163,9 @@ def resolve(master: dict[str, Any], mode: str) -> dict[str, dict[str, Any]]:
         [dev]      dev-only overrides for the app slice (typically host = "127.0.0.1")
 
     `admin_password` is NOT a schema key — it is supplied per-run via deploy.py's
-    --admin-password flag (seed-only) and injected into the resolved slice there, never read
-    from the file. Any stray `admin_password` in [app] is dropped here so it can't silently seed.
+    --admin-password flag (which SETS the admin: creates on an empty DB, overwrites otherwise)
+    and injected into the resolved slice there, never read from the file. Any stray
+    `admin_password` in [app] is dropped here so it can't silently affect the admin.
 
     Shared values live in ONE place — deploy_lib.resolve folds them into the per-service
     slices, so app.config.toml never duplicates.
