@@ -1,23 +1,27 @@
-"""Launcher + prod entry point.
+"""Launcher — the ONE serving path (dev / gate / prod all converge here).
 
-All three serve paths — dev (`webapp.app:main` → `uv run leaf-annotation`), gate
-(`webapp.app:run_ephemeral`, driven by scripts/gate.py), and prod (`python -m webapp.wsgi`,
-the Dockerfile CMD) — go through `launch_granian(cfg)` below. That's the ONE serving path:
-Granian-ASGI serving webapp.asgi:app (the composite Flask+WS app), one worker, one SQLite
-writer.
+`webapp.run(cfg)` (= `launch_granian(cfg)`) is the public library launch: seed data →
+write the launch ledger → spawn granian-asgi serving webapp.asgi:app (one worker, one
+SQLite writer, HTTP + WebSocket over one composite ASGI app). Callers:
+  - dev:    `deploy.py dev` → `deploy_lib.build_appconfig(...)` → webapp.run
+  - gate:   `webapp.app:run_ephemeral(cfg)` (scripts/gate.py)      → webapp.run
+  - prod:   `container_entry.py` → `deploy_lib.launch_from_config_file(...)` → webapp.run
 
-The AppConfig handoff to the worker process is the launch ledger: `launch_granian` writes a
-`starting` record (JSONL) at `<data_dir>/launch-log.jsonl`, sets HT_LAUNCH_LOG to that path
-in the child env (the ONE launcher-set env var — worker imports find the ledger via it),
-then spawns granian. `webapp/asgi.py`'s import reads the LATEST starting record and
-reconstitutes AppConfig — no ambient env sniffing, no in-memory handoff (granian re-imports
-the target in a forked worker).
+The AppConfig handoff to the worker process is the launch ledger: `run` writes a `starting`
+record (JSONL) at `<data_dir>/launch-log.jsonl`, sets HT_LAUNCH_LOG to that path in the
+child env (the ONE launcher-set env var — worker imports find the ledger via it), then
+spawns granian. `webapp/asgi.py`'s import reads the LATEST starting record and reconstitutes
+AppConfig — no ambient env sniffing, no in-memory handoff (granian re-imports the target
+in a forked worker).
 
 CRITICAL — sandbox-reaper workaround: the harness/host sandbox reaps forked children of the
 current session with SIGSTKFLT (exit 144). Granian internally forks a worker; if granian
 were a same-session child, its worker would get reaped. `start_new_session=True` puts
 granian in its own process group and session so the reaper never sees it; teardown is
 `os.killpg(getpgid(pid), SIGTERM)` from our SIGTERM/SIGINT handler.
+
+This module reads NO ambient environment except the launcher-set HT_LAUNCH_LOG (the ledger
+pointer the worker uses). test_no_env_reads permits ONLY that env-name here.
 """
 from __future__ import annotations
 
@@ -30,14 +34,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from .config import AppConfig, default_data_dir
-from .config_file import load_file_config
+from .config import AppConfig
 from .seed import resolve_port, seed_data
 
-_ROOT = Path(__file__).resolve().parent.parent
-
 # The single env var the launcher hands to the granian worker (launcher-set, not
-# operator-sniffed — the operator passes the ledger via config/flags, not this var).
+# operator-sniffed — the operator passes the resolved config via a mounted compose secret
+# read by container_entry.py, never via this var).
 LAUNCH_LOG_ENV = 'HT_LAUNCH_LOG'
 
 
@@ -187,41 +189,7 @@ def launch_granian(cfg: AppConfig, wait: bool = True) -> int:
                     pass
 
 
-# ── Prod entry point (Dockerfile CMD: `python -m webapp.wsgi`) ────────────────
-
-def _prod_cfg_from_env() -> AppConfig:
-    """Prod AppConfig builder. deploy.py injects the container env from app.config.toml /
-    .env via compose; for a bare-metal `python -m webapp.wsgi` run from the repo root we
-    also fall back to app.config.toml (or a legacy .env) read from that root, so the one
-    config file works for this entrypoint too. This is a legitimate env boundary — the
-    permanent test_no_env_reads guard allowlists this file for exactly that reason.
-    """
-    file_cfg = load_file_config(_ROOT)
-
-    def pick(env_name: str) -> str | None:
-        return os.environ.get(env_name) or file_cfg.get(env_name)
-
-    data_dir = pick('HT_DATA_DIR')
-    port     = pick('PORT')
-    return AppConfig(
-        data_dir=Path(data_dir) if data_dir else default_data_dir(),
-        host='0.0.0.0',
-        port=int(port) if port else 5000,
-        port_policy='strict',
-        db_seed='existing',
-        backup=True,
-        secret_key=pick('SECRET_KEY'),
-        admin_password=pick('ADMIN_PASSWORD'),
-        backup_dir=pick('BACKUP_DIR'),
-        backup_status_url=pick('BACKUP_STATUS_URL'),
-    )
-
-
-def main() -> int:
-    """`python -m webapp.wsgi` — the prod launcher. Same launch_granian pipeline dev/gate
-    use, just with an env-sourced AppConfig instead of CLI flags."""
-    return launch_granian(_prod_cfg_from_env())
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+# Public library API name: `webapp.run(cfg)` is the one launch every caller (dev, gate,
+# prod-in-container) goes through. Kept as an alias so internal call sites can keep using
+# `launch_granian` (the ledger-serialization neighbours read that name).
+run = launch_granian
