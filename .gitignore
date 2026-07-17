@@ -10,6 +10,7 @@ webapp/frontend/e2e/last-run.log
 webapp/frontend/e2e/.auth.json
 .env
 app.config.toml
+app.config.toml.bak*
 
 docs/plans/
 .cc_jail_gate_output.log
