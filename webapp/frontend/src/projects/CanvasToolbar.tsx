@@ -98,7 +98,8 @@ export const CanvasToolbar: Component<Props> = (props) => (
         }}
       </For>
       <Show when={props.brushSize && props.setBrushSize && props.maxBrushSize
-        && (props.tool() === 'brush' || props.tool() === 'eraser') && props.tools.includes(props.tool())}>
+        && (props.tool() === 'brush' || props.tool() === 'eraser' || props.tool() === 'polyline')
+        && props.tools.includes(props.tool())}>
         <label class={styles.sizeLabel}>
           {'Size'}
           <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
