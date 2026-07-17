@@ -20,6 +20,9 @@ export interface CanvasPersistenceOpts {
    * through. Sharing it across commit/editStroke/eraseStroke/relabel/polylineSession/
    * history is what dissolves the polyline persist-vs-undo race — see canvasSocket.ts. */
   socket: CanvasSocket;
+  /** Migrate the current selection onto a new annotation id (a vertex edit recreates the
+   *  selected mask under a new id — see editStroke). Optional; callers without selection skip it. */
+  setSelectedId?: (id: string) => void;
 }
 
 /**
@@ -144,15 +147,23 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
 
   // Stroke-vertex edit — routed over the socket. Same body shape the PATCH endpoint uses,
   // just carried as an op frame. History push happens inside applyEdit.
-  const editStroke = async (strokeId: string, tool: string, points: number[][], strokeWidth: number) => {
+  const editStroke = async (strokeId: string, tool: string, points: number[][],
+                            strokeWidth: number): Promise<CanvasAnnotation[]> => {
     const pid = o.getProjectId();
-    if (!pid) return;
+    if (!pid) return [];
     const body = buildEditBody(strokeId, tool, points, strokeWidth);
-    await o.socket.enqueue(async (send) => {
+    return (await o.socket.enqueue<CanvasAnnotation[]>(async (send) => {
       const ack = await send<EditStrokeResult>('edit', body);
-      if (!ack.ok) { alert(ack.message); return; }
+      if (!ack.ok) { alert(ack.message); return []; }
       applyEdit(ack.result, strokeId, body);
-    });
+      // The edit deletes the selected annotation and mints a NEW id for the recreated mask;
+      // migrate the selection onto it (editStroke is only ever called on the selected mask) so the
+      // highlight + vertex handles follow the moved stroke instead of sticking on the dead id.
+      const created = ack.result.created;
+      const target = created.find((a) => a.strokes?.some((s) => s.id === strokeId)) ?? created[0];
+      if (target) o.setSelectedId?.(target.id);
+      return created;
+    })) ?? [];
   };
 
   // Polyline per-click session — same socket, same body builders + delta appliers.
