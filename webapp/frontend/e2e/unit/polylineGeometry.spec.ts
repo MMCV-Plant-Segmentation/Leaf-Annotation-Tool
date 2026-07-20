@@ -57,4 +57,29 @@ test.describe('polylineOutline', () => {
     const { polylineOutline } = await import('../../src/projects/canvasPolylineGeometry');
     expect(polylineOutline([], 20)).toEqual([]);
   });
+
+  test('t62: per-point sizes make a VARIABLE-width outline (radius from each vertex)', async () => {
+    // Christian (2026-07-19): a polyline vertex carries its own size ([x,y,size]); the outline
+    // tapers between vertices so the width tweens along the path. The trailing `size` param is a
+    // fallback for legacy 2-tuple points only — a 3-tuple's own size wins.
+    const { polylineOutline } = await import('../../src/projects/canvasPolylineGeometry');
+    // size 20 (r≈10) at the start → size 60 (r≈30) at the end. Fallback size 20 must NOT override.
+    const poly = polylineOutline([[0, 0, 20], [100, 0, 60]], 20);
+    // Near the START the half-width is ~10.
+    expect(inside(poly, 0, 8)).toBe(true);
+    expect(inside(poly, 0, 20)).toBe(false);
+    // Near the END the half-width is ~30 — this is what a constant-radius (r=10) outline gets wrong.
+    expect(inside(poly, 100, 25)).toBe(true);
+    expect(inside(poly, 100, 40)).toBe(false);
+    // The outline is wider at the big-size end than the small-size end.
+    const yAt = (x: number) => Math.max(...poly.filter((p) => Math.abs(p[0] - x) < 2).map((p) => p[1]));
+    expect(yAt(100)).toBeGreaterThan(yAt(0) + 8);
+  });
+
+  test('t62: a legacy 2-tuple point falls back to the size param (backward compatible)', async () => {
+    const { polylineOutline } = await import('../../src/projects/canvasPolylineGeometry');
+    const poly = polylineOutline([[0, 0], [100, 0]], 20);   // no per-point size → r=10 everywhere
+    expect(inside(poly, 50, 8)).toBe(true);
+    expect(inside(poly, 50, 20)).toBe(false);
+  });
 });
