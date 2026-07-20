@@ -32,6 +32,11 @@ from . import taxonomy
 
 projects_bp = Blueprint('projects', __name__)
 
+# Sentinel default for `_annotation_out(raw_taxonomy=...)`: distinguishes "caller has no
+# taxonomy handy" (fall back to the frozen label_snapshot, pre-t64 behaviour) from
+# "caller passed an explicit None/'' taxonomy value" (still resolved, yields no match).
+_UNSET = object()
+
 IMAGE_EXTS = {'.tif', '.tiff', '.png', '.jpg', '.jpeg'}
 
 # Max simultaneous browser uploads (matches FE UPLOAD_CONCURRENCY).
@@ -459,7 +464,50 @@ def update_project(project_id: str):
                 tax_body = body['taxonomy']
             else:
                 tax_body = body['classes']
-            classes_json = taxonomy.dump_taxonomy(taxonomy.coerce_taxonomy(tax_body))
+            existing_row = _project(con, project_id)
+            existing_raw = existing_row.get('classes_json') if existing_row else None
+            # t64 C3: a saved compound's `selections` are IMMUTABLE — coerce_taxonomy
+            # re-applies the STORED selections for any incoming compound id that already
+            # existed (name/colour changes ARE honoured); only a brand-new id may set
+            # selections.
+            new_v2 = taxonomy.coerce_taxonomy(tax_body, existing=existing_raw)
+            # t64 C4/C5/C6: a save that DROPS a previously-saved compound id must not
+            # silently orphan lesions that reference it (`annotation.compound_id`).
+            # Unreferenced -> deletes freely. Referenced + no `reassignCompounds` entry
+            # -> reject (4xx naming the blocked id), nothing persisted. Referenced +
+            # entry (mapping to a compound id still present after this save) -> repoint
+            # those annotations' compound_id to the target, then persist without the old.
+            existing_ids = {c['id'] for c in taxonomy.normalise_taxonomy(existing_raw)['compounds']}
+            new_ids = {c['id'] for c in new_v2['compounds']}
+            reassign = body.get('reassignCompounds') or {}
+            repoint: dict[str, str] = {}
+            for removed_id in existing_ids - new_ids:
+                referenced = con.execute(
+                    '''SELECT 1 FROM annotation
+                       WHERE project_id = ? AND compound_id = ? AND deleted_at IS NULL
+                       LIMIT 1''',
+                    (project_id, removed_id),
+                ).fetchone()
+                if not referenced:
+                    continue
+                target = reassign.get(removed_id)
+                if not target or target not in new_ids:
+                    # `blockedCompoundId` is a structured echo of the same id named in
+                    # `error` — the FE reassignment picker (LabelEditor.tsx) keys off it
+                    # rather than parsing the human-readable message.
+                    return jsonify({
+                        'error': f'compound {removed_id} is referenced by existing '
+                                 f'annotations; reassignCompounds must map it to another '
+                                 f'compound before it can be deleted',
+                        'blockedCompoundId': removed_id,
+                    }), 409
+                repoint[removed_id] = target
+            for old_id, new_id in repoint.items():
+                con.execute(
+                    'UPDATE annotation SET compound_id = ? WHERE project_id = ? AND compound_id = ?',
+                    (new_id, project_id, old_id),
+                )
+            classes_json = taxonomy.dump_taxonomy(new_v2)
             sets.append('classes_json = ?'); vals.append(classes_json)
         if 'tiling_confirmed' in body:
             sets.append('tiling_confirmed = ?'); vals.append(1 if body['tiling_confirmed'] else 0)
@@ -1223,8 +1271,10 @@ def get_batch(batch_id: str):
                 'tiles': payload['tiles'], 'annotations': [],
             }
             if annotator:
-                entry['annotations'] = _visible_annotations(con, image_id, annotator,
-                                                            [t['tileId'] for t in payload['tiles']])
+                entry['annotations'] = _visible_annotations(
+                    con, image_id, annotator,
+                    [t['tileId'] for t in payload['tiles']],
+                    proj['classes_json'] if proj else None)
             images.append(entry)
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
@@ -1263,7 +1313,8 @@ def enter_merge(batch_id: str):
         _db.close_db(con)
 
 
-def _pooled_annotations(con, image_id: str, active_tile_ids: list[str]) -> list:
+def _pooled_annotations(con, image_id: str, active_tile_ids: list[str],
+                        raw_taxonomy: Any = _UNSET) -> list:
     """Every LIVE annotation from EVERY annotator on this image that intersects an
     active tile — the merge-mode pooled read. Unlike _visible_annotations, this is
     cross-annotator BY DESIGN (that's the whole point of merge mode); blindness (all
@@ -1280,7 +1331,7 @@ def _pooled_annotations(con, image_id: str, active_tile_ids: list[str]) -> list:
               AND atl.tile_id IN ({qmarks})''',
         (image_id, *active_tile_ids),
     ).fetchall()
-    return [_annotation_out(r) for r in rows]
+    return [_annotation_out(r, raw_taxonomy=raw_taxonomy) for r in rows]
 
 
 @projects_bp.get('/api/batches/<batch_id>/merge-annotations')
@@ -1296,6 +1347,8 @@ def batch_merge_annotations(batch_id: str):
         err = _member_or_403(con, batch['project_id'])
         if err:
             return err
+        proj_row = _project(con, batch['project_id'])
+        raw_taxonomy = proj_row.get('classes_json') if proj_row else None
         rows = con.execute(
             '''SELECT t.id tile_id, t.project_image_id FROM batch_tile bt
                JOIN tile t ON t.id = bt.tile_id
@@ -1306,7 +1359,7 @@ def batch_merge_annotations(batch_id: str):
             tiles_by_image.setdefault(r['project_image_id'], []).append(r['tile_id'])
         out = []
         for image_id, tile_ids in tiles_by_image.items():
-            out.extend(_pooled_annotations(con, image_id, tile_ids))
+            out.extend(_pooled_annotations(con, image_id, tile_ids, raw_taxonomy))
         return jsonify({'annotations': out})
     finally:
         _db.close_db(con)
@@ -1855,7 +1908,8 @@ def unsubmit_merge(batch_id: str):
         _db.close_db(con)
 
 
-def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str]) -> list:
+def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str],
+                         raw_taxonomy: Any = _UNSET) -> list:
     """This annotator's non-deleted annotations on this image that intersect an active tile.
 
     Implements the within-your-own-work visibility rule; cross-annotator blindness is by
@@ -1871,7 +1925,7 @@ def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: li
               AND atl.tile_id IN ({qmarks})''',
         (image_id, annotator, *active_tile_ids),
     ).fetchall()
-    return [_annotation_out(r, con) for r in rows]
+    return [_annotation_out(r, con, raw_taxonomy=raw_taxonomy) for r in rows]
 
 
 def _member_strokes_out(con, annotation_id: str) -> list:
@@ -1887,16 +1941,17 @@ def _member_strokes_out(con, annotation_id: str) -> list:
              'strokeWidth': s['stroke_width']} for s in rows]
 
 
-def _annotation_out(row: dict, con=None) -> dict:
+def _annotation_out(row: dict, con=None, raw_taxonomy: Any = _UNSET) -> dict:
     """Shape an `annotation` (mask) row for JSON. kind='stroke' masks render from the
     stored fused `rings` (geometry_json); other kinds render from their own `points`
     (never fused, so points_json is always the exact shape that was drawn).
 
-    Taxonomy v2: a lesion carries a denormalised `labelSnapshot` ({name,color,
-    selections}) captured at assign time, plus a `labelColor` convenience so the FE
-    can paint a lesion in its compound's colour WITHOUT re-resolving the taxonomy
-    (a later preset edit/delete never orphans the colour). Legacy rows with no
-    snapshot fall back to label text only (labelColor None -> caller's default).
+    t64: `label`/`labelColor`/`labelSnapshot` resolve LIVE by `compound_id` from
+    `raw_taxonomy` (the project's CURRENT `classes_json`, passed by the caller) — so a
+    rename/recolour of a compound flows through to every lesion that references it.
+    Falls back to the frozen `label_snapshot` column (and bare `label` text) only when
+    `compound_id` is null/unresolvable (legacy data, or `raw_taxonomy` wasn't supplied
+    by a caller that doesn't have it handy — same lenient behaviour as before t64).
 
     When `con` is supplied, a stroke mask also carries its `strokes` (member vertices)
     so the FE can offer vertex editing (a11y #40 v1b) — omitted otherwise (small extra
@@ -1904,12 +1959,20 @@ def _annotation_out(row: dict, con=None) -> dict:
     is_mask = row['kind'] == 'stroke'
     rings = json.loads(row['geometry_json']) if (is_mask and row['geometry_json']) else []
     points = [] if is_mask else (json.loads(row['points_json']) if row['points_json'] else [])
-    snap_raw = row.get('label_snapshot') if isinstance(row, dict) else None
-    snapshot = json.loads(snap_raw) if snap_raw else None
-    label_color = snapshot.get('color') if snapshot else None
+    compound_id = row.get('compound_id') if isinstance(row, dict) else None
+    live = None
+    if compound_id and raw_taxonomy is not _UNSET:
+        live = taxonomy.resolve_compound_snapshot(raw_taxonomy, compound_id)
+    if live is not None:
+        snapshot, label, label_color = live, live['name'], live['color']
+    else:
+        snap_raw = row.get('label_snapshot') if isinstance(row, dict) else None
+        snapshot = json.loads(snap_raw) if snap_raw else None
+        label = row['label']
+        label_color = snapshot.get('color') if snapshot else None
     out = {
         'id': row['id'], 'kind': row['kind'], 'passNo': row['pass_no'],
-        'points': points, 'rings': rings, 'label': row['label'],
+        'points': points, 'rings': rings, 'label': label,
         'labelColor': label_color, 'labelSnapshot': snapshot,
         'viewport': json.loads(row['viewport_json']) if row['viewport_json'] else None,
         'annotator': row['annotator'], 'imageId': row['project_image_id'],
@@ -1998,13 +2061,15 @@ def do_create_annotation(con, project_id: str, body: dict, *,
     pass_no = body.get('passNo')
     viewport_json = json.dumps(body['viewport']) if body.get('viewport') else None
     hsv_json = json.dumps(body['hsvHist']) if body.get('hsvHist') else None
-    # Taxonomy v2: snapshot the compound (name/color/selections) this lesion is
-    # painted with, denormalised at assign time so a later preset edit/delete
-    # never orphans the lesion's meaning. None when the label matches no compound
-    # (lenient backend / legacy free-text) - the lesion keeps its bare label text.
+    # t64: resolve the incoming label NAME to its matching compound's STABLE id and
+    # store that (`compound_id`) — display then resolves {name,color,selections} LIVE
+    # from the CURRENT taxonomy (see _annotation_out), so a later rename/recolour flows
+    # through to every lesion painted with that compound. `label_snapshot` is still
+    # written as a fallback (used only when compound_id is null/unresolvable).
     proj_row = _project(con, project_id)
-    snapshot = taxonomy.snapshot_from_label(
-        proj_row.get('classes_json') if proj_row else None, label)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    compound_id = taxonomy.id_from_label(classes_json, label)
+    snapshot = taxonomy.snapshot_from_label(classes_json, label)
     snapshot_json = json.dumps(snapshot) if snapshot else None
     now = _now()
     sid = _uid()
@@ -2057,10 +2122,10 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         con.execute(
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                  label_snapshot, points_json, geometry_json, viewport_json,
+                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
                   hsv_hist_json, created_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
-            (aid, project_id, image_id, annotator, pass_no, label, snapshot_json,
+               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+            (aid, project_id, image_id, annotator, pass_no, label, snapshot_json, compound_id,
              json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
         )
         _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now, tool=tool)
@@ -2091,7 +2156,9 @@ def do_create_annotation(con, project_id: str, body: dict, *,
             )
         tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
         con.commit()
-        out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(), con)
+        out = _annotation_out(
+            con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(),
+            con, raw_taxonomy=classes_json)
         out.update({'tileIds': tile_ids, 'tileStates': tile_states,
                    'consumedAnnotationIds': consumed_ids, 'createdStrokeId': sid,
                    'consumedGroups': consumed_groups})
@@ -2105,10 +2172,10 @@ def do_create_annotation(con, project_id: str, body: dict, *,
     con.execute(
         '''INSERT INTO annotation
              (id, project_id, project_image_id, annotator, kind, pass_no, label,
-              label_snapshot, points_json, geometry_json, viewport_json,
+              label_snapshot, compound_id, points_json, geometry_json, viewport_json,
               hsv_hist_json, created_at, updated_at, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
-        (aid, project_id, image_id, annotator, kind, pass_no, label, snapshot_json,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
+        (aid, project_id, image_id, annotator, kind, pass_no, label, snapshot_json, compound_id,
          json.dumps(points), viewport_json, hsv_json, now, now),
     )
     _insert_stroke(con, sid, aid, kind, points, None, None, now)
@@ -2119,7 +2186,9 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         )
     tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
     con.commit()
-    out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone())
+    out = _annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(),
+        raw_taxonomy=classes_json)
     out.update({'tileIds': tile_ids, 'tileStates': tile_states,
                'consumedAnnotationIds': [], 'createdStrokeId': sid, 'consumedGroups': []})
     return out, 201
@@ -2301,11 +2370,11 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         con.execute(
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                  label_snapshot, points_json, geometry_json, viewport_json,
+                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
                   hsv_hist_json, created_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
             (aid, project_id, image_id, annotator, ann['pass_no'], label,
-             ann['label_snapshot'], json.dumps(rings), ann['viewport_json'],
+             ann['label_snapshot'], ann.get('compound_id'), json.dumps(rings), ann['viewport_json'],
              ann['hsv_hist_json'], now, now))
         member_ids = comp['member_ids']
         qm = ','.join('?' * len(member_ids))
@@ -2326,8 +2395,11 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
     # reset this stroke to `before`, drop the `created` masks, repoint `deletedGroups`
     # strokes back and un-delete those exact annotations. `created` carries the live
     # masks (with member strokes) for the FE to splice in immediately.
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
     created = [_annotation_out(
-        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(), con)
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
         for cid in created_ids]
     return {'ok': True, 'strokeId': stroke_id, 'before': before,
             'deletedAnnotationIds': old_ids, 'deletedGroups': deleted_groups,
@@ -2420,6 +2492,8 @@ def do_reverse_stroke_edit(con, project_id: str, stroke_id: str, body: dict, *,
     for cid in created_ids:
         con.execute('DELETE FROM annotation WHERE id = ?', (cid,))
     # 4) rebuild resurrected masks' tiles from their stored geometry + dirty every tile.
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
     dirtied: dict[str, dict] = {}
     annotator = None
     resurrected = []
@@ -2435,7 +2509,7 @@ def do_reverse_stroke_edit(con, project_id: str, stroke_id: str, body: dict, *,
                 (oid, tid))
         for d in _mark_tiles_dirty(con, tile_ids, annotator):
             dirtied[d['tileId']] = d
-        resurrected.append(_annotation_out(r, con))
+        resurrected.append(_annotation_out(r, con, raw_taxonomy=classes_json))
     if annotator and created_tiles:
         for d in _mark_tiles_dirty(con, created_tiles, annotator):
             dirtied[d['tileId']] = d
@@ -2625,12 +2699,14 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
             return err
         label = body.get('label')
         proj_row = _project(con, row['project_id'])
-        snap = taxonomy.snapshot_from_label(
-            proj_row.get('classes_json') if proj_row else None, label)
+        classes_json = proj_row.get('classes_json') if proj_row else None
+        compound_id = taxonomy.id_from_label(classes_json, label)
+        snap = taxonomy.snapshot_from_label(classes_json, label)
         snapshot_json = json.dumps(snap) if snap else None
         con.execute(
-            'UPDATE annotation SET label = ?, label_snapshot = ?, updated_at = ? WHERE id = ?',
-            (label, snapshot_json, _now(), annotation_id),
+            'UPDATE annotation SET label = ?, label_snapshot = ?, compound_id = ?, '
+            'updated_at = ? WHERE id = ?',
+            (label, snapshot_json, compound_id, _now(), annotation_id),
         )
         tile_ids = [r['tile_id'] for r in con.execute(
             'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
@@ -2638,7 +2714,8 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
         _mark_tiles_dirty(con, tile_ids, row['annotator'])
         con.commit()
         out = _annotation_out(con.execute(
-            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
+            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(),
+            con, raw_taxonomy=classes_json)
         out['tileIds'] = tile_ids
         return out, 200
     err = (_member_or_403_direct(con, row['project_id'], username, user_id)
@@ -2652,18 +2729,21 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
     label = body.get('label', row['label'])
     # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
     # selections stay in sync with the newly-assigned compound (Phase 1 has no
-    # relabel UI, but the PATCH endpoint stays correct for any caller).
+    # relabel UI, but the PATCH endpoint stays correct for any caller). t64: also
+    # re-resolve compound_id so LIVE display (_annotation_out) follows the relabel.
+    proj_row = _project(con, row['project_id'])
+    classes_json = proj_row.get('classes_json') if proj_row else None
     snapshot_json = row.get('label_snapshot')
+    compound_id = row.get('compound_id')
     if body.get('label') is not None:
-        proj_row = _project(con, row['project_id'])
-        snap = taxonomy.snapshot_from_label(
-            proj_row.get('classes_json') if proj_row else None, label)
+        compound_id = taxonomy.id_from_label(classes_json, label)
+        snap = taxonomy.snapshot_from_label(classes_json, label)
         snapshot_json = json.dumps(snap) if snap else None
     points_json = json.dumps(points)
     con.execute(
         'UPDATE annotation SET points_json = ?, label = ?, label_snapshot = ?, '
-        'updated_at = ? WHERE id = ?',
-        (points_json, label, snapshot_json, _now(), annotation_id),
+        'compound_id = ?, updated_at = ? WHERE id = ?',
+        (points_json, label, snapshot_json, compound_id, _now(), annotation_id),
     )
     con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
                (points_json, annotation_id))
@@ -2678,7 +2758,8 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
     _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
     con.commit()
     out = _annotation_out(con.execute(
-        'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(), con)
+        'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(),
+        con, raw_taxonomy=classes_json)
     out['tileIds'] = new_tiles
     return out, 200
 
@@ -2935,6 +3016,8 @@ def do_reverse_annotation_merge(con, project_id: str, body: dict, *,
                (_now(), *consumed_ids))
     con.execute('DELETE FROM annotation WHERE id = ?', (annotation_id,))  # cascades annotation_tile
 
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
     dirtied: dict[str, dict] = {}
     resurrected = []
     for cid in consumed_ids:
@@ -2949,7 +3032,7 @@ def do_reverse_annotation_merge(con, project_id: str, body: dict, *,
             )
         for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
             dirtied[d['tileId']] = d
-        resurrected.append(_annotation_out(r, con))
+        resurrected.append(_annotation_out(r, con, raw_taxonomy=classes_json))
     for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
         dirtied[d['tileId']] = d
     con.commit()
