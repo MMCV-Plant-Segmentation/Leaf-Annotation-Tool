@@ -127,4 +127,39 @@ test.describe('polyline per-click persistence', () => {
     // No `commit` — the create path goes THROUGH polylineStep now, not the direct commit.
     expect(committed).toHaveLength(0);
   });
+
+  test('t62: scrolling between clicks records the brush size PER vertex ([x,y,size])', async () => {
+    // Christian (2026-07-19): for a POLYLINE, scrolling while drawing changes the size applied
+    // to the NEXT click, and each vertex carries its own size ([x,y,size]) so the stroke width
+    // tweens along the path. (Brush ignores mid-stroke scroll — that's a separate concern.)
+    const { createCanvasInteraction } = await import('../../src/projects/canvasInteraction');
+    let bs = 10;                                   // mutable brush size (scroll drives it)
+    let _draft: number[][] = [];
+    const stepped: number[][][] = [];
+    const cx = createCanvasInteraction({
+      getSvg: () => fakeSvg(), vb: () => ({ x: 0, y: 0, w: 800, h: 600 }), setVb: () => {},
+      tool: () => 'polyline', brushSize: () => bs, setBrushSize: (s: number) => { bs = s; },
+      maxBrushSize: () => 1000, draft: () => _draft,
+      setDraft: (d: number[][] | ((p: number[][]) => number[][])) => {
+        _draft = typeof d === 'function' ? d(_draft) : d;
+      },
+      commit: () => {}, polylineStep: (pts: number[][]) => stepped.push(pts),
+    } as never);
+    const click = (x: number, y: number) => {
+      cx.onPointerDown(ptrEvent(x, y, 1) as unknown as PointerEvent);
+      cx.onPointerUp(ptrEvent(x, y, 1) as unknown as PointerEvent);
+    };
+    click(400, 300);                               // vertex 1 at size 10
+    cx.onWheel({ deltaY: -1, preventDefault() {}, shiftKey: false,
+                 ctrlKey: false, metaKey: false } as unknown as WheelEvent);   // scroll → grow size
+    const grown = bs;
+    click(500, 300);                               // vertex 2 at the grown size
+    expect(grown).toBeGreaterThan(10);             // sanity: the scroll actually changed the size
+    // Each recorded vertex carries its own size as the 3rd tuple element.
+    expect(_draft[0][2]).toBe(10);
+    expect(_draft[1][2]).toBe(grown);
+    expect(_draft[0][2]).not.toBe(_draft[1][2]);   // variable width along the path
+    // …and the size rides through the per-click persistence hook too.
+    expect(stepped[1][1][2]).toBe(grown);
+  });
 });

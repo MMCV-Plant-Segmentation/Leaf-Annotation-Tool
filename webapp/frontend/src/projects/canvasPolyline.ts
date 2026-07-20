@@ -33,7 +33,10 @@ export interface PolylineClickOpts {
  * treated exactly like any other click (the user ends the line with ESC / tool-switch).
  */
 export function polylineClick(ix: number, iy: number, o: PolylineClickOpts): void {
-  const next = [...o.draft(), [ix, iy]];
+  // t62 (Christian, 2026-07-19): each vertex carries its OWN size ([x, iy, size]) so the
+  // stroke width tweens along the path — scroll-between-clicks changes the size applied to
+  // the NEXT click only (matches the brush's finger-lift semantics per vertex).
+  const next = [...o.draft(), [ix, iy, o.brushSize()]];
   o.setDraft(next);
   o.polylineStep(next, o.brushSize());
 }
