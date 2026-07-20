@@ -41,10 +41,15 @@ export interface PolylineSessionCtx {
   buildCreatePayload: (points: number[][], strokeWidth: number) => unknown;
   /** Build the edit-op payload for a subsequent click of the SAME stroke. */
   buildEditPayload:   (strokeId: string, points: number[][], strokeWidth: number) => unknown;
+  /** Build the `final: true` finish-op payload (t59) — no new points, just the marker. */
+  buildFinishPayload: (strokeId: string) => unknown;
   /** Splice the create-op ack into the view + push the appropriate history entry. */
   applyCreate: (result: CreateAnnotationResult, body: unknown) => void;
   /** Splice the edit-op ack into the view + push the appropriate history entry. */
   applyEdit:   (result: EditStrokeResult, strokeId: string, body: unknown) => void;
+  /** t59: a finish discarded the stroke (no-tile, brush-parity) — remove it from the
+   * view and surface the same notice a no-tile brush stroke's create-time reject shows. */
+  applyDiscard: (result: EditStrokeResult, strokeId: string) => void;
 }
 
 export function createPolylineSession(ctx: PolylineSessionCtx) {
@@ -85,5 +90,23 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
    * switch away from polyline (CanvasScreen). Idempotent; safe to call repeatedly. */
   const reset = (): void => { setStrokeId(null); };
 
-  return { step, reset, strokeId };
+  /** t59: FINISH the in-progress polyline (two-stage ESC, stage 1) — runs the deferred
+   * whole-stroke tile check server-side and either keeps the mask as-is or discards it
+   * exactly like a no-tile brush stroke. Ends the session either way (a subsequent click
+   * on the same tool starts a fresh line), so the caller can stay on the polyline tool. */
+  const finish = (): void => {
+    const sid = strokeId();
+    if (!sid) return;
+    void ctx.socket.enqueue(async (send) => {
+      const body = ctx.buildFinishPayload(sid);
+      const r: SocketAck<EditStrokeResult> = await send<EditStrokeResult>('edit', body);
+      setStrokeId(null);
+      if (!r.ok) { alert(r.message); return; }
+      if (r.result.discarded) ctx.applyDiscard(r.result, sid);
+      // Kept: nothing to splice — the mask is already reflected in the view from the
+      // per-click create/edit acks that built it.
+    });
+  };
+
+  return { step, reset, finish, strokeId };
 }

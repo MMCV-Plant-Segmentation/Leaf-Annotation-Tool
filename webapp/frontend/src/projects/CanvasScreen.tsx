@@ -78,7 +78,7 @@ const CanvasScreen: Component = () => {
   // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
-  const { commit, relabel, editStroke, polylineStep, resetPolyline } = createCanvasPersistence({
+  const { commit, relabel, editStroke, polylineStep, resetPolyline, finishPolyline } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
@@ -100,7 +100,7 @@ const CanvasScreen: Component = () => {
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
   createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
-  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage });
+  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage, draft, finishPolyline });
 
   // a11y #40 v1b: the selected annotation, only when it's a stroke mask with member
   // strokes to draw handles for; and image-space units per screen pixel (drives

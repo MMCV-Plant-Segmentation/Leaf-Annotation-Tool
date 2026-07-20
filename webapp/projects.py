@@ -2023,8 +2023,17 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         outline = body.get('outline')
         tool = 'polyline' if body.get('tool') == 'polyline' else 'brush'
         footprint = _footprint(points, stroke_width, outline)
-        if footprint is None or footprint.is_empty \
-           or not _tiles_for_geom(con, image_id, footprint):
+        # t59 (Christian, 2026-07-19): defer the tile check for POLYLINE ONLY. A polyline
+        # is drawn click-by-click and an intermediate click may legitimately land off-tile
+        # mid-stroke (e.g. panning while drawing) — rejecting it here 422s and resets the
+        # per-click session, spuriously minting a second annotation on the next click. The
+        # whole-stroke tile check instead runs on FINISH (see do_edit_stroke's `final`
+        # branch below) — keep or discard, exactly like a no-tile brush stroke. Brush is
+        # UNCHANGED: an off-tile brush stroke still 422s at create (that instant reject IS
+        # the brush's discard path).
+        if footprint is None or footprint.is_empty:
+            return {'error': 'annotation must intersect at least one tile'}, 422
+        if tool != 'polyline' and not _tiles_for_geom(con, image_id, footprint):
             return {'error': 'annotation must intersect at least one tile'}, 422
 
         fuse_rows = con.execute(
@@ -2146,6 +2155,43 @@ def create_annotation(project_id: str):
         _db.close_db(con)
 
 
+def _do_finish_stroke(con, srow, ann, points):
+    """t59 FINISH: whole-stroke keep/discard, brush-parity. `points` is the stroke's
+    current (already-persisted, possibly off-tile mid-draw) vertex list. Keep leaves the
+    annotation untouched (same id, same rows) — discard soft-deletes it and drops its
+    tile links, exactly like a no-tile brush stroke create-time reject."""
+    stroke_id = srow['id']
+    aid = ann['id']
+    image_id = ann['project_image_id']
+    stroke_width = srow['stroke_width']
+    outline = json.loads(srow['outline_json']) if srow['outline_json'] else None
+    before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+              'strokeWidth': srow['stroke_width'], 'outline': outline}
+    footprint = _footprint(points, stroke_width, outline)
+    tile_ids = _tiles_for_geom(con, image_id, footprint) \
+        if footprint is not None and not footprint.is_empty else []
+    if tile_ids:
+        return {'ok': True, 'strokeId': stroke_id, 'discarded': False, 'before': before,
+                'deletedAnnotationIds': [], 'deletedGroups': [], 'created': [],
+                'createdGroups': [], 'tileStates': []}, 200
+    # No tile touched at all — discard, same as a no-tile brush stroke: soft-delete the
+    # annotation and drop its (empty, since off-tile) annotation_tile links.
+    now = _now()
+    tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (aid,)).fetchall()]
+    con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, aid))
+    con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (aid,))
+    tile_states = _mark_tiles_dirty(con, tiles, ann['annotator'])
+    con.commit()
+    return {'ok': True, 'strokeId': stroke_id, 'discarded': True,
+            # Same message text a no-tile BRUSH stroke's create-time 422 carries — the FE
+            # reuses it verbatim for the discard notice (no new i18n string invented).
+            'message': 'annotation must intersect at least one tile',
+            'before': before, 'deletedAnnotationIds': [aid],
+            'deletedGroups': [{'annotationId': aid, 'strokeIds': [stroke_id]}],
+            'created': [], 'createdGroups': [], 'tileStates': tile_states}, 200
+
+
 def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
                     username: str | None, user_id, is_admin: bool):
     """Core of edit_stroke — returns (response_dict, status). See the route shim's docstring
@@ -2163,9 +2209,24 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
            or _owner_or_403_direct(ann['annotator'], username))
     if err:
         return err
-    points = body.get('points') or []
-    if not points:
+    final = bool(body.get('final'))
+    points = body.get('points')
+    if points is None:
+        # `final: true` may arrive WITHOUT points (t59) — reuse the stored stroke points.
+        if not final:
+            return {'error': 'points required'}, 400
+        points = json.loads(srow['points_json']) if srow['points_json'] else []
+    elif not points:
         return {'error': 'points required'}, 400
+
+    if final:
+        # t59: FINISH — recompute this stroke's footprint and apply the SAME tile check
+        # the brush uses at create (keep if it touches >=1 tile, discard exactly like a
+        # no-tile brush stroke otherwise). This is deliberately NOT the full recompute/
+        # remint pipeline below (which always mints a fresh annotation id per component,
+        # even a no-op) — finish only decides keep-vs-discard on the WHOLE stroke, never
+        # per-point, and never touches the annotation id when kept.
+        return _do_finish_stroke(con, srow, ann, points)
 
     image_id = ann['project_image_id']
     annotator = ann['annotator']
