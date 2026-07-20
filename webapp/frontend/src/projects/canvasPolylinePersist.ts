@@ -51,6 +51,18 @@ export interface PolylineSessionCtx {
   /** t59: a finish discarded the stroke (no-tile, brush-parity) — remove it from the
    * view and surface the same notice a no-tile brush stroke's create-time reject shows. */
   applyDiscard: (result: EditStrokeResult, strokeId: string) => void;
+  /** t77 fix: after each ack, sync the draft's per-vertex refs to the stroke's CURRENT
+   * vertex ids, so the next click re-sends the already-placed vertices AS refs — the
+   * id-stable reconciliation (backend P4). Without this, every per-click edit re-mints
+   * all vertices, their ids churn, and a self-snap can never land on a stable id. */
+  setDraftRefs: (refs: (string | null)[]) => void;
+}
+
+/** The stroke's ordered vertex ids from a create/edit ack, or [] — becomes the next
+ * click's refs so placed vertices are preserved (not re-minted). */
+function ackVertexIds(strokes: { id: string; vertexIds?: string[] }[] | undefined,
+                      sid: string): (string | null)[] {
+  return strokes?.find((s) => s.id === sid)?.vertexIds ?? [];
 }
 
 export function createPolylineSession(ctx: PolylineSessionCtx) {
@@ -73,6 +85,8 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
           return;
         }
         ctx.applyEdit(r.result, sid, body);
+        // Preserve the placed vertices' ids on the next click (id-stable reconcile).
+        ctx.setDraftRefs(ackVertexIds(r.result.created?.flatMap((a) => a.strokes ?? []), sid));
       } else {
         const body = ctx.buildCreatePayload(points, strokeWidth, refs);
         const r: SocketAck<CreateAnnotationResult> = await send<CreateAnnotationResult>('create', body);
@@ -83,6 +97,7 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
         }
         setStrokeId(r.result.createdStrokeId);
         ctx.applyCreate(r.result, body);
+        ctx.setDraftRefs(ackVertexIds(r.result.strokes, r.result.createdStrokeId));
       }
     });
   };
