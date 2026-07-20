@@ -409,6 +409,48 @@ def snapshot_from_label(raw_taxonomy: Any, label: str | None) -> dict | None:
     return compound_snapshot(match, v2['groups'])
 
 
+def id_from_label(raw_taxonomy: Any, label: str | None) -> str | None:
+    """Resolve a paint `label` (a compound NAME) against the project's taxonomy to the
+    matching compound's stable `id`, or None when the name matches no compound.
+
+    Sibling of `snapshot_from_label` — t64 (annotations reference a compound by id):
+    `do_create_annotation` stores this id on the annotation (`compound_id`) so display
+    can resolve {name,color,selections} LIVE from the CURRENT taxonomy instead of a
+    frozen snapshot (rename/recolour then flows through to every lesion painted with
+    that compound).
+    """
+    if not label:
+        return None
+    v2 = normalise_taxonomy(raw_taxonomy)
+    match = next((c for c in v2['compounds'] if c['name'] == label), None)
+    return match['id'] if match else None
+
+
+def compounds_by_id(raw_taxonomy: Any) -> dict[str, dict]:
+    """The CURRENT taxonomy's compounds keyed by id — the live-resolution lookup table
+    for `{name,color,selections}` by `compound_id` (t64). Uses the full (not just
+    paint-valid) compound list so a compound that's since become invalid (e.g. a
+    required group's member deleted) still resolves a NAME/COLOR for lesions that
+    reference it (only the paint palette hides invalid compounds, not display)."""
+    v2 = normalise_taxonomy(raw_taxonomy)
+    return {c['id']: c for c in v2['compounds']}
+
+
+def resolve_compound_snapshot(raw_taxonomy: Any, compound_id: str | None) -> dict | None:
+    """LIVE display resolution for a lesion's `compound_id` (t64, C2): `{name, color,
+    selections}` from the CURRENT taxonomy, or None when `compound_id` is null or no
+    longer resolves (the deleted-with-no-reassignment case never reaches display —
+    `update_project` blocks it — so a miss here means legacy/pre-migration data;
+    callers fall back to the frozen `label_snapshot`)."""
+    if not compound_id:
+        return None
+    v2 = normalise_taxonomy(raw_taxonomy)
+    match = next((c for c in v2['compounds'] if c['id'] == compound_id), None)
+    if not match:
+        return None
+    return compound_snapshot(match, v2['groups'])
+
+
 def dump_taxonomy(taxonomy: Any) -> str:
     """Serialise a taxonomy value for storage in `classes_json`.
 
@@ -433,7 +475,7 @@ def dump_taxonomy(taxonomy: Any) -> str:
     return json.dumps(_seed_unknown())
 
 
-def coerce_taxonomy(payload: Any) -> dict:
+def coerce_taxonomy(payload: Any, existing: Any = None) -> dict:
     """Normalise an incoming taxonomy body value for STORAGE (the editor payload).
 
     The editor sends the canonical v2 object (`{groups, compounds}`). Coerce defensively
@@ -442,7 +484,35 @@ def coerce_taxonomy(payload: Any) -> dict:
     `'[]'` by `dump_taxonomy` and re-seeds 'unknown' on the next READ — mirroring the
     legacy `coerce_classes` contract that a write may record "no labels" while reads stay
     non-empty.
+
+    `existing` (t64, C3): the project's CURRENT stored taxonomy value (raw, pre-coerce),
+    when supplied. A compound whose id is ALREADY present there keeps its STORED
+    `selections` — an incoming change to an existing id's selections is silently NOT
+    applied (name/colour ARE). A compound composition is immutable once saved; changing
+    it means minting a new compound id. New ids (not in `existing`) may set any
+    selections.
+
+    The lock applies only to a genuine v2 (`{groups, compounds}`) payload — the EDITOR's
+    shape, where group/member ids are the caller's own stable ids. A legacy flat `classes`
+    LIST re-upgrades through `_upgrade_legacy` on every write, which (by design) mints a
+    FRESH default-group id each time; locking a compound's selections to a stored group id
+    that no longer exists in the freshly-minted group would falsely invalidate it. Nothing
+    is lost: a flat-list body has exactly one group/one member per compound, so there is no
+    meaningful "composition" for immutability to protect.
     """
+    v2 = _coerce_taxonomy_raw(payload)
+    if existing is not None and isinstance(payload, dict):
+        existing_by_id = {c['id']: c for c in normalise_taxonomy(existing)['compounds']}
+        for c in v2['compounds']:
+            locked = existing_by_id.get(c['id'])
+            if locked is not None:
+                c['selections'] = dict(locked.get('selections') or {})
+    return v2
+
+
+def _coerce_taxonomy_raw(payload: Any) -> dict:
+    """The shape-coercion half of `coerce_taxonomy`, split out so immutability
+    enforcement (which needs the `existing` taxonomy) wraps it rather than duplicates it."""
     if isinstance(payload, list):
         flat = _normalise_flat(payload)
         if not flat:

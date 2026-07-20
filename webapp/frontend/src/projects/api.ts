@@ -96,7 +96,13 @@ export const projectsApi = {
   get: (id: string) => jfetch<ProjectDetail>(`/api/projects/${id}`),
   create: (body: { name: string }) =>
     jfetch<ProjectSummary>('/api/projects', jbody('POST', body)),
-  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: Label[]; groups: Group[]; compounds: Compound[]; tiling_confirmed: boolean }>) =>
+  update: (id: string, body: Partial<{
+    name: string; black_threshold: number; classes: Label[]; groups: Group[];
+    compounds: Compound[]; tiling_confirmed: boolean;
+    /** t64: old compound id -> new compound id, for a save that drops a REFERENCED
+     * compound (see LabelEditor.tsx's reassignment picker). */
+    reassignCompounds: Record<string, string>;
+  }>) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', body)),
   updateTileSize: (id: string, tileSizePx: number) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', { tile_size_px: tileSizePx })),
