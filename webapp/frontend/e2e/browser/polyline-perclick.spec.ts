@@ -144,7 +144,13 @@ test('polyline persists + fuses per click; Ctrl+Z peels one click; ESC leaves cl
   await undoStep();
   expect(await maskCount(p)).toBe(1);
 
-  // ESC: switches to select + drops the rubber-band; the persisted mask stays.
+  // t59 two-stage ESC: a rubber band is still up (vertices placed), so the FIRST ESC FINISHES
+  // the polyline and STAYS on the polyline tool (the persisted mask stays); only a SECOND ESC —
+  // rubber band now cleared by the finish — switches to select. (Supersedes the old single-stage
+  // "ESC → select".)
+  await p.keyboard.press('Escape');
+  await expect(p.getByTestId('tool-polyline')).toHaveAttribute('aria-pressed', 'true');
+  expect(await maskCount(p)).toBe(1);
   await p.keyboard.press('Escape');
   await expect(p.getByTestId('tool-select')).toHaveAttribute('aria-pressed', 'true');
   expect(await maskCount(p)).toBe(1);
