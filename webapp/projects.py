@@ -2347,6 +2347,87 @@ def _do_finish_stroke(con, srow, ann, points):
             'created': [], 'createdGroups': [], 'tileStates': tile_states}, 200
 
 
+def _recompute_fused_scope(con, project_id: str, image_id: str, annotator: str, label,
+                            now: str) -> dict:
+    """Recompute connected components over ALL live strokes in a (image, annotator, label)
+    scope from their CURRENT `points_json`, soft-deleting the affected annotation(s) and
+    minting one fresh annotation per resulting component. This is the recompute half of
+    `do_edit_stroke` (t59), extracted so `do_move_vertex` (t50 phase 3a) can re-fuse a
+    scope after a shared-vertex move without duplicating the fusion/tile-membership logic.
+
+    Never mutates a mask in place — same invariant as do_edit_stroke. Returns
+    {'deletedAnnotationIds', 'deletedGroups', 'createdIds', 'createdGroups', 'dirtyTiles'};
+    the caller is responsible for `_mark_tiles_dirty`, building the JSON `created` payload,
+    and `con.commit()`.
+    """
+    srows = con.execute(
+        '''SELECT s.* FROM stroke s JOIN annotation a ON a.id = s.annotation_id
+           WHERE a.project_image_id = ? AND a.annotator = ? AND a.label IS ?
+             AND a.kind = 'stroke' AND a.deleted_at IS NULL''',
+        (image_id, annotator, label)).fetchall()
+    if not srows:
+        return {'deletedAnnotationIds': [], 'deletedGroups': [], 'createdIds': [],
+                'createdGroups': [], 'dirtyTiles': []}
+    parsed = [{'id': s['id'],
+               'points': json.loads(s['points_json']) if s['points_json'] else [],
+               'stroke_width': s['stroke_width'],
+               'outline': json.loads(s['outline_json']) if s['outline_json'] else None}
+              for s in srows]
+    components = _stroke_components(parsed)
+
+    old_ids = list({s['annotation_id'] for s in srows})
+    # Snapshot metadata (pass_no/label_snapshot/compound_id/viewport/hsv) from any one of
+    # the scope's live annotations BEFORE soft-deleting — they share (annotator, image,
+    # label) so this metadata is consistent across the scope.
+    qmarks0 = ','.join('?' * len(old_ids))
+    ref_ann = con.execute(
+        f'SELECT * FROM annotation WHERE id IN ({qmarks0}) LIMIT 1', old_ids).fetchone()
+    deleted_groups = [{'annotationId': oid,
+                       'strokeIds': [s['id'] for s in srows if s['annotation_id'] == oid]}
+                      for oid in old_ids]
+    con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks0})',
+               (now, *old_ids))
+    con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks0})', old_ids)
+
+    dirty_tiles: list[str] = []
+    created_groups: list[dict] = []
+    created_ids: list[str] = []
+    for comp in components:
+        geom = comp['geometry']
+        if geom is None or geom.is_empty:
+            continue
+        geom = _exterior_only(geom)  # fill loop holes — a lesion is a solid blob
+        rings = _poly_rings(geom)
+        if not rings:
+            continue
+        aid = _uid()
+        con.execute(
+            '''INSERT INTO annotation
+                 (id, project_id, project_image_id, annotator, kind, pass_no, label,
+                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
+                  hsv_hist_json, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+            (aid, project_id, image_id, annotator, ref_ann['pass_no'], label,
+             ref_ann['label_snapshot'], ref_ann.get('compound_id'), json.dumps(rings),
+             ref_ann['viewport_json'], ref_ann['hsv_hist_json'], now, now))
+        member_ids = comp['member_ids']
+        qm = ','.join('?' * len(member_ids))
+        con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
+                   (aid, *member_ids))
+        tile_ids = _tiles_for_geom(con, image_id, geom)
+        for tid in tile_ids:
+            con.execute(
+                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                (aid, tid))
+        dirty_tiles.extend(tile_ids)
+        created_ids.append(aid)
+        created_groups.append({'annotationId': aid, 'strokeIds': member_ids})
+
+    return {'deletedAnnotationIds': old_ids, 'deletedGroups': deleted_groups,
+            'createdIds': created_ids, 'createdGroups': created_groups,
+            'dirtyTiles': dirty_tiles}
+
+
 def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
                     username: str | None, user_id, is_admin: bool):
     """Core of edit_stroke — returns (response_dict, status). See the route shim's docstring
@@ -2415,69 +2496,14 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
     # reconcile rather than re-mint — see `_write_stroke_vertices`.
     _write_stroke_vertices(con, stroke_id, points, body.get('vertexRefs'))
 
-    # 2) gather ALL live strokes for this (annotator, image, label) — the full merge scope.
-    srows = con.execute(
-        '''SELECT s.* FROM stroke s JOIN annotation a ON a.id = s.annotation_id
-           WHERE a.project_image_id = ? AND a.annotator = ? AND a.label IS ?
-             AND a.kind = 'stroke' AND a.deleted_at IS NULL''',
-        (image_id, annotator, label)).fetchall()
-    parsed = [{'id': s['id'],
-               'points': json.loads(s['points_json']) if s['points_json'] else [],
-               'stroke_width': s['stroke_width'],
-               'outline': json.loads(s['outline_json']) if s['outline_json'] else None}
-              for s in srows]
-
-    # 3) recompute connected components (fusion) over the whole set.
-    components = _stroke_components(parsed)
-
-    # 4) soft-delete every affected mask (never mutate in place) + drop its tile links.
-    # Capture each retired mask's stroke group BEFORE repointing so undo can repoint back
-    # and resurrect the exact rows (mirrors create's consumedGroups / reverse_merge).
-    old_ids = list({s['annotation_id'] for s in srows})
-    deleted_groups = [{'annotationId': oid,
-                       'strokeIds': [s['id'] for s in srows if s['annotation_id'] == oid]}
-                      for oid in old_ids]
-    if old_ids:
-        qmarks = ','.join('?' * len(old_ids))
-        con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
-                   (now, *old_ids))
-        con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks})', old_ids)
-
-    # 5) mint one fresh annotation per component; repoint its member strokes; relink tiles.
-    # Label metadata carries over from the edited stroke's former annotation.
-    dirty_tiles: list[str] = []
-    created_groups: list[dict] = []
-    created_ids: list[str] = []
-    for comp in components:
-        geom = comp['geometry']
-        if geom is None or geom.is_empty:
-            continue
-        geom = _exterior_only(geom)  # fill loop holes — a lesion is a solid blob
-        rings = _poly_rings(geom)
-        if not rings:
-            continue
-        aid = _uid()
-        con.execute(
-            '''INSERT INTO annotation
-                 (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
-                  hsv_hist_json, created_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
-            (aid, project_id, image_id, annotator, ann['pass_no'], label,
-             ann['label_snapshot'], ann.get('compound_id'), json.dumps(rings), ann['viewport_json'],
-             ann['hsv_hist_json'], now, now))
-        member_ids = comp['member_ids']
-        qm = ','.join('?' * len(member_ids))
-        con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
-                   (aid, *member_ids))
-        tile_ids = _tiles_for_geom(con, image_id, geom)
-        for tid in tile_ids:
-            con.execute(
-                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                (aid, tid))
-        dirty_tiles.extend(tile_ids)
-        created_ids.append(aid)
-        created_groups.append({'annotationId': aid, 'strokeIds': member_ids})
+    # 2-5) recompute the whole (annotator, image, label) scope's fusion — shared with
+    # do_move_vertex (t50 phase 3a) via _recompute_fused_scope.
+    scope = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+    old_ids = scope['deletedAnnotationIds']
+    deleted_groups = scope['deletedGroups']
+    created_ids = scope['createdIds']
+    created_groups = scope['createdGroups']
+    dirty_tiles = scope['dirtyTiles']
 
     tile_states = _mark_tiles_dirty(con, list(set(dirty_tiles)), annotator)
     con.commit()
@@ -2522,6 +2548,109 @@ def edit_stroke(project_id: str, stroke_id: str):
     try:
         result, status = do_edit_stroke(
             con, project_id, stroke_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def do_move_vertex(con, project_id: str, vertex_id: str, body: dict, *,
+                    username: str | None, user_id, is_admin: bool):
+    """Core of move_vertex (t50 phase 3a) — moves a vertex's canonical position and
+    re-fuses EVERY annotation whose stroke references it. A snap-shared vertex moves
+    every sharer transitively (move one → move all, even across different labels); a
+    vertex referenced by only one stroke moves just that mask.
+
+    Does NOT rewrite `stroke_vertex` refs and does NOT re-mint the vertex — its id and
+    every stroke's reference to it are untouched, only its (x, y) changes. Reuses
+    `_recompute_fused_scope` (the recompute half of `do_edit_stroke`) once per distinct
+    (image, annotator, label) scope touched by the move — different sharers may carry
+    different labels, so each scope re-fuses independently.
+    """
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    vrow = con.execute('SELECT * FROM vertex WHERE id = ?', (vertex_id,)).fetchone()
+    if not vrow:
+        return {'error': 'not found'}, 404
+    try:
+        x = float(body.get('x'))
+        y = float(body.get('y'))
+    except (TypeError, ValueError):
+        return {'error': 'x and y required'}, 400
+    now = _now()
+
+    # 1) update the vertex's canonical position — the single source of truth every
+    # referencing stroke reads through to.
+    con.execute('UPDATE vertex SET x = ?, y = ? WHERE id = ?', (x, y, vertex_id))
+
+    # 2) every stroke referencing this vertex needs its `points_json` synced to the new
+    # position — `_recompute_fused_scope` (like do_edit_stroke) fuses from `points_json`,
+    # not a live vertex-table join. `stroke_vertex` rows themselves are untouched.
+    stroke_ids = [r['stroke_id'] for r in con.execute(
+        'SELECT DISTINCT stroke_id FROM stroke_vertex WHERE vertex_id = ?',
+        (vertex_id,)).fetchall()]
+    scopes: set[tuple] = set()
+    for sid in stroke_ids:
+        pts = _read_stroke_vertices(con, sid)
+        con.execute('UPDATE stroke SET points_json = ? WHERE id = ?',
+                   (json.dumps(pts), sid))
+        srow = con.execute(
+            'SELECT annotation_id FROM stroke WHERE id = ?', (sid,)).fetchone()
+        if not srow:
+            continue
+        ann = con.execute(
+            'SELECT * FROM annotation WHERE id = ?', (srow['annotation_id'],)).fetchone()
+        if ann and not ann['deleted_at'] and ann['kind'] == 'stroke':
+            scopes.add((ann['project_image_id'], ann['annotator'], ann['label']))
+
+    # 3) re-fuse every affected (image, annotator, label) scope independently.
+    deleted_ids: list[str] = []
+    deleted_groups: list[dict] = []
+    created_ids: list[str] = []
+    created_groups: list[dict] = []
+    dirty_by_annotator: dict[str, list[str]] = {}
+    for image_id, annotator, label in scopes:
+        res = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+        deleted_ids.extend(res['deletedAnnotationIds'])
+        deleted_groups.extend(res['deletedGroups'])
+        created_ids.extend(res['createdIds'])
+        created_groups.extend(res['createdGroups'])
+        dirty_by_annotator.setdefault(annotator, []).extend(res['dirtyTiles'])
+
+    tile_states: list[dict] = []
+    for annotator, tiles in dirty_by_annotator.items():
+        tile_states.extend(_mark_tiles_dirty(con, list(set(tiles)), annotator))
+
+    con.commit()
+
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    created = [_annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+        for cid in created_ids]
+    return {'ok': True, 'vertexId': vertex_id, 'x': x, 'y': y,
+            'deletedAnnotationIds': deleted_ids, 'deletedGroups': deleted_groups,
+            'annotations': created, 'createdGroups': created_groups,
+            'tileStates': tile_states}, 200
+
+
+@projects_bp.patch('/api/projects/<project_id>/vertices/<vertex_id>')
+@login_required
+def move_vertex(project_id: str, vertex_id: str):
+    """Move a shared vertex's canonical position — the payoff of the snap-lock (t50 phase
+    3a): moving a vertex shared by several strokes moves every mask that references it,
+    transitively, even across different labels/annotations. Thin shim around
+    do_move_vertex — see its docstring for the full contract.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_move_vertex(
+            con, project_id, vertex_id, body,
             username=session.get('username') or '',
             user_id=session.get('user_id'),
             is_admin=session.get('username') == 'admin')
