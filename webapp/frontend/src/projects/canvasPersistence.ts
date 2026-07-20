@@ -7,6 +7,7 @@ import type { ViewBox } from './canvasShapes';
 import type { createCanvasHistory } from './canvasHistory';
 import type { CanvasSocket } from './canvasSocket';
 import { createPolylineSession } from './canvasPolylinePersist';
+import { createMoveSharedVertex } from './canvasVertexMovePersist';
 
 export interface CanvasPersistenceOpts {
   image: Accessor<CanvasImage | undefined>;
@@ -16,12 +17,10 @@ export interface CanvasPersistenceOpts {
   vb: Accessor<ViewBox>;
   updateImg: (fn: (im: CanvasImage) => CanvasImage) => void;
   history: ReturnType<typeof createCanvasHistory>;
-  /** Phase 1+2 (feat/annotation-ws): the ONE ordered channel every mutation op flows
-   * through. Sharing it across commit/editStroke/eraseStroke/relabel/polylineSession/
-   * history is what dissolves the polyline persist-vs-undo race — see canvasSocket.ts. */
+  /** The ONE ordered channel every mutation op flows through — see canvasSocket.ts. */
   socket: CanvasSocket;
-  /** Migrate the current selection onto a new annotation id (a vertex edit recreates the
-   *  selected mask under a new id — see editStroke). Optional; callers without selection skip it. */
+  /** Migrate selection onto a new annotation id (editStroke recreates the mask under a
+   *  new id). Optional; callers without selection skip it. */
   setSelectedId?: (id: string) => void;
 }
 
@@ -44,7 +43,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // Kept as pure funcs so both the socket path (commit/editStroke/polylineSession) and
   // any redo re-issue use IDENTICAL wire bodies (server contract unchanged).
   const buildCreateBody = (kind: string, points: number[][], passNo?: number,
-                            strokeWidth?: number, tool?: string) => {
+                            strokeWidth?: number, tool?: string, vertexRefs?: (string | null)[]) => {
     const im = o.image();
     const outline = (kind === 'stroke' && strokeWidth != null)
       ? (tool === 'polyline'
@@ -57,13 +56,15 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
       outline,
       tool: kind === 'stroke' ? tool : undefined,
+      vertexRefs,
     };
   };
-  const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number) => {
+  const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number,
+                          vertexRefs?: (string | null)[]) => {
     const outline = tool === 'polyline'
       ? polylineOutline(points, strokeWidth)
       : strokeOutline(points, strokeWidth);
-    return { strokeId, points, strokeWidth, outline };
+    return { strokeId, points, strokeWidth, outline, vertexRefs };
   };
 
   // ── Delta appliers (splice into view + push history) ───────────────────────────────
@@ -178,17 +179,20 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // Polyline per-click session — same socket, same body builders + delta appliers.
   const polySession = createPolylineSession({
     socket: o.socket,
-    buildCreatePayload: (points, strokeWidth) =>
-      buildCreateBody('stroke', points, 1, strokeWidth, 'polyline'),
-    buildEditPayload:   (strokeId, points, strokeWidth) =>
-      buildEditBody(strokeId, 'polyline', points, strokeWidth),
+    buildCreatePayload: (points, strokeWidth, refs) =>
+      buildCreateBody('stroke', points, 1, strokeWidth, 'polyline', refs),
+    buildEditPayload:   (strokeId, points, strokeWidth, refs) =>
+      buildEditBody(strokeId, 'polyline', points, strokeWidth, refs),
     buildFinishPayload: (strokeId) => ({ strokeId, final: true }),
     applyCreate,
     applyEdit,
     applyDiscard,
   });
 
-  return { commit, relabel, editStroke,
+  // t50 phase 3b: a SHARED vertex drag routes here — see canvasVertexMovePersist.ts.
+  const moveSharedVertex = createMoveSharedVertex({ socket: o.socket, updateImg: o.updateImg, history: o.history });
+
+  return { commit, relabel, editStroke, moveSharedVertex,
     polylineStep: polySession.step, resetPolyline: polySession.reset,
     finishPolyline: polySession.finish };
 }

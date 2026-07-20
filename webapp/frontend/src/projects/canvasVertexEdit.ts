@@ -17,6 +17,10 @@ export type EditableStroke = {
   tool: string;
   points: number[][];
   strokeWidth: number;
+  /** Vertex-snapping (t50): canonical vertex id per point, when the stroke carries one
+   *  (index-aligned with `points`). Used by `sharedVertexId` to detect a SHARED (snapped)
+   *  vertex — one referenced by >= 2 strokes across the loaded annotations. */
+  vertexIds?: string[];
 };
 
 /** Identifies which vertex a grab lands on. */
@@ -73,4 +77,34 @@ export function moveVertex(
 /** Convenience: the editable strokes from a selected annotation, or []. */
 export function annStrokes(ann: CanvasAnnotation | undefined): EditableStroke[] {
   return ann?.strokes ?? [];
+}
+
+/** Minimal shape `sharedVertexId` needs — every loaded annotation's member strokes. */
+type VertexScanAnnotation = { strokes?: { id: string; vertexIds?: string[] }[] };
+
+/**
+ * t50 phase 3b: the vertex id at (strokeId, index) IFF it's SHARED — referenced by >= 2
+ * strokes across ALL `annotations` (counting every occurrence of that id over every
+ * annotation's `strokes[].vertexIds`). Returns null for an unshared/unknown vertex, an
+ * unknown stroke, or an out-of-range index — drives whether a handle drag routes to the
+ * move op (shared) or the per-stroke edit (unshared).
+ */
+export function sharedVertexId(
+  annotations: VertexScanAnnotation[], strokeId: string, index: number,
+): string | null {
+  let target: string | undefined;
+  for (const ann of annotations) {
+    for (const s of ann.strokes ?? []) {
+      if (s.id === strokeId) { target = s.vertexIds?.[index]; break; }
+    }
+    if (target !== undefined) break;
+  }
+  if (!target) return null;
+  let count = 0;
+  for (const ann of annotations) {
+    for (const s of ann.strokes ?? []) {
+      count += (s.vertexIds ?? []).filter((v) => v === target).length;
+    }
+  }
+  return count >= 2 ? target : null;
 }

@@ -14,7 +14,7 @@
  */
 import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
 import type { CanvasAnnotation } from './canvasApi';
-import { annStrokes, handleRadiusImg, moveVertex } from './canvasVertexEdit';
+import { annStrokes, handleRadiusImg, moveVertex, sharedVertexId } from './canvasVertexEdit';
 import { polylineOutline } from './canvasPolylineGeometry';
 import { ringsToPath, strokeOutline } from './canvasShapes';
 import { t } from '../i18n/catalog';
@@ -40,6 +40,12 @@ export type VertexHandlesProps = {
   /** Called on drop with the new points (fresh outline is recomputed inside
    *  canvasPersistence.editStroke; here we only ship the vertices). */
   onCommit: (strokeId: string, tool: string, points: number[][], strokeWidth: number) => void;
+  /** t50 phase 3b: every loaded annotation (not just the selected mask) — needed to
+   *  detect whether the grabbed handle's vertex is SHARED (see canvasVertexEdit.sharedVertexId). */
+  allAnnotations: () => CanvasAnnotation[];
+  /** Called instead of onCommit when the dropped vertex is SHARED — routes to the
+   *  move op so every mark sharing it follows (canvasPersistence.moveSharedVertex). */
+  onMoveSharedVertex: (vertexId: string, before: { x: number; y: number }, after: { x: number; y: number }) => void;
 };
 
 export const VertexHandles: Component<VertexHandlesProps> = (props) => {
@@ -65,6 +71,14 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
     e.stopPropagation();
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     setDrag(null);
+    // t50 phase 3b: a SHARED (snapped) vertex routes to the move op so every mark
+    // sharing it follows the drag; an unshared vertex keeps the per-stroke edit.
+    const vid = sharedVertexId(props.allAnnotations(), d.strokeId, d.index);
+    if (vid) {
+      const [bx, by] = d.points[d.index];
+      props.onMoveSharedVertex(vid, { x: bx, y: by }, { x: d.x, y: d.y });
+      return;
+    }
     const moved = moveVertex(d.points, d.index, d.x, d.y);
     props.onCommit(d.strokeId, d.tool, moved, d.strokeWidth);
   };

@@ -152,6 +152,7 @@ _OP_DISPATCH: dict[str, str] = {
     'create':        'do_create_annotation',
     'edit':          'do_edit_stroke',
     'reverse':       'do_reverse_stroke_edit',
+    'moveVertex':    'do_move_vertex',
     # Phase 2 — the remaining annotation mutations, on the SAME FIFO channel.
     'erase':         'do_erase_stroke',
     'relabel':       'do_update_annotation',
@@ -185,6 +186,13 @@ def _apply_op_sync(op: str, project_id: str | None, payload: dict, *,
             if not annotation_id:
                 return {'error': 'annotationId required'}, 400
             return fn(con, annotation_id, payload,
+                     username=username, user_id=user_id, is_admin=is_admin)
+        # moveVertex: vertexId lives in the payload (WS ops don't use URL params).
+        if op == 'moveVertex':
+            vertex_id = payload.get('vertexId')
+            if not vertex_id:
+                return {'error': 'vertexId required'}, 400
+            return fn(con, project_id, vertex_id, payload,
                      username=username, user_id=user_id, is_admin=is_admin)
         # edit / reverse: strokeId lives in the payload (WS ops don't use URL params).
         stroke_id = payload.get('strokeId')
