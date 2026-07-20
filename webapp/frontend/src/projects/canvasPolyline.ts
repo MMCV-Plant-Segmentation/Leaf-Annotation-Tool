@@ -1,4 +1,5 @@
 import type { Accessor, Setter } from 'solid-js';
+import { resolveSnap, type VertexIndex } from './canvasSnap';
 
 /**
  * Polyline click-brush helpers — a11y feature #40, per-click persistence rebuild
@@ -15,15 +16,28 @@ import type { Accessor, Setter } from 'solid-js';
  * own undo entry: the 1st is a `draw`/`merge` history entry (mutate delete on undo),
  * every subsequent click an `edit` (reverse-stroke-edit peels one vertex on undo).
  *
+ * PHASE 2b (t50, 2026-07-20): a click within `snapRadiusImg` of an existing indexed
+ * vertex snaps onto its CANONICAL position (keeping the click's own brush size) and
+ * carries that vertex's stable id as a per-point ref, threaded to the persistence layer
+ * as `vertexRefs` so the backend shares/locks the vertex. Otherwise the raw point is
+ * placed with a null ref (mint), exactly as before.
+ *
  * Kept in its own module so `canvasInteraction.ts` stays under the 200-line file cap.
  */
 export interface PolylineClickOpts {
   draft: Accessor<number[][]>;
   setDraft: Setter<number[][]>;
+  /** Parallel per-point vertex refs (null = mint, string = snapped-onto existing vertex). */
+  draftRefs: Accessor<(string | null)[]>;
+  setDraftRefs: (v: (string | null)[]) => void;
   brushSize: Accessor<number>;
+  /** The current snap index (every existing vertex on the image) + the image-space
+   * snap radius for this click (half the brush radius, computed by the caller). */
+  snapIndex: Accessor<VertexIndex>;
+  snapRadiusImg: Accessor<number>;
   /** Per-click persistence hook — called with the growing point list on every click.
    * The persistence layer decides create-vs-edit; the interaction just dispatches. */
-  polylineStep: (points: number[][], strokeWidth: number) => void;
+  polylineStep: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
 }
 
 /**
@@ -36,7 +50,36 @@ export function polylineClick(ix: number, iy: number, o: PolylineClickOpts): voi
   // t62 (Christian, 2026-07-19): each vertex carries its OWN size ([x, iy, size]) so the
   // stroke width tweens along the path — scroll-between-clicks changes the size applied to
   // the NEXT click only (matches the brush's finger-lift semantics per vertex).
-  const next = [...o.draft(), [ix, iy, o.brushSize()]];
+  const size = o.brushSize();
+  const hit = resolveSnap(o.snapIndex(), ix, iy, o.snapRadiusImg());
+  const point = hit ? [hit.x, hit.y, size] : [ix, iy, size];
+  const ref = hit ? hit.vertexId : null;
+
+  const next = [...o.draft(), point];
   o.setDraft(next);
-  o.polylineStep(next, o.brushSize());
+  const nextRefs = [...o.draftRefs(), ref];
+  o.setDraftRefs(nextRefs);
+  o.polylineStep(next, size, nextRefs);
+}
+
+const EMPTY_INDEX: VertexIndex = { index: null, xs: [], ys: [], ids: [] };
+
+/** Thin adapter so `canvasInteraction.ts`'s pointer-down handler stays a one-line call
+ * (the file is at the 200-line cap) — accepts the interaction's opts shape directly.
+ * Snap-related fields are optional here (only CanvasScreen's polyline tool wires them;
+ * MergeCanvasScreen has no polyline tool and never reaches this branch, but its opts
+ * type is shared, so this defaults to a no-op/empty-index snap for type compatibility). */
+export function firePolylineClick(ix: number, iy: number, o: {
+  draft: Accessor<number[][]>; setDraft: Setter<number[][]>;
+  draftRefs?: Accessor<(string | null)[]>; setDraftRefs?: (v: (string | null)[]) => void;
+  snapIndex?: Accessor<VertexIndex>; snapRadiusImg?: Accessor<number>;
+  brushSize: Accessor<number>;
+  polylineStep?: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
+}): void {
+  polylineClick(ix, iy, {
+    draft: o.draft, setDraft: o.setDraft, brushSize: o.brushSize,
+    draftRefs: o.draftRefs ?? (() => []), setDraftRefs: o.setDraftRefs ?? (() => {}),
+    snapIndex: o.snapIndex ?? (() => EMPTY_INDEX), snapRadiusImg: o.snapRadiusImg ?? (() => 0),
+    polylineStep: o.polylineStep ?? (() => {}),
+  });
 }

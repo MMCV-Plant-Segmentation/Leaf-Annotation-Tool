@@ -44,7 +44,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // Kept as pure funcs so both the socket path (commit/editStroke/polylineSession) and
   // any redo re-issue use IDENTICAL wire bodies (server contract unchanged).
   const buildCreateBody = (kind: string, points: number[][], passNo?: number,
-                            strokeWidth?: number, tool?: string) => {
+                            strokeWidth?: number, tool?: string, vertexRefs?: (string | null)[]) => {
     const im = o.image();
     const outline = (kind === 'stroke' && strokeWidth != null)
       ? (tool === 'polyline'
@@ -57,13 +57,15 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
       outline,
       tool: kind === 'stroke' ? tool : undefined,
+      vertexRefs,
     };
   };
-  const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number) => {
+  const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number,
+                          vertexRefs?: (string | null)[]) => {
     const outline = tool === 'polyline'
       ? polylineOutline(points, strokeWidth)
       : strokeOutline(points, strokeWidth);
-    return { strokeId, points, strokeWidth, outline };
+    return { strokeId, points, strokeWidth, outline, vertexRefs };
   };
 
   // ── Delta appliers (splice into view + push history) ───────────────────────────────
@@ -178,10 +180,10 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // Polyline per-click session — same socket, same body builders + delta appliers.
   const polySession = createPolylineSession({
     socket: o.socket,
-    buildCreatePayload: (points, strokeWidth) =>
-      buildCreateBody('stroke', points, 1, strokeWidth, 'polyline'),
-    buildEditPayload:   (strokeId, points, strokeWidth) =>
-      buildEditBody(strokeId, 'polyline', points, strokeWidth),
+    buildCreatePayload: (points, strokeWidth, refs) =>
+      buildCreateBody('stroke', points, 1, strokeWidth, 'polyline', refs),
+    buildEditPayload:   (strokeId, points, strokeWidth, refs) =>
+      buildEditBody(strokeId, 'polyline', points, strokeWidth, refs),
     buildFinishPayload: (strokeId) => ({ strokeId, final: true }),
     applyCreate,
     applyEdit,

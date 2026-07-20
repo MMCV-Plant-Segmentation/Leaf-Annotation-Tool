@@ -24,6 +24,7 @@ import { CanvasHints } from './CanvasHints';
 import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
 import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
+import { createPolylineSnapState } from './canvasSnapIndex';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set (unchanged behavior) — see canvasToolRegistry.ts.
@@ -53,6 +54,8 @@ const CanvasScreen: Component = () => {
   const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
+  // t50 phase 2b: draw-time vertex snapping state (see canvasSnapIndex.ts).
+  const { draftRefs, setDraftRefs, snapIndex, snapRadiusImg } = createPolylineSnapState(image, brushSize);
   // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
   // (else it briefly floats over a blank/late image). imgLoaded is driven by decode(),
   // not the SVG <image> onLoad, and is keyed to imageId only — never on pan/zoom — so
@@ -61,7 +64,6 @@ const CanvasScreen: Component = () => {
   const imgLoaded = createImageDecodeGate(imageId);
 
   let svgRef: SVGSVGElement | undefined;
-
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
   createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); setSelId(null); }));
 
@@ -71,10 +73,8 @@ const CanvasScreen: Component = () => {
     const tile = c.images.flatMap((im) => im.tiles)[0];
     setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
   }));
-
   const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
     setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
-
   // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
@@ -88,10 +88,10 @@ const CanvasScreen: Component = () => {
   // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin() is
   // true, so no gesture writes for the admin (API access left intact for future edits).
   const interaction = createCanvasInteraction({
-    getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
+    getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
     brushSize, setBrushSize, maxBrushSize,
     commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
-    polylineStep: (pts, sw) => { if (!isAdmin()) polylineStep(pts, sw); },  // BUGS #15 admin viewer no-op
+    polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
@@ -100,7 +100,7 @@ const CanvasScreen: Component = () => {
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
   createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
-  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setSelId, fitImage, draft, finishPolyline });
+  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setDraftRefs, setSelId, fitImage, draft, finishPolyline });
 
   // a11y #40 v1b: the selected annotation, only when it's a stroke mask with member
   // strokes to draw handles for; and image-space units per screen pixel (drives
@@ -157,7 +157,7 @@ const CanvasScreen: Component = () => {
       </Show>
       <CanvasToolbar
         tools={ANNOTATE_TOOLS}
-        tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
+        tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); setDraftRefs([]); }}
         annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
         selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}

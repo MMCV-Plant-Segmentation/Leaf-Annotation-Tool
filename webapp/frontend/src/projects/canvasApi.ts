@@ -19,8 +19,11 @@ export type CanvasTile = Rect & {
 export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
 
 /** One member stroke of a fused mask (a11y #40 v1b — `tool` picks the outline
- * builder on vertex-edit drop: polyline → polylineOutline, brush → perfect-freehand). */
-export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number };
+ * builder on vertex-edit drop: polyline → polylineOutline, brush → perfect-freehand).
+ * `vertexIds` (t50 phase 2b, parallel to `points`) is the stable per-vertex id the
+ * server assigns — draw-time snapping indexes these to detect a nearby existing
+ * vertex to reference. */
+export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number; vertexIds?: string[] };
 
 /** A persisted annotation (mask). kind='stroke' renders from `rings` (fused, hole-less
  * exterior ring the server stores); other kinds render from their own `points`.
@@ -131,6 +134,9 @@ export const canvasApi = {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
     strokeWidth?: number; outline?: number[][]; tool?: string;
+    /** t50 phase 2b: per-point vertex ref (existing vertex id to share/lock, or
+     * null to mint) — parallel to `points`; draw-time snapping populates this. */
+    vertexRefs?: (string | null)[];
   }) => jfetch<CreateAnnotationResult>(`/api/projects/${projectId}/annotations`, jbody('POST', body)),
   // `label: string | null` (not `?string`) so a relabel-undo/redo of a lesion whose
   // prior label was null still sends the `label` key — JSON.stringify drops `undefined`

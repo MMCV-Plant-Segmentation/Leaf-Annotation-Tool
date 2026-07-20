@@ -11,6 +11,9 @@ export interface CanvasKeyboardOpts {
   tool: Accessor<Tool>;
   setTool: (t: Tool) => void;
   setDraft: (d: number[][]) => void;
+  /** t50 phase 2b: reset alongside `draft` (parallel per-point vertex refs). Optional so
+   * pre-existing callers/tests without snapping wiring keep working unchanged. */
+  setDraftRefs?: (r: (string | null)[]) => void;
   setSelId: (id: string | null) => void;
   fitImage: () => void;
   /** Current polyline rubber-band vertices (t59, two-stage ESC). */
@@ -54,10 +57,10 @@ export function handleCanvasKeyDown(e: KeyboardEvent, o: CanvasKeyboardOpts): vo
     // and STAYS on the tool, ready for a new line. Only an ESC with no rubber band
     // (empty draft) falls through to the old behaviour of switching to select.
     else if (o.tool() === 'polyline') {
-      if (o.draft().length > 0) { o.setDraft([]); o.finishPolyline(); }
-      else { o.setDraft([]); o.setTool('select'); }
+      if (o.draft().length > 0) { o.setDraft([]); o.setDraftRefs?.([]); o.finishPolyline(); }
+      else { o.setDraft([]); o.setDraftRefs?.([]); o.setTool('select'); }
     }
-    else { o.setDraft([]); o.setTool('pan'); }
+    else { o.setDraft([]); o.setDraftRefs?.([]); o.setTool('pan'); }
   }
   if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }
   o.interaction.handleKeyDown(e);

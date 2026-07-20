@@ -1,20 +1,20 @@
 import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
-import { polylineClick } from './canvasPolyline';
+import { firePolylineClick } from './canvasPolyline';
+import type { VertexIndex } from './canvasSnap';
 
 export interface CanvasInteractionOpts {
-  getSvg: () => SVGSVGElement | undefined;
-  vb: Accessor<ViewBox>;
-  setVb: Setter<ViewBox>;
-  tool: Accessor<Tool>;
-  brushSize: Accessor<number>;
-  setBrushSize: (s: number) => void;
-  maxBrushSize: Accessor<number>;
-  draft: Accessor<number[][]>;
-  setDraft: Setter<number[][]>;
+  getSvg: () => SVGSVGElement | undefined; vb: Accessor<ViewBox>; setVb: Setter<ViewBox>; tool: Accessor<Tool>;
+  brushSize: Accessor<number>; setBrushSize: (s: number) => void; maxBrushSize: Accessor<number>;
+  draft: Accessor<number[][]>; setDraft: Setter<number[][]>;
+  // t50 phase 2b: parallel per-point vertex refs for the polyline draft + snap inputs.
+  // Optional — only CanvasScreen's polyline tool wires these (MergeCanvasScreen has no
+  // polyline tool and shares this opts type via createMergeInteraction).
+  draftRefs?: Accessor<(string | null)[]>; setDraftRefs?: (v: (string | null)[]) => void;
+  snapIndex?: Accessor<VertexIndex>; snapRadiusImg?: Accessor<number>;
   commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
   /** Polyline per-click hook: fires with growing point list; persistence picks create/edit. */
-  polylineStep?: (points: number[][], strokeWidth: number) => void;
+  polylineStep?: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
   onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
@@ -120,8 +120,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
     if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
-    if (tl === 'polyline') { polylineClick(ix, iy, { draft: o.draft, setDraft: o.setDraft,
-        brushSize: o.brushSize, polylineStep: o.polylineStep ?? (() => {}) }); return; }  // per-click persist
+    if (tl === 'polyline') { firePolylineClick(ix, iy, o); return; }  // per-click persist (see canvasPolyline.ts)
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
 

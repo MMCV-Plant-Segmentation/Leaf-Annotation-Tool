@@ -43,7 +43,9 @@ export type ReverseStrokeEditResult = {
 
 export const strokeEditApi = {
   editStroke: (projectId: string, strokeId: string,
-    body: { points: number[][]; strokeWidth?: number; outline?: number[][] }) =>
+    body: { points: number[][]; strokeWidth?: number; outline?: number[][];
+      /** t50 phase 2b: per-point vertex ref, parallel to `points` (see canvasApi.ts). */
+      vertexRefs?: (string | null)[] }) =>
     jfetch<EditStrokeResult>(
       `/api/projects/${projectId}/strokes/${strokeId}`, jbody('PATCH', body)),
   reverseStrokeEdit: (projectId: string, strokeId: string,

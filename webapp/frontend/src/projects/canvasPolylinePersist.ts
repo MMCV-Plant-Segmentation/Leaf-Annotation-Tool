@@ -37,10 +37,11 @@ import type { EditStrokeResult } from './canvasStrokeEditApi';
  * so this module never needs to know about `updateImg`/history internals. */
 export interface PolylineSessionCtx {
   socket: CanvasSocket;
-  /** Build the create-op payload for the FIRST click of the session (server body). */
-  buildCreatePayload: (points: number[][], strokeWidth: number) => unknown;
+  /** Build the create-op payload for the FIRST click of the session (server body).
+   * `refs` (t50 phase 2b, parallel to `points`) carries each vertex's snap ref. */
+  buildCreatePayload: (points: number[][], strokeWidth: number, refs: (string | null)[]) => unknown;
   /** Build the edit-op payload for a subsequent click of the SAME stroke. */
-  buildEditPayload:   (strokeId: string, points: number[][], strokeWidth: number) => unknown;
+  buildEditPayload:   (strokeId: string, points: number[][], strokeWidth: number, refs: (string | null)[]) => unknown;
   /** Build the `final: true` finish-op payload (t59) — no new points, just the marker. */
   buildFinishPayload: (strokeId: string) => unknown;
   /** Splice the create-op ack into the view + push the appropriate history entry. */
@@ -58,11 +59,11 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
   /** One per-click step. The decision (create vs. extend) is DEFERRED to inside the
    * socket-queue slot so it reads a strokeId() that the previous click's ack has
    * already settled. See the module docstring for why we no longer keep a local chain. */
-  const step = (points: number[][], strokeWidth: number): void => {
+  const step = (points: number[][], strokeWidth: number, refs: (string | null)[] = []): void => {
     void ctx.socket.enqueue(async (send) => {
       const sid = strokeId();
       if (sid) {
-        const body = ctx.buildEditPayload(sid, points, strokeWidth);
+        const body = ctx.buildEditPayload(sid, points, strokeWidth, refs);
         const r: SocketAck<EditStrokeResult> = await send<EditStrokeResult>('edit', body);
         if (!r.ok) {
           // The extended stroke may have been undone away (404) — reset so the next
@@ -73,7 +74,7 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
         }
         ctx.applyEdit(r.result, sid, body);
       } else {
-        const body = ctx.buildCreatePayload(points, strokeWidth);
+        const body = ctx.buildCreatePayload(points, strokeWidth, refs);
         const r: SocketAck<CreateAnnotationResult> = await send<CreateAnnotationResult>('create', body);
         if (!r.ok) {
           setStrokeId(null);
