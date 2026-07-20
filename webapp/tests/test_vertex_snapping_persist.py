@@ -106,6 +106,18 @@ def stroke_out(annotation_id):
     return a['strokes'][0]
 
 
+def stroke_out_by_sid(sid):
+    """Resolve a stroke's payload by its STABLE stroke id. do_edit_stroke re-mints a fresh
+    annotation id per component on every non-final edit (documented; test_polyline_edit.py works
+    around the same churn), so a post-edit read must track the stroke, not a stale annotation id."""
+    live = j(client.get(f'/api/batches/{batch_id}?annotator=alice'))['images'][0]['annotations']
+    for a in live:
+        for st in a.get('strokes') or []:
+            if st['id'] == sid:
+                return st
+    raise AssertionError(f'stroke {sid} not found under any live annotation')
+
+
 def ref_count(vertex_id):
     con = db.get_db()
     try:
@@ -157,7 +169,7 @@ re = client.patch(f'/api/projects/{pid}/strokes/{sidA}',
                   json={'points': [[cx - 40, cy, 10.0], [cx, cy - 10, 12.0], [cx + 40, cy, 14.0]],
                         'strokeWidth': 12, 'vertexRefs': [vA0, vA1, vA2]})
 assert re.status_code == 200, f'edit should 200, got {re.status_code}: {j(re)}'
-assert stroke_out(aA['id'])['vertexIds'] == [vA0, vA1, vA2], 'ids must be STABLE across an edit that refs them (no re-mint)'
+assert stroke_out_by_sid(sidA)['vertexIds'] == [vA0, vA1, vA2], 'ids must be STABLE across an edit that refs them (no re-mint)'
 assert ref_count(vA0) == 3, f'vA0 still shared by A, B, C after the edit — not re-minted/orphaned, got {ref_count(vA0)}'
 print('P4 OK — id-stable reconciliation (per-click edits never churn ids or break a share)')
 
