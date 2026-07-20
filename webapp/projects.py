@@ -1932,12 +1932,16 @@ def _member_strokes_out(con, annotation_id: str) -> list:
     """Member strokes of a fused mask, shaped for JSON — the per-stroke clicked/mouse
     vertices (a11y #40 v1b vertex editing). A stroke's `points` are the raw input path
     (polyline = clicked vertices; brush = the freehand trail); the FE draws draggable
-    handles from them when the mask is selected and PATCHes /strokes/<id> to reshape."""
+    handles from them when the mask is selected and PATCHes /strokes/<id> to reshape.
+
+    t50 phase 1: `points` is reconstructed from the normalized `vertex`/`stroke_vertex`
+    tables (the source of truth), NOT `stroke.points_json` — see `_read_stroke_vertices`.
+    """
     rows = con.execute(
-        'SELECT id, tool, points_json, stroke_width FROM stroke WHERE annotation_id = ?',
+        'SELECT id, tool, stroke_width FROM stroke WHERE annotation_id = ?',
         (annotation_id,)).fetchall()
     return [{'id': s['id'], 'tool': s['tool'],
-             'points': json.loads(s['points_json']) if s['points_json'] else [],
+             'points': _read_stroke_vertices(con, s['id']),
              'strokeWidth': s['stroke_width']} for s in rows]
 
 
@@ -1999,6 +2003,46 @@ def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
         (sid, annotation_id, kind, json.dumps(points), stroke_width,
          json.dumps(outline) if outline is not None else None, now, tool),
     )
+    _write_stroke_vertices(con, sid, points)
+
+
+def _write_stroke_vertices(con, stroke_id: str, points: list) -> None:
+    """t50 phase 1: write-through — replace `stroke_id`'s ordered vertex list to match
+    `points` (delete + reinsert, the whole-stroke edit granularity this phase supports).
+    Each point mints its OWN fresh `vertex` row — no coordinate dedup, no sharing (a
+    shared/locked vertex is only ever created by a future snap, phase 2). A 2-tuple point
+    ([x, y]) gets `size=NULL` (falls back to the stroke's own `stroke_width` at read
+    time); a 3-tuple ([x, y, size]) carries its own per-point brush diameter (t62).
+    """
+    old_vids = [r['vertex_id'] for r in con.execute(
+        'SELECT vertex_id FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,)).fetchall()]
+    con.execute('DELETE FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,))
+    if old_vids:
+        qm = ','.join('?' * len(old_vids))
+        con.execute(
+            f'DELETE FROM vertex WHERE id IN ({qm}) '
+            'AND id NOT IN (SELECT vertex_id FROM stroke_vertex)', old_vids)
+    for seq, p in enumerate(points or []):
+        vid = _uid()
+        x, y = float(p[0]), float(p[1])
+        size = float(p[2]) if len(p) >= 3 and p[2] is not None else None
+        con.execute('INSERT INTO vertex (id, x, y) VALUES (?, ?, ?)', (vid, x, y))
+        con.execute(
+            'INSERT INTO stroke_vertex (stroke_id, seq, vertex_id, size) VALUES (?, ?, ?, ?)',
+            (stroke_id, seq, vid, size))
+
+
+def _read_stroke_vertices(con, stroke_id: str) -> list:
+    """t50 phase 1: the ordered `[[x,y]]`/`[[x,y,size]]` point list reconstructed from the
+    normalized `vertex`/`stroke_vertex` tables — the source of truth (see
+    `_write_stroke_vertices`). A 3-tuple is emitted when the reference's `size` is
+    non-NULL, a 2-tuple otherwise, so the exact drawn shape round-trips."""
+    rows = con.execute(
+        '''SELECT v.x AS x, v.y AS y, sv.size AS size
+           FROM stroke_vertex sv JOIN vertex v ON v.id = sv.vertex_id
+           WHERE sv.stroke_id = ? ORDER BY sv.seq''', (stroke_id,)).fetchall()
+    return [[r['x'], r['y']] if r['size'] is None else [r['x'], r['y'], r['size']]
+            for r in rows]
 
 
 # ── Session-free permission checks (call sites: the do_* mutators below, which are also
@@ -2324,6 +2368,8 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
         (json.dumps(points), stroke_width,
          json.dumps(outline) if outline is not None else None, stroke_id))
+    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
+    _write_stroke_vertices(con, stroke_id, points)
 
     # 2) gather ALL live strokes for this (annotator, image, label) — the full merge scope.
     srows = con.execute(
@@ -2472,11 +2518,14 @@ def do_reverse_stroke_edit(con, project_id: str, stroke_id: str, body: dict, *,
             created_ids).fetchall()]
 
     # 1) reset the edited stroke to its pre-edit record.
+    before_points = before.get('points') or []
     con.execute(
         'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
-        (json.dumps(before.get('points') or []), before.get('strokeWidth'),
+        (json.dumps(before_points), before.get('strokeWidth'),
          json.dumps(before.get('outline')) if before.get('outline') is not None else None,
          stroke_id))
+    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
+    _write_stroke_vertices(con, stroke_id, before_points)
     # 2) repoint each retired mask's strokes back to it + un-delete those exact rows.
     for g in deleted_groups:
         sids = g.get('strokeIds') or []
@@ -2747,6 +2796,10 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
     )
     con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
                (points_json, annotation_id))
+    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
+    for srow2 in con.execute(
+            'SELECT id FROM stroke WHERE annotation_id = ?', (annotation_id,)).fetchall():
+        _write_stroke_vertices(con, srow2['id'], points)
     # Recompute tile membership and dirty every touched tile (old ∪ new).
     new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
     con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
