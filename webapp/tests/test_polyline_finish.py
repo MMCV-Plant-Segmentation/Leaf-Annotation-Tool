@@ -112,6 +112,18 @@ def stroke_points(sid):
         db.close_db(con)
 
 
+def ann_of_stroke(sid):
+    """The annotation the stroke currently belongs to. A NORMAL (non-final) edit legitimately
+    re-mints the owning annotation id each call (fusion recompute — test_polyline_perclick Q3
+    relies on this), so identity is tracked via the stroke, never the create-time id."""
+    con = db.get_db()
+    try:
+        row = con.execute('SELECT annotation_id FROM stroke WHERE id = ?', (sid,)).fetchone()
+        return row['annotation_id'] if row else None
+    finally:
+        db.close_db(con)
+
+
 # ── F1: an off-tile FIRST click is accepted + persisted (was a 422 that reset the session) ──
 c1 = create([OFF], label='f1', expect=201)
 d1 = jdump(c1)
@@ -124,38 +136,42 @@ print('F1 OK — off-tile first click is accepted + persisted (no mid-draw 422)'
 # ── F2: FINISH of an all-off-tile stroke discards it, like a no-tile brush stroke ───────────
 c2 = create([OFF], label='f2', expect=201)
 d2 = jdump(c2)
-sid2, aid2 = d2['strokes'][0]['id'], d2['id']
+sid2 = d2['strokes'][0]['id']
 # extend with another off-tile vertex, still touching no tile
 r_ext = edit(sid2, points=[OFF, [2100, 2100]])
 assert r_ext.status_code == 200, f'off-tile extend should be accepted, got {r_ext.status_code}: {jdump(r_ext)}'
+cur2 = ann_of_stroke(sid2)                       # the live annotation the stroke belongs to now
+assert cur2 and ann_alive(cur2), 'the stroke has a live annotation before finish'
 r_fin = edit(sid2, final=True)
 assert r_fin.status_code == 200, f'finish should return 200, got {r_fin.status_code}: {jdump(r_fin)}'
 assert jdump(r_fin).get('discarded') is True, f'a no-tile stroke is discarded on finish: {jdump(r_fin)}'
-assert not ann_alive(aid2), 'the discarded annotation is gone (deleted, same as a no-tile brush stroke)'
+assert not ann_alive(cur2), 'the discarded annotation is gone (deleted, same as a no-tile brush stroke)'
 print('F2 OK — finish discards a no-tile stroke (brush-parity), signalling discarded=True')
 
 
 # ── F3: FINISH of an on-tile stroke keeps it ────────────────────────────────────────────────
 c3 = create([[cx, cy]], label='f3', expect=201)
 d3 = jdump(c3)
-sid3, aid3 = d3['strokes'][0]['id'], d3['id']
+sid3 = d3['strokes'][0]['id']
 r_fin3 = edit(sid3, final=True)
 assert r_fin3.status_code == 200, f'finish (on-tile) should be 200, got {r_fin3.status_code}: {jdump(r_fin3)}'
 assert jdump(r_fin3).get('discarded') is not True, f'an on-tile stroke is NOT discarded: {jdump(r_fin3)}'
-assert ann_alive(aid3), 'the on-tile annotation survives finish'
+cur3 = ann_of_stroke(sid3)
+assert cur3 and ann_alive(cur3), 'the on-tile annotation survives finish'
 print('F3 OK — finish keeps an on-tile stroke')
 
 
 # ── F4: WHOLE-STROKE, not per-point — an off-tile vertex on a tile-touching stroke is kept ──
 c4 = create([[cx, cy]], label='f4', expect=201)
 d4 = jdump(c4)
-sid4, aid4 = d4['strokes'][0]['id'], d4['id']
+sid4 = d4['strokes'][0]['id']
 r_ext4 = edit(sid4, points=[[cx, cy], OFF])   # one on-tile vertex, one off-tile vertex
 assert r_ext4.status_code == 200, f'mixed extend accepted, got {r_ext4.status_code}: {jdump(r_ext4)}'
 r_fin4 = edit(sid4, final=True)
 assert r_fin4.status_code == 200, f'finish (mixed) 200, got {r_fin4.status_code}: {jdump(r_fin4)}'
 assert jdump(r_fin4).get('discarded') is not True, 'a tile-touching stroke is kept even with an off-tile vertex'
-assert ann_alive(aid4), 'the mixed stroke survives finish'
+cur4 = ann_of_stroke(sid4)
+assert cur4 and ann_alive(cur4), 'the mixed stroke survives finish (its current annotation is live)'
 assert OFF in stroke_points(sid4), \
     'the off-tile vertex is RETAINED (whole-stroke keep, NOT per-point clipping)'
 print('F4 OK — whole-stroke keep: off-tile vertex retained on a tile-touching stroke')
