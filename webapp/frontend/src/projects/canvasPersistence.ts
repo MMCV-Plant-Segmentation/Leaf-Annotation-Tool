@@ -22,13 +22,13 @@ export interface CanvasPersistenceOpts {
   /** Migrate selection onto a new annotation id (editStroke recreates the mask under a
    *  new id). Optional; callers without selection skip it. */
   setSelectedId?: (id: string) => void;
+  /** t77: sync the polyline draft refs to each ack's vertex ids (id-stable per-click edit). */
+  setDraftRefs?: (refs: (string | null)[]) => void;
 }
 
 /**
- * Server round-trips for the canvas: paint-stroke commit + brush-eraser + stroke-vertex
- * edit + relabel. Split out of CanvasScreen (200-line cap). Phase 2 routes ALL
- * mutations (create/edit/reverse/erase/relabel) over `socket` — the single ordered
- * channel — so every op observes the same FIFO ordering.
+ * Server round-trips for the canvas (commit/edit/reverse/erase/relabel), split out of
+ * CanvasScreen (200-line cap). Phase 2 routes ALL mutations over the one ordered `socket`.
  */
 export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // BUGS #16: a mutation that lands in an already-completed tile re-opens it server-side.
@@ -187,6 +187,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     applyCreate,
     applyEdit,
     applyDiscard,
+    setDraftRefs: o.setDraftRefs ?? (() => {}),
   });
 
   // t50 phase 3b: a SHARED vertex drag routes here — see canvasVertexMovePersist.ts.
