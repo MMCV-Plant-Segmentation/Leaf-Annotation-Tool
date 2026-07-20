@@ -33,7 +33,9 @@ import { onCleanup } from 'solid-js';
 export type CanvasOp =
   | 'create' | 'edit' | 'reverse'
   // Phase 2 (feat/annotation-ws): the remaining mutations, all on the same FIFO channel.
-  | 'erase' | 'relabel' | 'mutate' | 'reverse_merge';
+  | 'erase' | 'relabel' | 'mutate' | 'reverse_merge'
+  // t50 phase 3b: SHARED vertex drag → move op (do_move_vertex re-fuses every sharer).
+  | 'moveVertex';
 
 /** Ack: {ok:true, result} carries the server's delta (same shape the REST endpoint
  * returned). Error: {ok:false, message} carries the server's message (or a synthesized

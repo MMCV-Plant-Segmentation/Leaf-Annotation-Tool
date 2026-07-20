@@ -9,6 +9,7 @@
  */
 import type { CanvasAnnotation, CreateAnnotationResult, TileStateUpdate } from './api';
 import { editUndo, editRedo } from './canvasHistoryEdit';
+import { vertexMoveUndo, vertexMoveRedo } from './canvasHistoryVertexMove';
 import type { SocketSend } from './canvasSocket';
 import type { HistoryAction } from './canvasHistory';
 import { applyDelta, applyRelabel, type UpdateImg } from './canvasHistoryApply';
@@ -43,6 +44,8 @@ export async function dispatchUndo(
     applyRelabel(updateImg, ack.result);
   } else if (action.kind === 'edit') {
     await editUndo(action, (add, rm, ts) => applyDelta(updateImg, add, rm, ts), send);
+  } else if (action.kind === 'vertexMove') {
+    await vertexMoveUndo(action, (add, rm, ts) => applyDelta(updateImg, add, rm, ts), send);
   } else {
     const ids = action.anns.map((a: CanvasAnnotation) => a.id);
     const ack = await send<MutateResult>('mutate', { op: 'restore', ids });
@@ -86,6 +89,8 @@ export async function dispatchRedo(
       (add, rm, ts) => applyDelta(updateImg, add, rm, ts),
       (fresh) => setStack((s) => s.map((a, i) => i === at ? fresh : a)),
       send);
+  } else if (action.kind === 'vertexMove') {
+    await vertexMoveRedo(action, (add, rm, ts) => applyDelta(updateImg, add, rm, ts), send);
   } else {
     const ids = action.anns.map((a: CanvasAnnotation) => a.id);
     const ack = await send<MutateResult>('mutate', { op: 'delete', ids });

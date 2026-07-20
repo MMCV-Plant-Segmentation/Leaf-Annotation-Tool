@@ -1,0 +1,48 @@
+/**
+ * t50 phase 3b: the `moveSharedVertex` op — split out of canvasPersistence.ts so that
+ * file stays under the 200-line cap (mirrors the canvasHistoryEdit.ts / canvasPolylinePersist.ts
+ * split pattern). Sends the `moveVertex` WS op (phase 3a's `do_move_vertex`, which moves a
+ * SHARED vertex and re-fuses every referencing annotation) and applies the result the same
+ * way `applyEdit` does: drop the deleted ids, splice in the re-fused annotations, merge tile
+ * states — then push an undoable `vertexMove` history entry carrying before/after.
+ */
+import type { CanvasAnnotation, TileStateUpdate } from './api';
+import type { CanvasSocket } from './canvasSocket';
+import type { createCanvasHistory } from './canvasHistory';
+import type { UpdateImg } from './canvasHistoryApply';
+import { mergeTileStates } from './canvasShapes';
+
+export type Point = { x: number; y: number };
+
+/** Response shape of the `moveVertex` op (mirrors PATCH .../vertices/<id>). */
+export type MoveVertexResult = {
+  vertexId: string; x: number; y: number;
+  deletedAnnotationIds: string[];
+  annotations: CanvasAnnotation[];
+  tileStates: TileStateUpdate[];
+};
+
+export interface VertexMoveDeps {
+  socket: CanvasSocket;
+  updateImg: UpdateImg;
+  history: ReturnType<typeof createCanvasHistory>;
+}
+
+export function createMoveSharedVertex(o: VertexMoveDeps) {
+  return async (vertexId: string, before: Point, after: Point): Promise<void> => {
+    await o.socket.enqueue(async (send) => {
+      const ack = await send<MoveVertexResult>('moveVertex', { vertexId, x: after.x, y: after.y });
+      if (!ack.ok) { alert(ack.message); return; }
+      const r = ack.result;
+      o.updateImg((im) => ({
+        ...im,
+        annotations: [
+          ...im.annotations.filter((a) => !r.deletedAnnotationIds.includes(a.id)),
+          ...r.annotations,
+        ],
+        tiles: mergeTileStates(im.tiles, r.tileStates),
+      }));
+      o.history.push({ kind: 'vertexMove', vertexId, before, after });
+    });
+  };
+}
