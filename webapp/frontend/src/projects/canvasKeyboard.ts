@@ -13,6 +13,10 @@ export interface CanvasKeyboardOpts {
   setDraft: (d: number[][]) => void;
   setSelId: (id: string | null) => void;
   fitImage: () => void;
+  /** Current polyline rubber-band vertices (t59, two-stage ESC). */
+  draft: Accessor<number[][]>;
+  /** Finish the in-progress polyline: runs the tile check, stays on the tool (t59). */
+  finishPolyline: () => void;
 }
 
 /**
@@ -43,11 +47,16 @@ export function handleCanvasKeyDown(e: KeyboardEvent, o: CanvasKeyboardOpts): vo
   // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
   if (e.key === 'Escape') {
     if (o.tool() === 'select') o.setSelId(null);
-    // Polyline (per-click rebuild, 2026-07-13): ESC just SWITCHES to the select tool.
-    // Every click was already persisted per-click, so there is nothing to commit and
-    // nothing to discard beyond the ephemeral rubber-band. Clear draft so the rubber-
-    // band vanishes; Ctrl+Z peels a single click (see canvasHistory `edit`/`draw`).
-    else if (o.tool() === 'polyline') { o.setDraft([]); o.setTool('select'); }
+    // Polyline (t59, two-stage ESC, 2026-07-19): every click is already persisted
+    // per-click, so ESC never discards clicks — it decides whether to FINISH (run the
+    // deferred tile check) or DESELECT the tool. If a rubber band is up (draft holds
+    // >=1 vertex, i.e. actively drawing) the first ESC finishes the current polyline
+    // and STAYS on the tool, ready for a new line. Only an ESC with no rubber band
+    // (empty draft) falls through to the old behaviour of switching to select.
+    else if (o.tool() === 'polyline') {
+      if (o.draft().length > 0) { o.setDraft([]); o.finishPolyline(); }
+      else { o.setDraft([]); o.setTool('select'); }
+    }
     else { o.setDraft([]); o.setTool('pan'); }
   }
   if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); o.fitImage(); }

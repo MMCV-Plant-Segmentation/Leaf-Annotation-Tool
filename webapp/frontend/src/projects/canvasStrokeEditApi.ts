@@ -26,6 +26,12 @@ export type EditStrokeResult = {
   created: CanvasAnnotation[];
   createdGroups: StrokeEditGroup[];
   tileStates: TileStateUpdate[];
+  /** t59: set on a `final: true` finish call. true = the whole stroke touched no tile and
+   *  was discarded (brush-parity); false/absent = kept as-is. */
+  discarded?: boolean;
+  /** t59: carried alongside `discarded: true` — the SAME message a no-tile brush stroke's
+   *  create-time reject shows (server passthrough, not a new i18n string). */
+  message?: string;
 };
 
 export type ReverseStrokeEditResult = {

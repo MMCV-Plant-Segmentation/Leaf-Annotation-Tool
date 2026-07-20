@@ -166,6 +166,15 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     })) ?? [];
   };
 
+  // t59: a finish discarded the whole stroke (no tile touched) — drop it from the view
+  // + surface the SAME notice a no-tile brush stroke's create-time reject shows (server
+  // passthrough message, no new i18n string).
+  const applyDiscard = (r: EditStrokeResult) => {
+    removeAnnotations(r.deletedAnnotationIds);
+    applyTileStates(r.tileStates ?? []);
+    alert(r.message);
+  };
+
   // Polyline per-click session — same socket, same body builders + delta appliers.
   const polySession = createPolylineSession({
     socket: o.socket,
@@ -173,10 +182,13 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       buildCreateBody('stroke', points, 1, strokeWidth, 'polyline'),
     buildEditPayload:   (strokeId, points, strokeWidth) =>
       buildEditBody(strokeId, 'polyline', points, strokeWidth),
+    buildFinishPayload: (strokeId) => ({ strokeId, final: true }),
     applyCreate,
     applyEdit,
+    applyDiscard,
   });
 
   return { commit, relabel, editStroke,
-    polylineStep: polySession.step, resetPolyline: polySession.reset };
+    polylineStep: polySession.step, resetPolyline: polySession.reset,
+    finishPolyline: polySession.finish };
 }
