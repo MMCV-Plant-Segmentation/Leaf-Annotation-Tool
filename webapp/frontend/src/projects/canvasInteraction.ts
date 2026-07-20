@@ -173,7 +173,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
       // Commit (1-point click ok). kind='erase'=CanvasScreen delete-by-intersection;
       // 'group'=MergeCanvasScreen POST candidate-object (server resolves); 'stroke'=brush create.
-      const pts = o.draft().map(([x, y]) => [Math.round(x), Math.round(y)]);
+      const pts = o.draft();  // keep sub-pixel float precision (t61) — the BE + polyline already store floats
       const kind = ({eraser: 'erase', group: 'group'} as const)[o.tool() as 'eraser' | 'group'] ?? 'stroke';
       o.commit(kind, pts, 1, o.brushSize());
       o.setDraft([]);
