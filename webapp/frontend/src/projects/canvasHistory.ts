@@ -42,6 +42,7 @@ import type { CanvasSocket, SocketSend } from './canvasSocket';
 import type { UpdateImg } from './canvasHistoryApply';
 import { applyDelta } from './canvasHistoryApply';
 import { dispatchUndo, dispatchRedo } from './canvasHistoryDispatch';
+import type { VertexMoveAction } from './canvasHistoryVertexMove';
 
 /** Bodies kept on `merge`/`edit` actions so redo can re-issue the identical request. */
 type CreateAnnotationBody = Parameters<typeof projectsApi.createAnnotation>[1];
@@ -54,7 +55,8 @@ export type HistoryAction =
   | { kind: 'erase'; anns: CanvasAnnotation[] }
   | { kind: 'relabel'; annotationId: string; before: string | null; after: string | null }
   | { kind: 'edit'; strokeId: string; before: StrokeEditBefore; deletedGroups: StrokeEditGroup[];
-      created: CanvasAnnotation[]; redoBody: EditStrokeBody };
+      created: CanvasAnnotation[]; redoBody: EditStrokeBody }
+  | VertexMoveAction;
 
 /** REST-bridge socket used ONLY when createCanvasHistory is called without a real
  * CanvasSocket (i.e. the unit tests in `e2e/unit/canvas*.spec.ts`, which

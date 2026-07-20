@@ -78,7 +78,7 @@ const CanvasScreen: Component = () => {
   // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
-  const { commit, relabel, editStroke, polylineStep, resetPolyline, finishPolyline } = createCanvasPersistence({
+  const { commit, relabel, editStroke, moveSharedVertex, polylineStep, resetPolyline, finishPolyline } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
@@ -180,10 +180,10 @@ const CanvasScreen: Component = () => {
           <SelectionHighlight ann={sel()} />
         }</Show>
         <Show when={imgLoaded() && tool() === 'select' && selectedStrokeAnn()}>{(ann) =>
-          // a11y #40 v1b: vertex-editing handles for the selected stroke mask.
-          <VertexHandles ann={ann()} scale={imgPerScreenPx}
-            toImage={interaction.toImage}
-            onCommit={(sid, tl, pts, sw) => void editStroke(sid, tl, pts, sw)} />
+          <VertexHandles ann={ann()} scale={imgPerScreenPx} toImage={interaction.toImage}
+            onCommit={(sid, tl, pts, sw) => void editStroke(sid, tl, pts, sw)}
+            allAnnotations={() => image()?.annotations ?? []}
+            onMoveSharedVertex={(vid, b, a) => void moveSharedVertex(vid, b, a)} />
         }</Show>
         <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
           hover={interaction.hoverImg()} />
