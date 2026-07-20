@@ -175,3 +175,47 @@ test('#9: a second vertex placed on the first of the SAME polyline snaps onto it
   // The 3rd point should have SNAPPED onto the 1st → they reference the SAME vertex id.
   expect(stroke.vertexIds[2]).toBe(stroke.vertexIds[0]);
 });
+
+/** Largest rendered mask's bounding-box area (SVG props, no pixels) — a proxy for "the path is
+ * visibly drawn". An empty/degenerate mask has ~0 area even though the element exists. */
+async function maxMaskArea(p: Page): Promise<number> {
+  const masks = p.locator('svg').first().locator('[data-testid="annotation-mask"]');
+  const n = await masks.count();
+  let best = 0;
+  for (let i = 0; i < n; i++) {
+    const b = await masks.nth(i).boundingBox();
+    if (b) best = Math.max(best, b.width * b.height);
+  }
+  return best;
+}
+
+test('"can\'t see the path": the committed polyline mask stays visible while drawing + snapping', async ({ page, browser }) => {
+  const { p, canvasUrl, tiles } = await setup(page, browser);
+  const t = tiles.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  const cx = Math.round(t.x + t.w / 2), cy = Math.round(t.y + t.h / 2);
+  await p.goto(canvasUrl);
+  await expect(p.locator('svg').first()).toBeVisible({ timeout: 10000 });
+  await p.getByTestId('tool-polyline').click();
+
+  // Zoom IN (Ctrl+scroll) over the tile — the realistic drawing zoom, untested until now.
+  const [zx, zy] = await toScreen(p, cx, cy);
+  await p.mouse.move(zx, zy);
+  await p.keyboard.down('Control');
+  for (let i = 0; i < 4; i++) await p.mouse.wheel(0, -120);
+  await p.keyboard.up('Control');
+  await p.waitForTimeout(200);
+
+  // Draw polyline A (an elbow). After each click the committed mask must have real area.
+  await p.mouse.click(...await toScreen(p, cx - 25, cy));
+  await expect.poll(() => maskCount(p), { timeout: 10000 }).toBe(1);
+  await p.mouse.click(...await toScreen(p, cx, cy - 12));
+  await p.mouse.click(...await toScreen(p, cx + 25, cy + 6));
+  await expect.poll(() => maxMaskArea(p), { timeout: 8000 }).toBeGreaterThan(100);
+
+  // Now draw polyline B whose FIRST click snaps onto A's first vertex (the snapping condition
+  // Christian was in). The committed path must STILL be visible (this is the #"can't see the path").
+  await p.mouse.click(...await toScreen(p, cx - 25, cy));   // snap onto A's first vertex
+  await p.mouse.click(...await toScreen(p, cx - 25, cy + 30));
+  await p.mouse.move(...await toScreen(p, cx - 10, cy + 45)); // show the rubber band
+  await expect.poll(() => maxMaskArea(p), { timeout: 8000 }).toBeGreaterThan(100);
+});
