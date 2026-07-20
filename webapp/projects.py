@@ -1942,6 +1942,7 @@ def _member_strokes_out(con, annotation_id: str) -> list:
         (annotation_id,)).fetchall()
     return [{'id': s['id'], 'tool': s['tool'],
              'points': _read_stroke_vertices(con, s['id']),
+             'vertexIds': _read_stroke_vertex_ids(con, s['id']),
              'strokeWidth': s['stroke_width']} for s in rows]
 
 
@@ -1989,12 +1990,15 @@ def _annotation_out(row: dict, con=None, raw_taxonomy: Any = _UNSET) -> dict:
 # ── annotations CRUD (the painting data sink) ─────────────────────────────────
 
 def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
-                   stroke_width, outline, now: str, tool: str = 'brush') -> None:
+                   stroke_width, outline, now: str, tool: str = 'brush',
+                   vertex_refs: list | None = None) -> None:
     """INSERT the provenance-only `stroke` row bridged to its owning `annotation`.
 
     `tool` records the input mode that created the stroke (brush | polyline) — brush and
     polyline are two ways of producing the same stroke data (a11y #40). It drives editing
     affordances (a polyline's clicked vertices are editable), never fusion.
+
+    `vertex_refs` (t50 phase 2a) — see `_write_stroke_vertices`.
     """
     con.execute(
         '''INSERT INTO stroke (id, annotation_id, kind, points_json, stroke_width,
@@ -2003,33 +2007,56 @@ def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
         (sid, annotation_id, kind, json.dumps(points), stroke_width,
          json.dumps(outline) if outline is not None else None, now, tool),
     )
-    _write_stroke_vertices(con, sid, points)
+    _write_stroke_vertices(con, sid, points, vertex_refs)
 
 
-def _write_stroke_vertices(con, stroke_id: str, points: list) -> None:
-    """t50 phase 1: write-through — replace `stroke_id`'s ordered vertex list to match
-    `points` (delete + reinsert, the whole-stroke edit granularity this phase supports).
-    Each point mints its OWN fresh `vertex` row — no coordinate dedup, no sharing (a
-    shared/locked vertex is only ever created by a future snap, phase 2). A 2-tuple point
-    ([x, y]) gets `size=NULL` (falls back to the stroke's own `stroke_width` at read
-    time); a 3-tuple ([x, y, size]) carries its own per-point brush diameter (t62).
+def _write_stroke_vertices(con, stroke_id: str, points: list,
+                           vertex_refs: list | None = None) -> None:
+    """t50 phase 1/2a: write-through — replace `stroke_id`'s ordered vertex list to match
+    `points` (delete + reinsert stroke_vertex rows, the whole-stroke edit granularity this
+    phase supports).
+
+    `vertex_refs` (t50 phase 2a, optional, parallel to `points`): per point, either an
+    EXISTING vertex id to REFERENCE (a draw-time snap → the new/edited stroke_vertex row
+    points at that SAME vertex, sharing/locking it with whatever else already references
+    it), or None/absent to MINT a fresh vertex (phase-1 behaviour, back-compatible when
+    `vertex_refs` is omitted entirely). A ref to a vertex id that doesn't actually exist
+    just falls back to minting — never crashes. A referenced vertex's `x,y` is NEVER
+    rewritten here — the FE snapped to its canonical position, which stays authoritative.
+
+    Reconciliation ordering matters: we WRITE the new stroke_vertex rows first (so a
+    reused id keeps its row, e.g. re-sending a stroke's own vertexIds as refs is a
+    no-op-shape re-point) and only THEN garbage-collect vertices this stroke used to
+    reference — a vertex still referenced by another stroke_vertex row (this stroke's new
+    rows, or another stroke's rows — a share) survives; nothing else does.
     """
     old_vids = [r['vertex_id'] for r in con.execute(
         'SELECT vertex_id FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,)).fetchall()]
     con.execute('DELETE FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,))
+    refs = vertex_refs if vertex_refs is not None else []
+    for seq, p in enumerate(points or []):
+        ref = refs[seq] if seq < len(refs) else None
+        x, y = float(p[0]), float(p[1])
+        size = float(p[2]) if len(p) >= 3 and p[2] is not None else None
+        vid = None
+        if ref is not None:
+            exists = con.execute('SELECT 1 FROM vertex WHERE id = ?', (ref,)).fetchone()
+            if exists:
+                vid = ref
+        if vid is None:
+            vid = _uid()
+            con.execute('INSERT INTO vertex (id, x, y) VALUES (?, ?, ?)', (vid, x, y))
+        con.execute(
+            'INSERT INTO stroke_vertex (stroke_id, seq, vertex_id, size) VALUES (?, ?, ?, ?)',
+            (stroke_id, seq, vid, size))
+    # GC AFTER writing the new refs (not before) — a vertex this stroke used to reference
+    # is deleted only if nothing (this stroke's new rows, or another stroke) references it
+    # anymore; a shared vertex survives.
     if old_vids:
         qm = ','.join('?' * len(old_vids))
         con.execute(
             f'DELETE FROM vertex WHERE id IN ({qm}) '
             'AND id NOT IN (SELECT vertex_id FROM stroke_vertex)', old_vids)
-    for seq, p in enumerate(points or []):
-        vid = _uid()
-        x, y = float(p[0]), float(p[1])
-        size = float(p[2]) if len(p) >= 3 and p[2] is not None else None
-        con.execute('INSERT INTO vertex (id, x, y) VALUES (?, ?, ?)', (vid, x, y))
-        con.execute(
-            'INSERT INTO stroke_vertex (stroke_id, seq, vertex_id, size) VALUES (?, ?, ?, ?)',
-            (stroke_id, seq, vid, size))
 
 
 def _read_stroke_vertices(con, stroke_id: str) -> list:
@@ -2043,6 +2070,16 @@ def _read_stroke_vertices(con, stroke_id: str) -> list:
            WHERE sv.stroke_id = ? ORDER BY sv.seq''', (stroke_id,)).fetchall()
     return [[r['x'], r['y']] if r['size'] is None else [r['x'], r['y'], r['size']]
             for r in rows]
+
+
+def _read_stroke_vertex_ids(con, stroke_id: str) -> list:
+    """t50 phase 2a: the ordered `vertex_id` list parallel to `_read_stroke_vertices` —
+    the stable per-point identity the FE indexes (position → vertex id) and later sends
+    back as a `vertexRefs` snap-lock or id-stable reconciliation ref."""
+    rows = con.execute(
+        'SELECT vertex_id FROM stroke_vertex WHERE stroke_id = ? ORDER BY seq',
+        (stroke_id,)).fetchall()
+    return [r['vertex_id'] for r in rows]
 
 
 # ── Session-free permission checks (call sites: the do_* mutators below, which are also
@@ -2090,6 +2127,10 @@ def do_create_annotation(con, project_id: str, body: dict, *,
     image_id = body.get('imageId')
     kind = body.get('kind')
     points = body.get('points') or []
+    # t50 phase 2a: optional per-point vertex references (parallel to `points`) — an
+    # existing vertex id to REFERENCE (a draw-time snap → shared/locked vertex) or None to
+    # MINT fresh (absent entirely = mint all, phase-1 back-compatible).
+    vertex_refs = body.get('vertexRefs')
     # Annotate-as-yourself: non-admins are forced to their own identity; admin may seed any
     # annotator (matches the _member_or_403 / _owner_or_403 admin bypass).
     if is_admin:
@@ -2172,7 +2213,8 @@ def do_create_annotation(con, project_id: str, body: dict, *,
             (aid, project_id, image_id, annotator, pass_no, label, snapshot_json, compound_id,
              json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
         )
-        _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now, tool=tool)
+        _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now,
+                      tool=tool, vertex_refs=vertex_refs)
 
         consumed_groups = []
         for r, _g in fuse_set:
@@ -2222,7 +2264,7 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         (aid, project_id, image_id, annotator, kind, pass_no, label, snapshot_json, compound_id,
          json.dumps(points), viewport_json, hsv_json, now, now),
     )
-    _insert_stroke(con, sid, aid, kind, points, None, None, now)
+    _insert_stroke(con, sid, aid, kind, points, None, None, now, vertex_refs=vertex_refs)
     for tid in tile_ids:
         con.execute(
             'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
@@ -2368,8 +2410,10 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
         (json.dumps(points), stroke_width,
          json.dumps(outline) if outline is not None else None, stroke_id))
-    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
-    _write_stroke_vertices(con, stroke_id, points)
+    # t50 phase 1/2a: write through to the normalized tables — the source of truth for
+    # reads. `vertexRefs` (optional, parallel to `points`) lets the per-click polyline edit
+    # reconcile rather than re-mint — see `_write_stroke_vertices`.
+    _write_stroke_vertices(con, stroke_id, points, body.get('vertexRefs'))
 
     # 2) gather ALL live strokes for this (annotator, image, label) — the full merge scope.
     srows = con.execute(
