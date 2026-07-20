@@ -7,6 +7,7 @@ import type { ViewBox } from './canvasShapes';
 import type { createCanvasHistory } from './canvasHistory';
 import type { CanvasSocket } from './canvasSocket';
 import { createPolylineSession } from './canvasPolylinePersist';
+import { createMoveSharedVertex } from './canvasVertexMovePersist';
 
 export interface CanvasPersistenceOpts {
   image: Accessor<CanvasImage | undefined>;
@@ -16,12 +17,10 @@ export interface CanvasPersistenceOpts {
   vb: Accessor<ViewBox>;
   updateImg: (fn: (im: CanvasImage) => CanvasImage) => void;
   history: ReturnType<typeof createCanvasHistory>;
-  /** Phase 1+2 (feat/annotation-ws): the ONE ordered channel every mutation op flows
-   * through. Sharing it across commit/editStroke/eraseStroke/relabel/polylineSession/
-   * history is what dissolves the polyline persist-vs-undo race — see canvasSocket.ts. */
+  /** The ONE ordered channel every mutation op flows through — see canvasSocket.ts. */
   socket: CanvasSocket;
-  /** Migrate the current selection onto a new annotation id (a vertex edit recreates the
-   *  selected mask under a new id — see editStroke). Optional; callers without selection skip it. */
+  /** Migrate selection onto a new annotation id (editStroke recreates the mask under a
+   *  new id). Optional; callers without selection skip it. */
   setSelectedId?: (id: string) => void;
 }
 
@@ -190,7 +189,10 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     applyDiscard,
   });
 
-  return { commit, relabel, editStroke,
+  // t50 phase 3b: a SHARED vertex drag routes here — see canvasVertexMovePersist.ts.
+  const moveSharedVertex = createMoveSharedVertex({ socket: o.socket, updateImg: o.updateImg, history: o.history });
+
+  return { commit, relabel, editStroke, moveSharedVertex,
     polylineStep: polySession.step, resetPolyline: polySession.reset,
     finishPolyline: polySession.finish };
 }
