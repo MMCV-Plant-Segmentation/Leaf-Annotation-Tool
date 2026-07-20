@@ -18,8 +18,9 @@ Covers the Phase-1 behaviours the task spec requires:
       a single-group project behaves exactly like today (flat `classes` unchanged). The
       migration is idempotent (re-read is a no-op) and existing lesions keep rendering.
 
-  V5. Deleting a preset (compound) leaves existing lesions intact via their snapshot: the
-      lesion's label text + colour + selections do NOT vanish.
+  V5. Deleting a REFERENCED preset is REJECTED without a reassignment target (t64 — no silent
+      orphan); V5b: with a `reassignCompounds` target the lesion re-points to it. (Full
+      delete/reassign matrix in test_compound_id.py C4–C6.)
 
   V6. The `annotation.label_snapshot` column exists (migration 0004 ran) and persists the
       label + selections in one serialized (JSON, base64-friendly) column.
@@ -251,43 +252,45 @@ assert legacy_ann['labelColor'].startswith('#')
 print('  ✓  legacy lesion renders; migrated single-group compound snapshots too')
 
 
-# ── V5: deleting a preset leaves existing lesions intact via their snapshot ──
-print('\n── V5: deleting a preset leaves lesions intact via snapshot ──')
+# ── V5: deleting a REFERENCED preset is REJECTED without a reassignment target (t64) ──
+# SUPERSEDES the old "delete → lesion keeps rendering via a frozen snapshot" policy: t64 no
+# longer silently orphans lesions. The full delete/reassign matrix (unreferenced-free / no-target
+# / with-target) lives in test_compound_id.py C4–C6; here we pin it against this file's fixtures.
+print('\n── V5: deleting a referenced preset with no target is rejected ──')
 
-# Remove the 'lesion-high' compound (keep only 'lesion') — the painted lesion above used it.
+# Try to remove 'lesion-high' (c-good) — the painted lesion above references it.
 r = client.patch(f'/api/projects/{pid}',
                  json={'groups': [g1, g2], 'compounds': [minimal]})
+assert 400 <= r.status_code < 500, f'referenced-compound delete without a target must 4xx: {r.status_code} {_j(r)}'
+assert 'c-good' in str(_j(r)) or 'lesion-high' in str(_j(r)), _j(r)  # the error names the blocked compound
+# The rejected delete left the compound in place; the lesion keeps resolving to it LIVE.
+proj = _j(client.get(f'/api/projects/{pid}'))
+assert 'lesion-high' in [c['name'] for c in proj['compounds']], proj['compounds']
+batch = _j(client.get(f'/api/batches/{batch_id}?annotator=admin'))
+found = [a for im in batch['images'] for a in im['annotations']]
+assert found, 'lesion vanished'
+assert found[0]['label'] == 'lesion-high', found[0]
+assert found[0]['labelColor'].lower() == '#dc2626', found[0]
+print('  ✓  referenced-compound delete without a target is rejected; lesion intact')
+
+
+# ── V5b: deleting a REFERENCED preset WITH a reassignment target re-points the lesion (t64) ──
+print('\n── V5b: reassign-then-delete re-points the lesion to the target ──')
+
+# Drop 'lesion-high' (c-good) AND reassign its lesions to 'lesion' (c-min) in one save.
+r = client.patch(f'/api/projects/{pid}',
+                 json={'groups': [g1, g2], 'compounds': [minimal],
+                       'reassignCompounds': {'c-good': 'c-min'}})
 assert r.status_code == 200, _j(r)
 proj = _j(client.get(f'/api/projects/{pid}'))
 assert 'lesion-high' not in [c['name'] for c in proj['compounds']], proj['compounds']
-# The already-painted lesion keeps its label text + colour + selections (snapshot intact).
+# The painted lesion is re-pointed to 'lesion' and now resolves to ITS name + colour, LIVE.
 batch = _j(client.get(f'/api/batches/{batch_id}?annotator=admin'))
 found = [a for im in batch['images'] for a in im['annotations']]
-assert found, 'lesion vanished after preset delete'
-assert found[0]['label'] == 'lesion-high', found[0]
-assert found[0]['labelColor'].lower() == '#dc2626', found[0]
-assert found[0]['labelSnapshot']['name'] == 'lesion-high', found[0]
+assert found[0]['label'] == 'lesion', found[0]
+assert found[0]['labelColor'].lower() == '#16a34a', found[0]
 assert found[0]['labelSnapshot']['selections']['g-type']['memberName'] == 'lesion', found[0]
-print('  ✓  deleted preset: lesion keeps label text + colour + selections (snapshot)')
-
-
-# ── V-extra: deleting a GROUP lesions use keeps their snapshot (edge policy) ──
-print('\n── V-extra: deleting a used group keeps lesion snapshots ──')
-
-# Drop the 'Type' group entirely (lesions still reference it via their snapshot).
-r = client.patch(f'/api/projects/{pid}',
-                 json={'groups': [g2], 'compounds': [minimal]})
-assert r.status_code == 200, _j(r)
-# 'lesion' compound now references deleted g-type → invalid → filtered from palette.
-proj = _j(client.get(f'/api/projects/{pid}'))
-assert [c['name'] for c in proj['compounds']] == [], proj['compounds']
-# But the painted lesion's snapshot is unchanged (label text + colour never vanish).
-batch = _j(client.get(f'/api/batches/{batch_id}?annotator=admin'))
-found = [a for im in batch['images'] for a in im['annotations']]
-assert found[0]['label'] == 'lesion-high'
-assert found[0]['labelColor'].lower() == '#dc2626'
-assert found[0]['labelSnapshot']['selections']['g-type']['memberName'] == 'lesion'
-print('  ✓  deleted group: compound filtered from palette; lesion snapshot intact')
+print('  ✓  reassign-then-delete: lesion re-points to the target compound (live)')
 
 
 print('\n\nALL TAXONOMY-V2 BACKEND TESTS PASSED ✓  (data dir:', TMP, ')')
