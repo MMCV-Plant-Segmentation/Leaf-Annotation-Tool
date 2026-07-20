@@ -79,7 +79,7 @@ const CanvasScreen: Component = () => {
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
   const { commit, relabel, editStroke, moveSharedVertex, polylineStep, resetPolyline, finishPolyline } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId,
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId, setDraftRefs,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
   // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
