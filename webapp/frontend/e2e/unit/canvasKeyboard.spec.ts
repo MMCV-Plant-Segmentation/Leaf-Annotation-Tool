@@ -68,27 +68,49 @@ test('a bare Y or Z (no modifier) does nothing', () => {
   expect(calls).toMatchObject({ undo: 0, redo: 0, prevented: 0 });
 });
 
-test('ESC on polyline just switches to select — placed clicks stay persisted, no commit', () => {
-  // The per-click rebuild (2026-07-13) makes ESC drop the rubber-band and switch tools
-  // ONLY: the clicked vertices were already persisted per-click, so finishDraft must NOT
-  // be called (it would double-commit). And the draft is cleared so the rubber-band vanishes.
-  let toolNow: string = 'polyline';
-  let drafted: number[][] | null = null;
+test('ESC on polyline is two-stage: rubber band up → finish (stay on tool); no band → select (t59)', () => {
+  // t59 (Christian, 2026-07-19). Supersedes the old single-stage "ESC → select". While a
+  // rubber band is up (the draft holds >=1 vertex, i.e. the user is actively drawing) the
+  // FIRST ESC FINISHES the current polyline — that is when the tile check runs (keep or
+  // discard-like-brush) — and STAYS on the polyline tool, ready for a new line. Only an ESC
+  // with NO rubber band (empty draft) switches to the select tool. The reducer decides which
+  // via a new `draft` accessor + `finishPolyline` callback on CanvasKeyboardOpts.
+
+  // Stage 1 — rubber band up: ESC finishes, does NOT jump to select.
+  let toolNow = 'polyline';
   let finishCalls = 0;
-  const opts: Partial<CanvasKeyboardOpts> = {
-    tool: () => toolNow as 'polyline',
-    setTool: (t) => { toolNow = t as string; },
-    setDraft: (d) => { drafted = d; },
-    interaction: {
-      finishDraft: () => { finishCalls++; },
-      handleKeyDown: () => {}, handleKeyUp: () => {},
-    } as unknown as CanvasKeyboardOpts['interaction'],
-  };
-  const { press } = makeOpts(opts);
-  press({ key: 'Escape' });
-  expect(toolNow).toBe('select');
-  expect(finishCalls).toBe(0);            // ESC does NOT commit anything for polyline
-  expect(drafted).toEqual([]);            // rubber-band dropped
+  let selectSwitches = 0;
+  const withBand = {
+    isAdmin: () => false,
+    interaction: { finishDraft: () => {}, handleKeyDown: () => {}, handleKeyUp: () => {} },
+    history: { undo: async () => {}, redo: async () => {} },
+    tool: () => toolNow,
+    setTool: (t: string) => { toolNow = t; if (t === 'select') selectSwitches++; },
+    setDraft: () => {}, setSelId: () => {}, fitImage: () => {},
+    draft: () => [[10, 10]] as number[][],     // a rubber band exists → actively drawing
+    finishPolyline: () => { finishCalls++; },
+  } as unknown as CanvasKeyboardOpts;
+  handleCanvasKeyDown({ preventDefault: () => {}, key: 'Escape' } as unknown as KeyboardEvent, withBand);
+  expect(finishCalls).toBe(1);               // 1st ESC finishes the polyline (runs the tile check)
+  expect(toolNow).toBe('polyline');          // stays on the tool, ready for a new line
+  expect(selectSwitches).toBe(0);            // does NOT switch to select yet
+
+  // Stage 2 — no rubber band (empty draft): ESC switches to select.
+  let tool2 = 'polyline';
+  let finish2 = 0;
+  const noBand = {
+    isAdmin: () => false,
+    interaction: { finishDraft: () => {}, handleKeyDown: () => {}, handleKeyUp: () => {} },
+    history: { undo: async () => {}, redo: async () => {} },
+    tool: () => tool2,
+    setTool: (t: string) => { tool2 = t; },
+    setDraft: () => {}, setSelId: () => {}, fitImage: () => {},
+    draft: () => [] as number[][],             // no rubber band
+    finishPolyline: () => { finish2++; },
+  } as unknown as CanvasKeyboardOpts;
+  handleCanvasKeyDown({ preventDefault: () => {}, key: 'Escape' } as unknown as KeyboardEvent, noBand);
+  expect(tool2).toBe('select');              // no band → switch to select (2nd-stage behaviour)
+  expect(finish2).toBe(0);                   // nothing to finish
 });
 
 test('Enter no longer commits an in-progress polyline — Enter is a no-op for polyline', () => {
