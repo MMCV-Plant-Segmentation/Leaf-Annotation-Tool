@@ -173,7 +173,15 @@ from alembic.config import Config as _AlembicConfig
 
 REPO = Path(__file__).resolve().parents[2]
 mdir = tempfile.mkdtemp(prefix='leaf-anno-vertexmig-test-')
-os.environ['HT_DATA_DIR'] = mdir  # M1 runs LAST — after this the app client above must not be reused
+# M1 runs LAST — after this the app client above must not be reused. Point BOTH db._db_path() (the
+# raw connect + asserts below) AND alembic/env.py's get_url() at the fresh dir. Reassigning
+# HT_DATA_DIR alone is a NO-OP: db caches its AppConfig on first resolution (auto_create_schema at
+# the top of this file), so we must db.configure() explicitly — mirrors test_alembic.py's fresh-dir
+# trick. Without this, M1 silently runs against the already-migrated original DB and upgrade(head)
+# is a no-op (0010 already applied), so the planted legacy row is never backfilled.
+from webapp.config import AppConfig as _AppConfig
+os.environ['HT_DATA_DIR'] = mdir
+db.configure(_AppConfig(data_dir=Path(mdir)))
 _acfg = _AlembicConfig(str(REPO / 'alembic.ini'))
 _acfg.set_main_option('script_location', str(REPO / 'alembic'))
 
