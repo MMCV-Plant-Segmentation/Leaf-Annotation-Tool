@@ -13,9 +13,11 @@ export function createSnapIndex(image: Accessor<CanvasImage | undefined>): Acces
     buildVertexIndex((image()?.annotations ?? []).flatMap((a) => a.strokes ?? [])));
 }
 
-/** Brush size is a DIAMETER; snap radius = half the brush RADIUS = size / 4. Click
- * coords are already image-space (same space as stored vertices) — no zoom scaling. */
-export const snapRadiusFromBrush = (brushSize: number): number => brushSize / 4;
+/** t80: the brush-side snap reach is the brush RADIUS = size / 2 (size is a diameter).
+ * resolveSnap combines this with each vertex's own radius as max(brushRadius, vertexRadius),
+ * so a tiny brush still snaps onto a fat existing point. Click coords are already image-space
+ * (same space as stored vertices) — no zoom scaling. */
+export const snapRadiusFromBrush = (brushSize: number): number => brushSize / 2;
 
 /** Bundles everything CanvasScreen needs to wire polyline snapping into the interaction +
  * keyboard layers in one call (keeps CanvasScreen.tsx, at the 200-line cap, thin):
