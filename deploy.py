@@ -39,7 +39,6 @@ alone (restart / restore-from-backup); a first deployment must provide it, or bo
 if deploy.py says your config is out of date.
 """
 import argparse
-import getpass
 import grp
 import os
 import secrets
@@ -439,7 +438,7 @@ def create_config(args):
         d = f" [{default}]" if default else ""
         return input(f"{prompt}{d}: ").strip() or default
 
-    print(f"Configuring {CONFIG_FILE} (this file only — no other clone is touched).\n")
+    print(f"Configuring {CONFIG_FILE}.\n")
     kind = (args.kind or ask("deployment kind — dev / test / prod", "test")).lower()
     if kind not in ("dev", "test", "prod"):
         die(f"unknown deployment kind {kind!r} (expected dev|test|prod)")
@@ -461,8 +460,12 @@ def create_config(args):
         master["deploy"] = {"app_group": group,
                             "compose_project_name": pre_deploy.get("compose_project_name", "leaf-annotation-tool")}
     # backup_dir is relevant to test (restore) + prod (sidecars/restore); dev never uses it.
-    backup = ask("[backup].backup_dir (absolute host path; blank = none)",
+    # t70: the [default] convention means Enter keeps the shown path — so to DISABLE backups the
+    # user types 'none' (an empty Enter with no default also means none).
+    backup = ask("[backup].backup_dir — absolute host path (Enter keeps the shown default; type 'none' to disable)",
                  pre_backup.get("backup_dir", ""), args.backup_dir) if kind in ("test", "prod") else ""
+    if backup.lower() == "none":
+        backup = ""
     if backup:
         master["backup"] = {"backup_dir": backup}
 
@@ -480,8 +483,7 @@ def create_config(args):
 
 
 def _post_create_next_steps(kind, backup, admin_flag):
-    """Kind-specific 'what now': prod prints the seed command, dev offers to run, test offers to
-    stand up an env (fresh/restore) end-to-end."""
+    """Kind-specific 'what now': prod/test print the exact command to run next; dev offers to run."""
     if kind == "prod":
         print("\nNext (prod):  ./deploy.py prod --admin-password '…'   (first boot seeds the admin)")
         return
@@ -491,20 +493,11 @@ def _post_create_next_steps(kind, backup, admin_flag):
         else:
             print("\nNext:  ./deploy.py dev   (first run needs --admin-password to seed the admin)")
         return
-    # test: offer to set up an env now
-    ds = (input("\nset up a test env now — 'fresh', 'restore', or 'no'? [no] ").strip().lower() or "no")
-    if ds not in ("fresh", "restore"):
-        print("\nNext:  ./deploy.py start test --data-mode reset --admin-password '…'   (or --data-mode restore)")
-        return
-    if ds == "restore" and not backup:
-        print("restore needs a [backup].backup_dir — re-run create-config to set it, or use 'fresh'.")
-        return
-    admin_password = admin_flag
-    if ds == "fresh" and not admin_password:
-        admin_password = getpass.getpass("admin_password for the fresh test DB (not stored): ")
-        while not admin_password:
-            admin_password = getpass.getpass("admin_password can't be empty: ")
-    start_test(load_master(), None, "reset" if ds == "fresh" else "restore", None, admin_password)
+    # test (t71): don't stand up an env from the wizard — just print the exact command to run.
+    print("\nNext (test):  ./deploy.py start test --data-mode reset --admin-password '…'")
+    print("              (use --data-mode restore to restore from [backup].backup_dir instead)")
+    if not backup:
+        print("              restore needs a [backup].backup_dir — re-run create-config to set one.")
 
 
 def migrate_config():
