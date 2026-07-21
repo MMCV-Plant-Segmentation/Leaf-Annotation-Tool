@@ -26,6 +26,9 @@ export interface VertexMoveDeps {
   socket: CanvasSocket;
   updateImg: UpdateImg;
   history: ReturnType<typeof createCanvasHistory>;
+  /** Migrate the selection onto the re-fused mask (the move deletes + re-mints it), so the
+   *  highlight + vertex handles follow instead of sticking on the dead id (mirrors editStroke). */
+  setSelectedId?: (id: string) => void;
 }
 
 export function createMoveSharedVertex(o: VertexMoveDeps) {
@@ -42,6 +45,11 @@ export function createMoveSharedVertex(o: VertexMoveDeps) {
         ],
         tiles: mergeTileStates(im.tiles, r.tileStates),
       }));
+      // The move re-mints every affected mask; re-select the one that still carries the moved
+      // vertex so its handles/highlight resolve (else the selection sticks on the deleted id).
+      const target = r.annotations.find(
+        (a) => a.strokes?.some((s) => (s.vertexIds ?? []).includes(vertexId))) ?? r.annotations[0];
+      if (target) o.setSelectedId?.(target.id);
       o.history.push({ kind: 'vertexMove', vertexId, before, after });
     });
   };

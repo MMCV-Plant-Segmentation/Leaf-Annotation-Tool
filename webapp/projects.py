@@ -2757,7 +2757,14 @@ def do_move_vertex(con, project_id: str, vertex_id: str, body: dict, *,
     scopes: set[tuple] = set()
     for sid in stroke_ids:
         pts = _read_stroke_vertices(con, sid)
-        con.execute('UPDATE stroke SET points_json = ? WHERE id = ?',
+        # Sync points_json to the moved vertex AND drop the now-stale outline_json: the
+        # fused-scope recompute prefers a stroke's stored `outline` polygon over its points
+        # (_stroke_polygon), so a moved vertex whose outline still describes the OLD shape
+        # re-fuses to the OLD perimeter (t78 — the mask "stays fused with the old outline").
+        # Clearing it makes the recompute rebuild this stroke's footprint from its new points
+        # (the canonical outline-less path); the FE-supplied outline is a fidelity cache that
+        # a vertex move invalidates, so a per-stroke edit re-sends it but a shared move can't.
+        con.execute('UPDATE stroke SET points_json = ?, outline_json = NULL WHERE id = ?',
                    (json.dumps(pts), sid))
         srow = con.execute(
             'SELECT annotation_id FROM stroke WHERE id = ?', (sid,)).fetchone()
