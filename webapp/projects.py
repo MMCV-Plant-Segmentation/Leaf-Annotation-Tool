@@ -249,6 +249,61 @@ def _annotation_geom(row: dict):
     return _shape_geom(row['kind'], pts)
 
 
+# ── t68: consolidated annotation bbox spatial index ──────────────────────────────────────
+# A persisted axis-aligned bbox per annotation (min_x/min_y/max_x/max_y) + the per-image
+# composite index `idx_annotation_bbox` let the polygon-overlap scans (create-fuse, eraser)
+# bbox-prune in SQL, then exact-test only candidates — tile-size-independent, strong expected
+# perf. Maintained ONLY at geometry writes (insert/geometry-update); soft-deletes drop out via
+# `deleted_at IS NULL`, so delete/undelete need no index upkeep (see migration 0011).
+
+def _bbox_bounds(geom):
+    """(min_x, min_y, max_x, max_y) of a shapely geom, or (None,)*4 when empty/None."""
+    if geom is None or geom.is_empty:
+        return (None, None, None, None)
+    return geom.bounds
+
+
+def _set_bbox(con, aid: str, geom) -> None:
+    """Store annotation `aid`'s bbox from an already-built shapely geom (t68 index)."""
+    con.execute('UPDATE annotation SET min_x=?, min_y=?, max_x=?, max_y=? WHERE id=?',
+               (*_bbox_bounds(geom), aid))
+
+
+def _reindex_bbox(con, aid: str) -> None:
+    """Refresh annotation `aid`'s bbox from its AUTHORITATIVE geometry (`_annotation_geom` —
+    the fused ring for stroke masks, points for others). Use where no shapely geom is handy
+    (the non-stroke create + the generic points PATCH)."""
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone()
+    _set_bbox(con, aid, _annotation_geom(row) if row else None)
+
+
+def _annotations_overlapping(con, project_image_id: str, geom, *, annotator: str | None = None,
+                             kind: str | None = 'stroke', label=_UNSET):
+    """Live annotations on this image whose stored BBOX overlaps `geom`'s bbox (the t68 index
+    prune) that ALSO pass an exact shapely `intersects` — returns [(row, geom), …]. Optional
+    annotator/kind/label scoping mirrors the callers. Excludes NULL-bbox rows: those are
+    null-geometry annotations with no footprint to overlap (correct to skip)."""
+    if geom is None or geom.is_empty:
+        return []
+    minx, miny, maxx, maxy = geom.bounds
+    clauses = ['project_image_id = ?', 'deleted_at IS NULL', 'min_x IS NOT NULL',
+               'min_x <= ?', 'max_x >= ?', 'min_y <= ?', 'max_y >= ?']
+    args: list = [project_image_id, maxx, minx, maxy, miny]
+    if annotator is not None:
+        clauses.append('annotator = ?'); args.append(annotator)
+    if kind is not None:
+        clauses.append('kind = ?'); args.append(kind)
+    if label is not _UNSET:
+        clauses.append('label IS ?'); args.append(label)
+    rows = con.execute(f'SELECT * FROM annotation WHERE {" AND ".join(clauses)}', args).fetchall()
+    out = []
+    for r in rows:
+        g = _annotation_geom(r)
+        if g is not None and not g.is_empty and g.intersects(geom):
+            out.append((r, g))
+    return out
+
+
 def _tiles_for_geom(con, project_image_id: str, geom) -> list[str]:
     """Return ids of existing tiles (on this image) that `geom` intersects. Shared tail of
     _tiles_intersecting (fresh shape) and the merge/undo paths (an already-built mask
@@ -2186,15 +2241,10 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         if tool != 'polyline' and not _tiles_for_geom(con, image_id, footprint):
             return {'error': 'annotation must intersect at least one tile'}, 422
 
-        fuse_rows = con.execute(
-            '''SELECT * FROM annotation
-               WHERE project_image_id = ? AND annotator = ? AND kind = 'stroke'
-                 AND label IS ? AND deleted_at IS NULL''',
-            (image_id, annotator, label),
-        ).fetchall()
-        fuse_set = [(r, g) for r in fuse_rows
-                   for g in [_annotation_geom(r)]
-                   if g is not None and not g.is_empty and g.intersects(footprint)]
+        # t68: bbox-index prune (same-annotator/label stroke masks overlapping the new
+        # footprint) → exact test, instead of scanning every same-scope mask.
+        fuse_set = _annotations_overlapping(con, image_id, footprint,
+                                            annotator=annotator, kind='stroke', label=label)
 
         merged = unary_union([footprint] + [g for _, g in fuse_set]) if fuse_set else footprint
         if merged.geom_type == 'MultiPolygon':
@@ -2215,6 +2265,7 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         )
         _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now,
                       tool=tool, vertex_refs=vertex_refs)
+        _set_bbox(con, aid, merged)  # t68 index
 
         consumed_groups = []
         for r, _g in fuse_set:
@@ -2265,6 +2316,7 @@ def do_create_annotation(con, project_id: str, body: dict, *,
          json.dumps(points), viewport_json, hsv_json, now, now),
     )
     _insert_stroke(con, sid, aid, kind, points, None, None, now, vertex_refs=vertex_refs)
+    _reindex_bbox(con, aid)  # t68 index (non-stroke geometry = points_json)
     for tid in tile_ids:
         con.execute(
             'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
@@ -2410,6 +2462,7 @@ def _recompute_fused_scope(con, project_id: str, image_id: str, annotator: str, 
             (aid, project_id, image_id, annotator, ref_ann['pass_no'], label,
              ref_ann['label_snapshot'], ref_ann.get('compound_id'), json.dumps(rings),
              ref_ann['viewport_json'], ref_ann['hsv_hist_json'], now, now))
+        _set_bbox(con, aid, geom)  # t68 index
         member_ids = comp['member_ids']
         qm = ','.join('?' * len(member_ids))
         con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
@@ -3087,6 +3140,7 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
     )
     con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
                (points_json, annotation_id))
+    _reindex_bbox(con, annotation_id)  # t68 index (geometry may have changed with points)
     # t50 phase 1: write through to the normalized tables — the source of truth for reads.
     for srow2 in con.execute(
             'SELECT id FROM stroke WHERE annotation_id = ?', (annotation_id,)).fetchall():
@@ -3261,16 +3315,10 @@ def do_erase_stroke(con, project_id: str, body: dict, *,
     eraser_geom = _footprint(points, stroke_width, outline=outline)
     if eraser_geom is None or eraser_geom.is_empty:
         return {'deletedAnnotationIds': [], 'tileStates': []}, 200
-    rows = con.execute(
-        '''SELECT * FROM annotation
-           WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL''',
-        (image_id, annotator),
-    ).fetchall()
-    deleted_ids = []
-    for r in rows:
-        g = _annotation_geom(r)
-        if g is not None and not g.is_empty and g.intersects(eraser_geom):
-            deleted_ids.append(r['id'])
+    # t68: bbox-index prune (this annotator's marks, ANY kind, overlapping the eraser) →
+    # exact test, instead of scanning every mark this annotator has on the image.
+    deleted_ids = [r['id'] for r, _g in _annotations_overlapping(
+        con, image_id, eraser_geom, annotator=annotator, kind=None)]
     dirtied: dict[str, dict] = {}
     if deleted_ids:
         now = _now()
