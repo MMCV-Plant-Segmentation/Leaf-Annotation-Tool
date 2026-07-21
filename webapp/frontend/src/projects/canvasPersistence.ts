@@ -26,10 +26,8 @@ export interface CanvasPersistenceOpts {
   setDraftRefs?: (refs: (string | null)[]) => void;
 }
 
-/**
- * Server round-trips for the canvas (commit/edit/reverse/erase/relabel), split out of
- * CanvasScreen (200-line cap). Phase 2 routes ALL mutations over the one ordered `socket`.
- */
+/** Server round-trips for the canvas (commit/edit/reverse/erase/relabel/splice), split out
+ *  of CanvasScreen. Phase 2 routes ALL mutations over the one ordered `socket`. */
 export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // BUGS #16: a mutation that lands in an already-completed tile re-opens it server-side.
   const applyTileStates = (updates: TileStateUpdate[]) =>
@@ -96,8 +94,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   };
 
   // Brush eraser: one drag → one WS op that soft-deletes every mask the swept area
-  // intersects; single Ctrl+Z restores all. Phase 2: routed through the shared socket
-  // so it serialises behind any pending polyline/create ops on the same chain.
+  // intersects (single Ctrl+Z restores all); routed through the shared socket.
   const eraseStroke = async (points: number[][], strokeWidth: number) => {
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return;
@@ -112,8 +109,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     });
   };
 
-  // Compound labels: label-only PATCH → Phase 2 WS op (`relabel`). See canvasHistory.ts
-  // `relabel` action for undo/redo (which also routes over the socket).
+  // Compound labels: label-only WS op (`relabel`); see canvasHistory.ts for undo/redo.
   const relabel = async (annotationId: string, label: string) => {
     const before = o.image()?.annotations.find((a) => a.id === annotationId)?.label ?? null;
     if (before === label) return;
@@ -184,6 +180,9 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     buildEditPayload:   (strokeId, points, strokeWidth, refs) =>
       buildEditBody(strokeId, 'polyline', points, strokeWidth, refs),
     buildFinishPayload: (strokeId) => ({ strokeId, final: true }),
+    buildSplicePayload: (existingStrokeId, points, refs, removeStrokeId, strokeWidth) =>
+      ({ strokeId: existingStrokeId, points, vertexRefs: refs, removeStrokeId,
+         outline: polylineOutline(points, strokeWidth) }),
     applyCreate,
     applyEdit,
     applyDiscard,
@@ -195,5 +194,6 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
 
   return { commit, relabel, editStroke, moveSharedVertex,
     polylineStep: polySession.step, resetPolyline: polySession.reset,
-    finishPolyline: polySession.finish };
+    finishPolyline: polySession.finish, splicePolyline: polySession.splice,
+    polylineStrokeId: polySession.strokeId };
 }

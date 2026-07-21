@@ -44,6 +44,10 @@ export interface PolylineSessionCtx {
   buildEditPayload:   (strokeId: string, points: number[][], strokeWidth: number, refs: (string | null)[]) => unknown;
   /** Build the `final: true` finish-op payload (t59) — no new points, just the marker. */
   buildFinishPayload: (strokeId: string) => unknown;
+  /** t67: build the splice-op payload — rewrite `existingStrokeId` to `points`/`refs` and
+   *  drop the standalone run stroke `removeStrokeId`. */
+  buildSplicePayload: (existingStrokeId: string, points: number[][], refs: (string | null)[],
+                       removeStrokeId: string, strokeWidth: number) => unknown;
   /** Splice the create-op ack into the view + push the appropriate history entry. */
   applyCreate: (result: CreateAnnotationResult, body: unknown) => void;
   /** Splice the edit-op ack into the view + push the appropriate history entry. */
@@ -102,6 +106,20 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
     });
   };
 
+  /** t67: SPLICE the just-drawn run into an existing stroke — rewrite that stroke to the
+   * merged point list and delete the standalone run. Ends the session (like finish); the
+   * ack is edit-shaped so we splice it into the view exactly like a stroke edit. */
+  const splice = (existingStrokeId: string, points: number[][], refs: (string | null)[],
+                  removeStrokeId: string, strokeWidth: number): void => {
+    void ctx.socket.enqueue(async (send) => {
+      const body = ctx.buildSplicePayload(existingStrokeId, points, refs, removeStrokeId, strokeWidth);
+      const r: SocketAck<EditStrokeResult> = await send<EditStrokeResult>('splice', body);
+      setStrokeId(null);
+      if (!r.ok) { alert(r.message); return; }
+      ctx.applyEdit(r.result, existingStrokeId, body);
+    });
+  };
+
   /** End the session — the next click will create a fresh annotation. Called on tool-
    * switch away from polyline (CanvasScreen). Idempotent; safe to call repeatedly. */
   const reset = (): void => { setStrokeId(null); };
@@ -124,5 +142,5 @@ export function createPolylineSession(ctx: PolylineSessionCtx) {
     });
   };
 
-  return { step, reset, finish, strokeId };
+  return { step, reset, finish, splice, strokeId };
 }

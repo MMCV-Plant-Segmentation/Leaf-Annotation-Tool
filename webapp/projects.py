@@ -2556,6 +2556,106 @@ def edit_stroke(project_id: str, stroke_id: str):
         _db.close_db(con)
 
 
+def do_splice_polyline(con, project_id: str, body: dict, *,
+                        username: str | None, user_id, is_admin: bool):
+    """t67: splice a freshly-drawn polyline run INTO an existing stroke. The run's first &
+    last vertices snapped (t50) onto an ADJACENT pair of the existing stroke's vertices; the
+    FE has already computed that stroke's NEW point + `vertexRefs` list (the run's middle
+    vertices inserted between the pair, oriented lo→hi, endpoints keeping their shared ids).
+
+    We rewrite that stroke, DELETE the standalone run annotation so its geometry doesn't
+    re-contribute to the fusion, then re-fuse the scope — the same machinery as
+    `do_edit_stroke`. Body: {strokeId (the EXISTING stroke), points, vertexRefs, outline,
+    removeStrokeId (any stroke of the standalone run, whose annotation is deleted)}.
+    """
+    stroke_id = body.get('strokeId')
+    remove_stroke_id = body.get('removeStrokeId')
+    points = body.get('points')
+    if not stroke_id or not remove_stroke_id or not points:
+        return {'error': 'strokeId, removeStrokeId and points required'}, 400
+
+    srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+    if not srow:
+        return {'error': 'not found'}, 404
+    ann = con.execute('SELECT * FROM annotation WHERE id = ?', (srow['annotation_id'],)).fetchone()
+    if not ann or ann['deleted_at']:
+        return {'error': 'not found'}, 404
+    if ann['kind'] != 'stroke':
+        return {'error': 'only stroke masks support splicing'}, 422
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or _owner_or_403_direct(ann['annotator'], username))
+    if err:
+        return err
+
+    if remove_stroke_id == stroke_id:
+        return {'error': 'cannot splice a stroke into itself'}, 422
+    run_srow = con.execute('SELECT * FROM stroke WHERE id = ?', (remove_stroke_id,)).fetchone()
+    if not run_srow:
+        return {'error': 'run stroke not found'}, 404
+    run_ann_id = run_srow['annotation_id']
+
+    image_id = ann['project_image_id']
+    annotator = ann['annotator']
+    label = ann['label']
+    now = _now()
+
+    # Clamp stroke width to [1px, image diagonal] — never trust the client (mirrors edit).
+    stroke_width = srow['stroke_width']
+    if body.get('strokeWidth') is not None:
+        im = _image_row(con, image_id)
+        diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+        try:
+            w = float(body['strokeWidth'])
+            stroke_width = max(1.0, min(w, diag) if diag else w)
+        except (TypeError, ValueError):
+            pass
+    outline = body.get('outline')
+    before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+              'strokeWidth': srow['stroke_width'],
+              'outline': json.loads(srow['outline_json']) if srow['outline_json'] else None}
+
+    # 1) rewrite the EXISTING stroke FIRST, so its new stroke_vertex rows reference the run's
+    # middle vertices before we delete the run — keeping those vertices alive (GC-safe).
+    con.execute(
+        'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+        (json.dumps(points), stroke_width,
+         json.dumps(outline) if outline is not None else None, stroke_id))
+    _write_stroke_vertices(con, stroke_id, points, body.get('vertexRefs'))
+
+    # 2) delete the run STROKE (not its annotation): the run + the target usually already
+    # CO-FUSED into one annotation on draw (they share endpoint positions), so removing the
+    # stroke — its middle vertices now referenced by the rewritten stroke (step 1), so GC
+    # keeps them; shared endpoints survive too — is what drops the redundant run geometry.
+    _write_stroke_vertices(con, remove_stroke_id, [])   # deletes its stroke_vertex rows + GCs exclusives
+    con.execute('DELETE FROM stroke WHERE id = ?', (remove_stroke_id,))
+    # If that emptied the run's annotation (it was NOT co-fused with the target), soft-delete
+    # the husk so no stroke-less annotation lingers.
+    husk: list[str] = []
+    if run_ann_id != ann['id']:
+        remaining = con.execute(
+            'SELECT COUNT(*) c FROM stroke WHERE annotation_id = ?', (run_ann_id,)).fetchone()['c']
+        if remaining == 0:
+            con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, run_ann_id))
+            husk.append(run_ann_id)
+
+    # 3) re-fuse the (image, annotator, label) scope — same as do_edit_stroke.
+    scope = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+    tile_states = _mark_tiles_dirty(con, list(set(scope['dirtyTiles'])), annotator)
+    con.commit()
+
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    created = [_annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+        for cid in scope['createdIds']]
+    deleted = list(scope['deletedAnnotationIds']) + [h for h in husk if h not in scope['deletedAnnotationIds']]
+    return {'ok': True, 'strokeId': stroke_id, 'before': before,
+            'deletedAnnotationIds': deleted, 'deletedGroups': scope['deletedGroups'],
+            'created': created, 'createdGroups': scope['createdGroups'],
+            'tileStates': tile_states}, 200
+
+
 def do_move_vertex(con, project_id: str, vertex_id: str, body: dict, *,
                     username: str | None, user_id, is_admin: bool):
     """Core of move_vertex (t50 phase 3a) — moves a vertex's canonical position and
@@ -2636,6 +2736,24 @@ def do_move_vertex(con, project_id: str, vertex_id: str, body: dict, *,
             'deletedAnnotationIds': deleted_ids, 'deletedGroups': deleted_groups,
             'annotations': created, 'createdGroups': created_groups,
             'tileStates': tile_states}, 200
+
+
+@projects_bp.post('/api/projects/<project_id>/splice')
+@login_required
+def splice_polyline(project_id: str):
+    """Splice a freshly-drawn polyline run into an existing stroke (t67) — thin shim around
+    do_splice_polyline (the WS op handler calls the same core). See its docstring."""
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_splice_polyline(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
 
 
 @projects_bp.patch('/api/projects/<project_id>/vertices/<vertex_id>')

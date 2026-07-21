@@ -153,6 +153,7 @@ _OP_DISPATCH: dict[str, str] = {
     'edit':          'do_edit_stroke',
     'reverse':       'do_reverse_stroke_edit',
     'moveVertex':    'do_move_vertex',
+    'splice':        'do_splice_polyline',
     # Phase 2 — the remaining annotation mutations, on the SAME FIFO channel.
     'erase':         'do_erase_stroke',
     'relabel':       'do_update_annotation',
@@ -177,8 +178,9 @@ def _apply_op_sync(op: str, project_id: str | None, payload: dict, *,
     fn = getattr(_projects, fn_name)
     con = _db.get_db()
     try:
-        # Body-only ops (mirror the REST route bodies verbatim).
-        if op in ('create', 'erase', 'mutate', 'reverse_merge'):
+        # Body-only ops (mirror the REST route bodies verbatim). `splice` (t67) carries the
+        # existing strokeId + the run's removeStrokeId inside the body.
+        if op in ('create', 'erase', 'mutate', 'reverse_merge', 'splice'):
             return fn(con, project_id, payload,
                      username=username, user_id=user_id, is_admin=is_admin)
         if op == 'relabel':
