@@ -86,6 +86,13 @@ def run():
     assert taxonomy.id_from_label(raw, 'nope') is None, 'D6c no match'
     print('PASS D6 name-based resolution matches the derived label')
 
+    # D7 (t108) — the fresh-project SEED's default compound is un-named and derives 'thing'
+    # from its member (so a member rename propagates out of the box, no manual name-clear).
+    seed = taxonomy.normalise_taxonomy(None)
+    assert seed['compounds'][0]['name'] == '', f"D7a seed name {seed['compounds'][0]['name']!r}"
+    assert [c['name'] for c in taxonomy.taxonomy_out(None)['classes']] == ['thing'], 'D7b seed derives thing'
+    print('PASS D7 default seed compound is empty-named + derives thing')
+
     print('ALL PASS test_compound_derived_label')
 
 

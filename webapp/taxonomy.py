@@ -244,8 +244,13 @@ def _normalise_v2(obj: dict) -> dict:
 
 
 def _seed_unknown() -> dict:
-    """Build the canonical seed for an empty/new project: one default group + the
-    'unknown' compound selecting that group's single member."""
+    """Build the canonical seed for an empty/new project: one default group + a compound
+    selecting that group's single member.
+
+    t108: the default compound is UN-named (empty) so its label DERIVES from the member
+    ('thing') out of the box — the 'computed label' UX Christian asked for. Renaming the
+    member then flows straight through (no need to first clear a custom name). The member
+    keeps DEFAULT_LABEL, so the palette still reads 'thing' on a fresh project."""
     gid = _uid()
     mid = _uid()
     cid = _uid()
@@ -254,7 +259,7 @@ def _seed_unknown() -> dict:
         'members': [{'id': mid, 'name': DEFAULT_LABEL, 'order': 0}],
     }
     compound = {
-        'id': cid, 'name': DEFAULT_LABEL, 'color': _default_color(0),
+        'id': cid, 'name': '', 'color': _default_color(0),
         'selections': {gid: mid},
     }
     return {'schema': SCHEMA_V2, 'groups': [group], 'compounds': [compound]}

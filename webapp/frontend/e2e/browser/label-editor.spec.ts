@@ -15,17 +15,19 @@ import { test, expect } from '@playwright/test';
 
 type CompoundOut = { id: string; name: string; color: string };
 
+// The DISPLAY labels (derived palette) — a compound with an empty name derives from its
+// members (t89/t108), so assert against `classes` not the raw `compounds[].name`.
 const compoundNames = async (page: import('@playwright/test').Page, id: string): Promise<string[]> => {
   const r = await page.request.get(`/api/projects/${id}`);
-  const j = (await r.json()) as { compounds?: CompoundOut[] };
-  return (j.compounds ?? []).map((c) => c.name);
+  const j = (await r.json()) as { classes?: CompoundOut[] };
+  return (j.classes ?? []).map((c) => c.name);
 };
 
 test('t74/t76/t90: single Save flushes a rename; dirty-gated; editor stays open on save', async ({ page }) => {
   const projResp = await page.request.post('/api/projects', { data: { name: `LabelSave ${Date.now()}` } });
   const { id } = (await projResp.json()) as { id: string };
 
-  // Fresh project seeds one default compound named 'thing'.
+  // Fresh project's default compound is UN-named (t108) and DERIVES 'thing' from its member.
   expect(await compoundNames(page, id)).toContain('thing');
 
   // t90: no Edit step — the editor is open immediately on the /labels route.
