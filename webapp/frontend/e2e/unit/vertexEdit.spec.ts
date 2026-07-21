@@ -87,4 +87,25 @@ test.describe('canvasVertexEdit', () => {
     // a 1-point stroke has nothing to merge into
     expect(collapseOnAdjacent([[10, 10]], 0, 10, 10, 5)).toBeNull();
   });
+
+  test('t95: decideDrop makes a SHARED vertex MOVE even when it lands on an adjacent one', async () => {
+    const { decideDrop } = await import(MOD);
+    // A closed loop: one stroke whose first & last vertex are the SAME shared id (vClose).
+    const loop = [{ id: 'A', strokes: [{ id: 's', points: [[10, 10], [40, 10], [40, 40], [10, 10]],
+      vertexIds: ['vClose', 'v1', 'v2', 'vClose'] }] }];
+    // Drag the closing vertex (index 3) onto the ADJACENT vertex 2 (@40,40). Collapse WOULD
+    // fire for an unshared vertex — but vClose is shared, so it must MOVE, never delete.
+    expect(decideDrop(loop as never, 's', 3, loop[0].strokes[0].points, 41, 41, 5))
+      .toEqual({ kind: 'move', vertexId: 'vClose' });
+
+    // An UNSHARED vertex dropped onto its neighbour still collapses (t66 preserved).
+    const open = [{ id: 'B', strokes: [{ id: 's', points: [[10, 10], [40, 10], [40, 40]],
+      vertexIds: ['a', 'b', 'c'] }] }];
+    expect(decideDrop(open as never, 's', 1, open[0].strokes[0].points, 41, 41, 5))
+      .toEqual({ kind: 'collapse', points: [[10, 10], [40, 40]] });
+
+    // An unshared vertex dropped in open space is an ordinary edit.
+    expect(decideDrop(open as never, 's', 1, open[0].strokes[0].points, 25, 25, 5))
+      .toEqual({ kind: 'edit', points: [[10, 10], [25, 25], [40, 40]] });
+  });
 });

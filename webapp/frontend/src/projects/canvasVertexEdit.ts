@@ -142,3 +142,27 @@ export function sharedVertexId(
   }
   return count >= 2 ? target : null;
 }
+
+/** What a handle-drop should do, decided purely (unit-testable, no DOM). */
+export type DropDecision =
+  | { kind: 'move'; vertexId: string }        // shared/locked vertex → move the whole lock
+  | { kind: 'collapse'; points: number[][] }  // dropped onto an adjacent vertex → merge
+  | { kind: 'edit'; points: number[][] };     // ordinary single-vertex move
+
+/**
+ * t95: a SHARED (snapped/locked) vertex ALWAYS moves — it must WIN over collapse. Collapsing
+ * a shared/closing vertex deletes it, which breaks a closed loop AND strands the undo stack on
+ * a now-deleted vertex (its `vertexMove` entry replays `moveVertex` on a gone id → "not found",
+ * and the view desyncs into a filled mask + orphaned polyline). Only an UNSHARED vertex may
+ * collapse onto an adjacent neighbour (t66); everything else is an ordinary edit.
+ */
+export function decideDrop(
+  annotations: VertexScanAnnotation[], strokeId: string, index: number,
+  points: number[][], nx: number, ny: number, radiusImg: number,
+): DropDecision {
+  const vid = sharedVertexId(annotations, strokeId, index);
+  if (vid) return { kind: 'move', vertexId: vid };
+  const merged = collapseOnAdjacent(points, index, nx, ny, radiusImg);
+  if (merged) return { kind: 'collapse', points: merged };
+  return { kind: 'edit', points: moveVertex(points, index, nx, ny) };
+}
