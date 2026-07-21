@@ -8,13 +8,14 @@ export interface CanvasInteractionOpts {
   brushSize: Accessor<number>; setBrushSize: (s: number) => void; maxBrushSize: Accessor<number>;
   draft: Accessor<number[][]>; setDraft: Setter<number[][]>;
   // t50 phase 2b: parallel per-point vertex refs for the polyline draft + snap inputs.
-  // Optional — only CanvasScreen's polyline tool wires these (MergeCanvasScreen has no
-  // polyline tool and shares this opts type via createMergeInteraction).
+  // Optional — only CanvasScreen's polyline tool wires these (MergeCanvasScreen shares this type).
   draftRefs?: Accessor<(string | null)[]>; setDraftRefs?: (v: (string | null)[]) => void;
   snapIndex?: Accessor<VertexIndex>; snapRadiusImg?: Accessor<number>;
   commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
   /** Polyline per-click hook: fires with growing point list; persistence picks create/edit. */
   polylineStep?: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
+  /** t65: scroll over a SELECTED mask resizes it; true = handled (else the caller pans). */
+  resizeSelected?: (dir: 1 | -1) => boolean;
   onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
@@ -56,8 +57,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
 
-  // Multiplicative brush resize for fine low-end control; used by scroll wheel.
-  const stepSize = (dir: 1 | -1) => {
+  const stepSize = (dir: 1 | -1) => {  // multiplicative brush resize (scroll wheel)
     const cur = o.brushSize();
     o.setBrushSize(dir > 0 ? clampSize(Math.max(cur + 1, Math.round(cur * 1.15))) : clampSize(Math.min(cur - 1, Math.round(cur / 1.15))));
   };
@@ -81,11 +81,12 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
     if (strokeInProgress) return;  // §D: pan + size-scroll locked mid-stroke
+    // Plain scroll: sizeable tool → brush size (§B); Select over a mask → resize it (t65); else pan.
     if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group' || o.tool() === 'polyline') && !e.shiftKey) {
-      // Plain scroll on a sizeable tool → adjust brush size (§B); polyline shares brush's control.
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }
+    if (o.tool() === 'select' && !e.shiftKey && o.resizeSelected?.(e.deltaY > 0 ? -1 : 1)) return;
     // Shift+scroll → pan horizontal; else pan vertical (§C). Negative = natural scroll direction.
     if (e.shiftKey) { panBy(-e.deltaY, 0); } else { panBy(0, -e.deltaY); }
   };
