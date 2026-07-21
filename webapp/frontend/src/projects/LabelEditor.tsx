@@ -10,7 +10,7 @@
  * via a one-member-per-group picker with required-group enforcement, name + colour,
  * delete) via CompoundEditor. Split into sub-components to stay under 200 lines each.
  */
-import { type Component, Show, createMemo, createSignal } from 'solid-js';
+import { type Component, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import { projectsApi } from './api';
 import type { Group, Compound } from './taxonomy';
 import { ApiError } from './httpJson';
@@ -32,7 +32,6 @@ type Props = {
 };
 
 export const LabelEditor: Component<Props> = (props) => {
-  const [editing, setEditing] = createSignal(false);
   const [draftGroups, setDraftGroups] = createSignal<Group[]>([]);
   const [draftCompounds, setDraftCompounds] = createSignal<Compound[]>([]);
   // t74: the in-progress compound edit lives HERE (lifted out of CompoundEditor) so the
@@ -44,16 +43,27 @@ export const LabelEditor: Component<Props> = (props) => {
   // existing lesions still reference — holds what's needed to render ReassignPicker and
   // retry the SAME save with `reassignCompounds` once the user picks a target.
   const [blocked, setBlocked] = createSignal<{ id: string; name: string } | null>(null);
+  // t90: the editor is ALWAYS open on its own /labels route (no Edit step). Track the
+  // identity of the last-seeded PERSISTED taxonomy so the draft re-seeds on the initial
+  // load, after our own save's refetch, and on an external edit — but NOT on unrelated
+  // re-renders (which would clobber an in-progress edit).
+  const [baseKey, setBaseKey] = createSignal<string | null>(null);
 
-  const open = () => {
-    const c = cloneDraft(props.groups, props.compounds);
+  const seed = (groups: Group[], compounds: Compound[], key: string) => {
+    const c = cloneDraft(groups, compounds);
     setDraftGroups(c.groups);
     setDraftCompounds(c.compounds);
     setPending(null);
     setErr(''); setBlocked(null);
-    setEditing(true);
+    setBaseKey(key);
   };
-  const cancel = () => { setEditing(false); setPending(null); setErr(''); setBlocked(null); };
+  createEffect(() => {
+    const key = taxonomyKey(props.groups, props.compounds);
+    if (key !== baseKey()) seed(props.groups, props.compounds, key);
+  });
+  // t90: with no collapse-on-save, "Cancel" discards unsaved edits by re-seeding from the
+  // persisted taxonomy (shown only while dirty).
+  const revert = () => seed(props.groups, props.compounds, taxonomyKey(props.groups, props.compounds));
 
   // t76: enabled only when the (flushed) draft differs from what's stored — a pending
   // rename counts because flushPending folds it in before comparing.
@@ -76,9 +86,11 @@ export const LabelEditor: Component<Props> = (props) => {
     setSaving(true); setErr('');
     try {
       await projectsApi.update(props.projectId, { groups, compounds, reassignCompounds });
-      setBlocked(null);
-      setPending(null);
-      setEditing(false);
+      // t90: stay open (no collapse). Fold the persisted values back into the draft and
+      // clear the pending edit so the editor reflects the saved state immediately (no
+      // stale-name flash before the parent's refetch lands) and Save re-disables (not
+      // dirty). Advancing baseKey keeps the re-seed effect from redundantly re-cloning.
+      seed(groups, compounds, taxonomyKey(groups, compounds));
       props.onSaved();
     } catch (e) {
       const body = e instanceof ApiError ? (e.body as { blockedCompoundId?: string } | null) : null;
@@ -108,34 +120,30 @@ export const LabelEditor: Component<Props> = (props) => {
       <div class={styles.head}>
         <h3 class={styles.title}>{t('detail.labels.title')}</h3>
         <span class={styles.summary} data-testid="label-summary">{summary()}</span>
-        <Show when={!editing()}>
-          <button class={styles.btn} data-testid="label-edit" onClick={open}>
-            {t('detail.labels.edit')}
-          </button>
-        </Show>
       </div>
 
-      <Show when={editing()}>
-        <GroupEditor groups={draftGroups()} onChange={(g) => setDraftGroups(g)} />
-        <CompoundEditor groups={draftGroups()} compounds={draftCompounds()}
-          usedNames={() => props.usedCompoundNames?.() ?? new Set<string>()}
-          pending={pending()} setPending={setPending}
-          onChange={(c) => setDraftCompounds(c)} />
-        <Show when={blocked()}>
-          {(b) => (
-            <ReassignPicker blockedName={b().name} compounds={draftCompounds()}
-              onConfirm={confirmReassign} onCancel={() => setBlocked(null)} />
-          )}
-        </Show>
-        <div class={styles.actions}>
-          <button class={styles.btn} disabled={saving() || !!blocked() || !dirty()} data-testid="label-save"
-            onClick={() => void save()}>
-            {saving() ? t('common.saving') : t('detail.labels.save')}
-          </button>
-          <button class={styles.btn} onClick={cancel}>{t('common.cancel')}</button>
-          <Show when={err()}><span class={styles.err}>{err()}</span></Show>
-        </div>
+      {/* t90: always editable on the /labels route — no Edit step, no collapse on Save. */}
+      <GroupEditor groups={draftGroups()} onChange={(g) => setDraftGroups(g)} />
+      <CompoundEditor groups={draftGroups()} compounds={draftCompounds()}
+        usedNames={() => props.usedCompoundNames?.() ?? new Set<string>()}
+        pending={pending()} setPending={setPending}
+        onChange={(c) => setDraftCompounds(c)} />
+      <Show when={blocked()}>
+        {(b) => (
+          <ReassignPicker blockedName={b().name} compounds={draftCompounds()}
+            onConfirm={confirmReassign} onCancel={() => setBlocked(null)} />
+        )}
       </Show>
+      <div class={styles.actions}>
+        <button class={styles.btn} disabled={saving() || !!blocked() || !dirty()} data-testid="label-save"
+          onClick={() => void save()}>
+          {saving() ? t('common.saving') : t('detail.labels.save')}
+        </button>
+        <Show when={dirty()}>
+          <button class={styles.btn} data-testid="label-cancel" onClick={revert}>{t('common.cancel')}</button>
+        </Show>
+        <Show when={err()}><span class={styles.err}>{err()}</span></Show>
+      </div>
     </section>
   );
 };
