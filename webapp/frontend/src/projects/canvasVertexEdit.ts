@@ -96,6 +96,12 @@ export function collapseOnAdjacent(
   return null;
 }
 
+/** t65: scale every point's per-vertex size by `factor` (a relative stroke resize). Points
+ *  without a stored size fall back to the stroke's `width`; never shrinks below 1px. */
+export function scaleStrokeSizes(points: number[][], factor: number, width: number): number[][] {
+  return points.map((p) => [p[0], p[1], Math.max(1, (p[2] ?? width) * factor)]);
+}
+
 /** Convenience: the editable strokes from a selected annotation, or []. */
 export function annStrokes(ann: CanvasAnnotation | undefined): EditableStroke[] {
   return ann?.strokes ?? [];

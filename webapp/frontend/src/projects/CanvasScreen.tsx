@@ -26,6 +26,7 @@ import { adminReadOnlyCommit } from './adminReadOnly';
 import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
 import { createPolylineSnapState } from './canvasSnapIndex';
 import { makeFinishOrSplice } from './canvasSplice';
+import { makeResizeSelected } from './canvasSelectionResize';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -78,19 +79,18 @@ const CanvasScreen: Component = () => {
     finishPolyline, splicePolyline, polylineStrokeId } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId, setDraftRefs,
   });
-  // t67: on finish, splice the run into an existing stroke (adjacent-pair endpoints) or finish.
-  const finishOrSplice = makeFinishOrSplice({
+  const finishOrSplice = makeFinishOrSplice({  // t67: splice run into existing stroke, else finish
     draft, draftRefs, annotations: () => image()?.annotations ?? [],
     runStrokeId: polylineStrokeId, brushSize, splice: splicePolyline, finish: finishPolyline,
   });
+  const resizeSelected = makeResizeSelected({ selected: () => image()?.annotations.find((a) => a.id === selId()), editStroke }); // t65
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
-  // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
-  createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); }));
+  createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); })); // leaving polyline ends the session
 
   // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin().
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
-    brushSize, setBrushSize, maxBrushSize,
+    brushSize, setBrushSize, maxBrushSize, resizeSelected,
     commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
     polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
