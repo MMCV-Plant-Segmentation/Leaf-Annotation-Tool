@@ -42,13 +42,14 @@ test('moveSharedVertex sends the move op, applies the re-fused masks, and record
     ok: true, vertexId: 'vShared', x: 99, y: 88,
     deletedAnnotationIds: ['A', 'B'], deletedGroups: [],
     annotations: [
-      { id: 'A2', kind: 'stroke', label: 'la', strokes: [{ id: 'sA' }], rings: [[[0, 0]]] },
-      { id: 'B2', kind: 'stroke', label: 'lb', strokes: [{ id: 'sB' }], rings: [[[1, 1]]] },
+      { id: 'A2', kind: 'stroke', label: 'la', strokes: [{ id: 'sA', vertexIds: ['vShared', 'vA1'] }], rings: [[[0, 0]]] },
+      { id: 'B2', kind: 'stroke', label: 'lb', strokes: [{ id: 'sB', vertexIds: ['vShared', 'vB1'] }], rings: [[[1, 1]]] },
     ],
     createdGroups: [], tileStates: [],
   };
   const sent: { op: string; body: unknown }[] = [];
   const pushed: unknown[] = [];
+  let selected: string | undefined;
   let img = {
     imageId: 'img1', width: 100, height: 100, tiles: [],
     annotations: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
@@ -65,7 +66,7 @@ test('moveSharedVertex sends the move op, applies the re-fused masks, and record
       enqueue: async (task: (s: (op: string, body: unknown) => Promise<unknown>) => unknown) =>
         task(async (op: string, body: unknown) => { sent.push({ op, body }); return { ok: true, result: moveResult }; }),
     },
-    setSelectedId: () => {},
+    setSelectedId: (id: string) => { selected = id; },
   };
 
   const { moveSharedVertex } = createCanvasPersistence(opts as never);
@@ -77,6 +78,9 @@ test('moveSharedVertex sends the move op, applies the re-fused masks, and record
   expect(sent[0].body).toMatchObject({ vertexId: 'vShared', x: 99, y: 88 });
   // applied the re-fused masks: A/B replaced by A2/B2, C untouched
   expect(img.annotations.map((a) => a.id).sort()).toEqual(['A2', 'B2', 'C']);
+  // t78: the move re-mints the mask, so the selection must migrate onto the re-fused mask
+  // that still carries the moved vertex (else the handles/highlight stick on the dead id).
+  expect(selected).toBe('A2');
   // recorded an undoable vertexMove carrying before+after (undo moves it back to before)
   expect(pushed).toHaveLength(1);
   expect(pushed[0]).toMatchObject({

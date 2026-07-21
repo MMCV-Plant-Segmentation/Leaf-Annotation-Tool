@@ -190,7 +190,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   });
 
   // t50 phase 3b: a SHARED vertex drag routes here — see canvasVertexMovePersist.ts.
-  const moveSharedVertex = createMoveSharedVertex({ socket: o.socket, updateImg: o.updateImg, history: o.history });
+  const moveSharedVertex = createMoveSharedVertex({ socket: o.socket, updateImg: o.updateImg, history: o.history, setSelectedId: o.setSelectedId });
 
   return { commit, relabel, editStroke, moveSharedVertex,
     polylineStep: polySession.step, resetPolyline: polySession.reset,
