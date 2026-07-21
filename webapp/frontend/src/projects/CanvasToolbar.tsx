@@ -31,6 +31,9 @@ type Props = {
   brushSize?: Accessor<number>;
   setBrushSize?: (s: number) => void;
   maxBrushSize?: Accessor<number>;
+  // t65: on the Select tool, the size control targets the SELECTED mask (null = no selection).
+  selectionSize?: () => number | null;
+  setSelectionSize?: (px: number) => void;
   selClass?: Accessor<string>;
   setSelClass?: (c: string) => void;
   classOptions?: () => Label[];
@@ -54,6 +57,21 @@ type Props = {
 const SLIDER_RESOLUTION = 1000;
 
 const clampBrushSize = (v: number, max: number) => Math.max(1, Math.min(max, Math.round(v)));
+
+// Quick absolute sizes for the Select-tool presets dropdown (t65). Clamped to maxBrushSize on pick.
+const SIZE_PRESETS = [2, 4, 8, 16, 32, 64];
+
+// The active size control target: the brush (paint tools) or the SELECTED mask (Select tool,
+// t65) — or null when no size control applies. `presets` gates the dropdown (selection only).
+type SizeCtx = { get: () => number; set: (n: number) => void; presets: boolean };
+const activeSizeCtx = (props: Props): SizeCtx | null => {
+  const tl = props.tool();
+  if ((tl === 'brush' || tl === 'eraser' || tl === 'polyline') && props.brushSize && props.setBrushSize)
+    return { get: props.brushSize, set: props.setBrushSize, presets: false };
+  if (tl === 'select' && props.selectionSize && props.setSelectionSize && props.selectionSize() != null)
+    return { get: () => props.selectionSize!() ?? 1, set: props.setSelectionSize, presets: true };
+  return null;
+};
 
 const sizeToSliderPos = (size: number, max: number): number => {
   const hi = Math.log(Math.max(2, max));
@@ -97,25 +115,38 @@ export const CanvasToolbar: Component<Props> = (props) => (
           );
         }}
       </For>
-      <Show when={props.brushSize && props.setBrushSize && props.maxBrushSize
-        && (props.tool() === 'brush' || props.tool() === 'eraser' || props.tool() === 'polyline')
-        && props.tools.includes(props.tool())}>
-        <label class={styles.sizeLabel}>
-          {'Size'}
-          <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
-            step={1} value={sizeToSliderPos(props.brushSize!(), props.maxBrushSize!())}
-            data-testid="brush-size-slider"
-            onInput={(e) => props.setBrushSize!(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize!()))} />
-          <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize!()}
-            step={1} value={props.brushSize!()} data-testid="brush-size-input"
-            onChange={(e) => {
-              const parsed = Number(e.currentTarget.value);
-              const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize!()) : props.brushSize!();
-              e.currentTarget.value = String(next);
-              props.setBrushSize!(next);
-            }} />
-          <span data-testid="brush-size-value">{'px'}</span>
-        </label>
+      {/* Size control — brush size on the paint tools, or the SELECTED mask's width on the
+          Select tool (t65, with a quick-presets dropdown). See activeSizeCtx. */}
+      <Show when={props.maxBrushSize && props.tools.includes(props.tool()) && activeSizeCtx(props)}>
+        {(ctx) => (
+          <label class={styles.sizeLabel}>
+            {'Size'}
+            <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
+              step={1} value={sizeToSliderPos(ctx().get(), props.maxBrushSize!())}
+              data-testid="brush-size-slider"
+              onInput={(e) => ctx().set(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize!()))} />
+            <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize!()}
+              step={1} value={ctx().get()} data-testid="brush-size-input"
+              onChange={(e) => {
+                const parsed = Number(e.currentTarget.value);
+                const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize!()) : ctx().get();
+                e.currentTarget.value = String(next);
+                ctx().set(next);
+              }} />
+            <span data-testid="brush-size-value">{'px'}</span>
+            <Show when={ctx().presets}>
+              <select class={styles.sizeNumberInput} data-testid="size-presets"
+                onChange={(e) => {
+                  const v = Number(e.currentTarget.value);
+                  e.currentTarget.value = '';
+                  if (v) ctx().set(clampBrushSize(v, props.maxBrushSize!()));
+                }}>
+                <option value="">{t('canvas.sizePresets')}</option>
+                <For each={SIZE_PRESETS}>{(px) => <option value={px}>{px + ' px'}</option>}</For>
+              </select>
+            </Show>
+          </label>
+        )}
       </Show>
       <Show when={props.onUndo && props.onRedo}>
         <span class={styles.sep} />

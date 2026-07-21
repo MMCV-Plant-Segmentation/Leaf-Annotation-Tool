@@ -102,6 +102,12 @@ export function scaleStrokeSizes(points: number[][], factor: number, width: numb
   return points.map((p) => [p[0], p[1], Math.max(1, (p[2] ?? width) * factor)]);
 }
 
+/** t65: set every point's size to `size` (an absolute stroke resize; ≥1px). */
+export function setStrokeSizes(points: number[][], size: number): number[][] {
+  const s = Math.max(1, size);
+  return points.map((p) => [p[0], p[1], s]);
+}
+
 /** Convenience: the editable strokes from a selected annotation, or []. */
 export function annStrokes(ann: CanvasAnnotation | undefined): EditableStroke[] {
   return ann?.strokes ?? [];

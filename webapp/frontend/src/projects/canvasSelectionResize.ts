@@ -6,7 +6,7 @@
  * CanvasScreen stays under the 200-line cap. The absolute-size control is separate.
  */
 import type { CanvasAnnotation } from './canvasApi';
-import { scaleStrokeSizes } from './canvasVertexEdit';
+import { scaleStrokeSizes, setStrokeSizes } from './canvasVertexEdit';
 
 const STEP = 1.15;
 
@@ -33,5 +33,31 @@ export function makeResizeSelected(deps: SelectionResizeDeps): (dir: 1 | -1) => 
                       Math.max(1, s.strokeWidth * factor));
     }
     return true;
+  };
+}
+
+/** t65 (absolute): set the selected mask's stroke width to `size` (from the slider/number
+ *  input or the presets dropdown), applied to every member stroke. */
+export function makeSetSelectionSize(deps: SelectionResizeDeps): (size: number) => void {
+  return (size) => {
+    const ann = deps.selected();
+    if (!ann?.strokes?.length) return;
+    for (const s of ann.strokes) deps.editStroke(s.id, s.tool, setStrokeSizes(s.points, size), Math.max(1, size));
+  };
+}
+
+/** The selected mask's representative stroke width (its first member stroke), or null when
+ *  nothing is selected — drives whether/what the Select-tool size control shows (t65). */
+export function selectionWidth(ann: CanvasAnnotation | undefined): number | null {
+  return ann?.strokes?.[0]?.strokeWidth ?? null;
+}
+
+/** Bundle the three selection-resize handles from one deps object, so CanvasScreen wires
+ *  them in a single line (it sits at the file-size cap). */
+export function createSelectionResize(deps: SelectionResizeDeps) {
+  return {
+    resizeSelected: makeResizeSelected(deps),
+    setSelectionSize: makeSetSelectionSize(deps),
+    selectionSize: () => selectionWidth(deps.selected()),
   };
 }
