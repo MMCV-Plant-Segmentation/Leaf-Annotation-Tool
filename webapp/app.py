@@ -1016,17 +1016,29 @@ def api_compare():
     def union(x, y):
         parent[find(x)] = find(y)
 
+    # t68-i2: build each annotation's polygon ONCE (was rebuilt O(n²) times inside the inner
+    # loop). The AABB pre-filter below still prunes the pair count; this just stops re-buffering.
+    def _poly(pts):
+        try:
+            p = ShapelyPolygon(pts).buffer(0)
+            return p if not p.is_empty else None
+        except Exception:
+            return None
+    polys = [_poly(a['points']) for a in annotations]
+
     edges: list[list[str]] = []
     for i in range(len(annotations)):
         ai = annotations[i]
+        pi = polys[i]
+        if pi is None:
+            continue
         for j in range(i + 1, len(annotations)):
             aj = annotations[j]
             ax0, ay0, ax1, ay1 = ai['bbox']
             bx0, by0, bx1, by1 = aj['bbox']
             if ax0 >= bx1 or ax1 <= bx0 or ay0 >= by1 or ay1 <= by0:
                 continue
-            if ShapelyPolygon(ai['points']).buffer(0).intersects(
-                    ShapelyPolygon(aj['points']).buffer(0)):
+            if polys[j] is not None and pi.intersects(polys[j]):
                 union(ai['id'], aj['id'])
                 edges.append([ai['id'], aj['id']])
 
