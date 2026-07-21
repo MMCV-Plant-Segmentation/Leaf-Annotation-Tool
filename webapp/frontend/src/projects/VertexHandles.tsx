@@ -14,7 +14,7 @@
  */
 import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
 import type { CanvasAnnotation } from './canvasApi';
-import { annStrokes, handleRadiusImg, moveVertex, sharedVertexId } from './canvasVertexEdit';
+import { annStrokes, collapseOnAdjacent, handleRadiusImg, moveVertex, sharedVertexId } from './canvasVertexEdit';
 import { polylineOutline } from './canvasPolylineGeometry';
 import { ringsToPath, strokeOutline } from './canvasShapes';
 import { t } from '../i18n/catalog';
@@ -71,6 +71,14 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
     e.stopPropagation();
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     setDrag(null);
+    // t66: dropped onto an ADJACENT vertex of the same stroke → collapse the duplicate
+    // (remove the dragged vertex) via the per-stroke edit. Takes precedence over the
+    // shared-move: the intent is to delete a redundant vertex, not to drag the shared one.
+    const merged = collapseOnAdjacent(d.points, d.index, d.x, d.y, radius());
+    if (merged) {
+      props.onCommit(d.strokeId, d.tool, merged, d.strokeWidth);
+      return;
+    }
     // t50 phase 3b: a SHARED (snapped) vertex routes to the move op so every mark
     // sharing it follows the drag; an unshared vertex keeps the per-stroke edit.
     const vid = sharedVertexId(props.allAnnotations(), d.strokeId, d.index);
