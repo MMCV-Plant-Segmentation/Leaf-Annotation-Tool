@@ -32,7 +32,8 @@ export interface PolylineClickOpts {
   setDraftRefs: (v: (string | null)[]) => void;
   brushSize: Accessor<number>;
   /** The current snap index (every existing vertex on the image) + the image-space
-   * snap radius for this click (half the brush radius, computed by the caller). */
+   * brush RADIUS for this click; resolveSnap combines it with each vertex's own radius
+   * as max(brushRadius, vertexRadius) (t80). */
   snapIndex: Accessor<VertexIndex>;
   snapRadiusImg: Accessor<number>;
   /** Per-click persistence hook — called with the growing point list on every click.
@@ -62,7 +63,7 @@ export function polylineClick(ix: number, iy: number, o: PolylineClickOpts): voi
   o.polylineStep(next, size, nextRefs);
 }
 
-const EMPTY_INDEX: VertexIndex = { index: null, xs: [], ys: [], ids: [] };
+const EMPTY_INDEX: VertexIndex = { index: null, xs: [], ys: [], ids: [], radii: [], maxRadius: 0 };
 
 /** Thin adapter so `canvasInteraction.ts`'s pointer-down handler stays a one-line call
  * (the file is at the 200-line cap) — accepts the interaction's opts shape directly.

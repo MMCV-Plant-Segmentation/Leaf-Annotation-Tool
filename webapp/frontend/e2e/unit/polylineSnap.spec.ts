@@ -9,7 +9,7 @@
  *
  * Contract (webapp/frontend/src/projects/canvasPolyline.ts polylineClick, extended):
  *   opts gains: draftRefs/setDraftRefs (parallel to draft), snapIndex (VertexIndex accessor),
- *   snapRadiusImg (image-space snap radius accessor = half the brush radius, computed by the caller);
+ *   snapRadiusImg (image-space brush-RADIUS accessor; resolveSnap maxes it with each vertex radius);
  *   polylineStep gains a 3rd arg: the parallel per-point refs array.
  *
  * RED until polylineClick snaps + threads refs (today it appends the raw [ix,iy,size] with no refs).
