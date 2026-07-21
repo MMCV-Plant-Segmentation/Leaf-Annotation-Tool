@@ -308,6 +308,7 @@
   "detail.labels.deleteMemberConfirm": "Delete this member? Compounds using it become invalid and are removed; lesions keep their colour.",
   "detail.labels.compoundEdit": "Edit",
   "detail.labels.saveCompoundEdit": "Save changes",
+  "detail.labels.editFlushHint": "Changes are applied when you click Save.",
   "detail.labels.compositionLocked": "Composition is locked once saved. To change members, create a new compound.",
   "detail.labels.reassignTitle": "\"{name}\" is used by existing lesions",
   "detail.labels.reassignPrompt": "Choose a compound to move those lesions to before removing \"{name}\".",

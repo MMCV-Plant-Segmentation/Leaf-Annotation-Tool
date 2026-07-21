@@ -1,6 +1,7 @@
 // Shared helpers for the taxonomy v2 editor: id minting + palette colour cycling.
 // Pure (no DOM/framework) so it's testable and reusable across the editor components.
 import type { Compound, Group } from './taxonomy';
+import { isCompoundValid } from './taxonomy';
 
 // A small, readable default palette cycled when seeding brand-new compounds. Matches the
 // BE DEFAULT_PALETTE so a fresh compound's colour is consistent end-to-end.
@@ -35,4 +36,36 @@ export function restampOrder(groups: Group[], compounds: Compound[]): { groups: 
     members: g.members.map((m, j) => ({ ...m, order: j })),
   }));
   return { groups: gs, compounds };
+}
+
+/**
+ * t74: fold a VALID in-progress compound edit (`pending`) into the compounds list —
+ * update in place if its id already exists, else append. Invalid/empty/null pending is a
+ * no-op. Pure so both the single-Save flush and the dirty check (t76) share it, and so a
+ * pending edit is never silently dropped by clicking the outer Save.
+ */
+export function flushPending(compounds: Compound[], pending: Compound | null, groups: Group[]): Compound[] {
+  if (!pending || !pending.name.trim() || !isCompoundValid(pending, groups)) return compounds;
+  const saved = { ...pending, name: pending.name.trim() };
+  return compounds.some((c) => c.id === saved.id)
+    ? compounds.map((c) => (c.id === saved.id ? saved : c))
+    : [...compounds, saved];
+}
+
+/**
+ * t76: a stable string identity of a taxonomy draft for dirty-checking. Order-normalized
+ * (contiguous group/member order) and field-order-fixed with selections sorted, so a
+ * server-shaped taxonomy and a client-edited one compare equal when semantically identical.
+ */
+export function taxonomyKey(groups: Group[], compounds: Compound[]): string {
+  const { groups: gs } = restampOrder(groups, compounds);
+  const g = gs.map((x) => ({
+    id: x.id, name: x.name, order: x.order, required: x.required,
+    members: x.members.map((m) => ({ id: m.id, name: m.name, order: m.order })),
+  }));
+  const c = compounds.map((x) => ({
+    id: x.id, name: x.name, color: x.color,
+    selections: Object.fromEntries(Object.entries(x.selections ?? {}).sort()),
+  }));
+  return JSON.stringify({ g, c });
 }

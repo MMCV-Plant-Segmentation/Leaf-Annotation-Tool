@@ -16,7 +16,7 @@ import type { Group, Compound } from './taxonomy';
 import { ApiError } from './httpJson';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
-import { cloneDraft, restampOrder } from './taxonomyEditor';
+import { cloneDraft, restampOrder, flushPending, taxonomyKey } from './taxonomyEditor';
 import GroupEditor from './GroupEditor';
 import CompoundEditor from './CompoundEditor';
 import ReassignPicker from './ReassignPicker';
@@ -35,6 +35,9 @@ export const LabelEditor: Component<Props> = (props) => {
   const [editing, setEditing] = createSignal(false);
   const [draftGroups, setDraftGroups] = createSignal<Group[]>([]);
   const [draftCompounds, setDraftCompounds] = createSignal<Compound[]>([]);
+  // t74: the in-progress compound edit lives HERE (lifted out of CompoundEditor) so the
+  // single Save can flush it and the dirty check (t76) can see it.
+  const [pending, setPending] = createSignal<Compound | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [err, setErr] = createSignal('');
   // t64 C4/C5/C6: set only when a save was rejected because it drops a compound that
@@ -46,13 +49,22 @@ export const LabelEditor: Component<Props> = (props) => {
     const c = cloneDraft(props.groups, props.compounds);
     setDraftGroups(c.groups);
     setDraftCompounds(c.compounds);
+    setPending(null);
     setErr(''); setBlocked(null);
     setEditing(true);
   };
-  const cancel = () => { setEditing(false); setErr(''); setBlocked(null); };
+  const cancel = () => { setEditing(false); setPending(null); setErr(''); setBlocked(null); };
+
+  // t76: enabled only when the (flushed) draft differs from what's stored — a pending
+  // rename counts because flushPending folds it in before comparing.
+  const dirty = createMemo(() =>
+    taxonomyKey(draftGroups(), flushPending(draftCompounds(), pending(), draftGroups()))
+      !== taxonomyKey(props.groups, props.compounds));
 
   const save = async (reassignCompounds?: Record<string, string>) => {
-    const { groups, compounds } = restampOrder(draftGroups(), draftCompounds());
+    // t74: flush the in-progress compound edit FIRST, then persist — one button, both jobs.
+    const flushed = flushPending(draftCompounds(), pending(), draftGroups());
+    const { groups, compounds } = restampOrder(draftGroups(), flushed);
     // A project's paintable labels ARE its compounds. Refuse to save an empty set — the
     // backend would otherwise re-seed the default 'thing' compound on read, which reads
     // as the deleted label "coming back". Blocking here keeps the taxonomy non-empty by
@@ -65,6 +77,7 @@ export const LabelEditor: Component<Props> = (props) => {
     try {
       await projectsApi.update(props.projectId, { groups, compounds, reassignCompounds });
       setBlocked(null);
+      setPending(null);
       setEditing(false);
       props.onSaved();
     } catch (e) {
@@ -106,6 +119,7 @@ export const LabelEditor: Component<Props> = (props) => {
         <GroupEditor groups={draftGroups()} onChange={(g) => setDraftGroups(g)} />
         <CompoundEditor groups={draftGroups()} compounds={draftCompounds()}
           usedNames={() => props.usedCompoundNames?.() ?? new Set<string>()}
+          pending={pending()} setPending={setPending}
           onChange={(c) => setDraftCompounds(c)} />
         <Show when={blocked()}>
           {(b) => (
@@ -114,7 +128,7 @@ export const LabelEditor: Component<Props> = (props) => {
           )}
         </Show>
         <div class={styles.actions}>
-          <button class={styles.btn} disabled={saving() || !!blocked()} data-testid="label-save"
+          <button class={styles.btn} disabled={saving() || !!blocked() || !dirty()} data-testid="label-save"
             onClick={() => void save()}>
             {saving() ? t('common.saving') : t('detail.labels.save')}
           </button>
