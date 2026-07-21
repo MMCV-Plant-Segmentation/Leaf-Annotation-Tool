@@ -14,7 +14,7 @@
  */
 import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
 import type { CanvasAnnotation } from './canvasApi';
-import { annStrokes, collapseOnAdjacent, handleRadiusImg, moveVertex, sharedVertexId } from './canvasVertexEdit';
+import { annStrokes, decideDrop, handleRadiusImg, moveVertex } from './canvasVertexEdit';
 import { polylineOutline } from './canvasPolylineGeometry';
 import { ringsToPath, strokeOutline } from './canvasShapes';
 import { t } from '../i18n/catalog';
@@ -71,24 +71,17 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
     e.stopPropagation();
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     setDrag(null);
-    // t66: dropped onto an ADJACENT vertex of the same stroke → collapse the duplicate
-    // (remove the dragged vertex) via the per-stroke edit. Takes precedence over the
-    // shared-move: the intent is to delete a redundant vertex, not to drag the shared one.
-    const merged = collapseOnAdjacent(d.points, d.index, d.x, d.y, radius());
-    if (merged) {
-      props.onCommit(d.strokeId, d.tool, merged, d.strokeWidth);
-      return;
-    }
-    // t50 phase 3b: a SHARED (snapped) vertex routes to the move op so every mark
-    // sharing it follows the drag; an unshared vertex keeps the per-stroke edit.
-    const vid = sharedVertexId(props.allAnnotations(), d.strokeId, d.index);
-    if (vid) {
+    // t95: a SHARED (snapped/locked) vertex WINS over collapse — routes to the move op so
+    // every mark sharing it follows AND the vertex is never deleted out from under the undo
+    // stack. Only an unshared vertex may collapse onto an adjacent neighbour (t66); anything
+    // else is an ordinary per-stroke edit. Decision is pure (decideDrop) for testability.
+    const decision = decideDrop(props.allAnnotations(), d.strokeId, d.index, d.points, d.x, d.y, radius());
+    if (decision.kind === 'move') {
       const [bx, by] = d.points[d.index];
-      props.onMoveSharedVertex(vid, { x: bx, y: by }, { x: d.x, y: d.y });
+      props.onMoveSharedVertex(decision.vertexId, { x: bx, y: by }, { x: d.x, y: d.y });
       return;
     }
-    const moved = moveVertex(d.points, d.index, d.x, d.y);
-    props.onCommit(d.strokeId, d.tool, moved, d.strokeWidth);
+    props.onCommit(d.strokeId, d.tool, decision.points, d.strokeWidth);
   };
 
   // Live preview: rebuild the affected stroke's outline as the vertex moves.
