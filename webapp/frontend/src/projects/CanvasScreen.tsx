@@ -26,7 +26,7 @@ import { adminReadOnlyCommit } from './adminReadOnly';
 import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
 import { createPolylineSnapState } from './canvasSnapIndex';
 import { makeFinishOrSplice } from './canvasSplice';
-import { makeResizeSelected } from './canvasSelectionResize';
+import { createSelectionResize } from './canvasSelectionResize';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -48,8 +48,7 @@ const CanvasScreen: Component = () => {
   const [tool, setTool] = createSignal<Tool>('select');
   const [selId, setSelId] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal<number[][]>([]);
-  // Compound labels Phase 2b: `paintLabel` is the last compound the user MANUALLY chose for
-  // painting; it drives paint commits + the drop-down's restore-on-deselect (see pickDropdown).
+  // `paintLabel` = the last compound the user chose for painting (drives commits + pickDropdown).
   const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
@@ -83,14 +82,14 @@ const CanvasScreen: Component = () => {
     draft, draftRefs, annotations: () => image()?.annotations ?? [],
     runStrokeId: polylineStrokeId, brushSize, splice: splicePolyline, finish: finishPolyline,
   });
-  const resizeSelected = makeResizeSelected({ selected: () => image()?.annotations.find((a) => a.id === selId()), editStroke }); // t65
+  const selResize = createSelectionResize({ selected: () => image()?.annotations.find((a) => a.id === selId()), editStroke }); // t65
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
   createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); })); // leaving polyline ends the session
 
   // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin().
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
-    brushSize, setBrushSize, maxBrushSize, resizeSelected,
+    brushSize, setBrushSize, maxBrushSize, resizeSelected: selResize.resizeSelected,
     commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
     polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
@@ -160,6 +159,7 @@ const CanvasScreen: Component = () => {
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); setDraftRefs([]); }}
         annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
+        selectionSize={selResize.selectionSize} setSelectionSize={selResize.setSelectionSize}
         selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
         imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
         onBack={() => nav(-1)} onFit={fitImage}
