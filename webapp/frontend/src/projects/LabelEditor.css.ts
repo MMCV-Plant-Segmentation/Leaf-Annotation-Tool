@@ -45,8 +45,8 @@ export const row = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
-  // t73: wrap the button cluster onto a new line on narrow widths instead of overflowing.
-  flexWrap: 'wrap',
+  // t107: input grows+shrinks (min-width:0) so nowrap fills the width without wrapping controls.
+  flexWrap: 'nowrap',
 });
 
 export const color = style({
@@ -150,7 +150,7 @@ export const memberRow = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
-  flexWrap: 'wrap',
+  flexWrap: 'nowrap',   // t107: input fills the row, ↑/↓/✕ stay inline (see `row`)
 });
 
 export const checkLabel = style({

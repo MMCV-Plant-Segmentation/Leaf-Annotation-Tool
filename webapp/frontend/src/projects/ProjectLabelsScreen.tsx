@@ -21,7 +21,9 @@ const ProjectLabelsScreen: Component = () => {
     <ErrorBoundary fallback={<ProjectNotFound />}>
       <Show when={project()} fallback={<div class={styles.wrap}>{t('common.loading')}</div>}>
         {(p) => (
-          <div class={styles.wrap} data-screen="labels">
+          // t107: data-screen="project" (like the other project config screens) so the static
+          // shell gives this route the WIDE card, not the narrow login/home one.
+          <div class={styles.wrap} data-screen="project">
             <div class={styles.header}>
               <button class={styles.back} onClick={() => nav(`/projects/${id()}`)}>
                 {t('detail.backHub')}

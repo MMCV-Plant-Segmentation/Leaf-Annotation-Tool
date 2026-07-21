@@ -272,6 +272,9 @@ test('I8: label editor is on its own /labels route, reachable from the hub, abse
   await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
   // t90: the editor is always open on its route (no Edit step) — its Save control is present.
   await expect(page.getByTestId('label-save')).toBeVisible();
+  // t107: the labels route is a WIDE project screen (data-screen="project") — not the narrow
+  // login/home card — so the static shell gives it the full-width card like its siblings.
+  await expect(page.locator('[data-screen="project"]')).toBeVisible();
 
   // Images screen: still no editor.
   await page.goto(`/projects/${id}/images`);
