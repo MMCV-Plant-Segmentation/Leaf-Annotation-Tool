@@ -20,7 +20,8 @@ os.environ['SECRET_KEY'] = 'test-secret'
 import numpy as np
 from PIL import Image
 from webapp import db, app as appmod
-from webapp.projects import _annotations_overlapping, _annotation_geom, _UNSET
+from webapp.projects import _annotations_overlapping, _annotation_geom, _tiles_for_geom, _UNSET
+from webapp.projects import shapely_box
 
 db.auto_create_schema()
 _c = db.get_db()
@@ -177,4 +178,24 @@ finally:
     db.close_db(con)
 print('B5 OK — bbox maintained across an edit re-fuse')
 
-print('\nALL ANNOTATION-BBOX-INDEX (t68-i1) CHECKS PASSED')
+# ── t68-i2: _tiles_for_geom bbox-WHERE returns the SAME tiles as a full scan ───────────────
+con = db.get_db()
+try:
+    all_tiles = con.execute('SELECT id, x, y, w, h FROM tile WHERE project_image_id = ?',
+                            (image_id,)).fetchall()
+    # include an EDGE-ALIGNED query (a tile's exact right edge) — the boundary-touch case
+    # that a strict `<`/`>` prune would wrongly drop (shapely counts a boundary touch).
+    edge = tiles[0]['x'] + tiles[0]['w']
+    probes = [centre(tiles[0]), centre(tiles[6]), (0, 0), (edge, tiles[0]['y'] + 5)]
+    for cx, cy in probes:
+        g = shapely_box(cx - 25, cy - 25, cx + 25, cy + 25)
+        idx_tiles = set(_tiles_for_geom(con, image_id, g))
+        brute_tiles = {t['id'] for t in all_tiles
+                       if g.intersects(shapely_box(t['x'], t['y'], t['x'] + t['w'], t['y'] + t['h']))}
+        assert idx_tiles == brute_tiles, f'tile prune mismatch at ({cx},{cy}): {idx_tiles} vs {brute_tiles}'
+        assert len(idx_tiles) <= 4, f'a 50px query should hit few tiles, got {len(idx_tiles)}'
+finally:
+    db.close_db(con)
+print('B6 OK — _tiles_for_geom bbox-WHERE == full scan (few tiles)')
+
+print('\nALL ANNOTATION-BBOX-INDEX (t68-i1/i2) CHECKS PASSED')

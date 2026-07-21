@@ -310,9 +310,18 @@ def _tiles_for_geom(con, project_image_id: str, geom) -> list[str]:
     geometry) — one geometry-vs-tiles test, so both stay in lockstep."""
     if geom is None or geom.is_empty:
         return []
+    # t68-i2: AABB pre-filter in SQL (from geom.bounds) so we fetch + shapely-test only the
+    # handful of tiles under the geometry's bbox, not every tile on the image (this runs on
+    # EVERY mutation). Tile-size-independent; the `tile(project_image_id, x, y)` UNIQUE index
+    # covers the (project_image_id, x) prefix. INCLUSIVE bounds (`<=`/`>=`) so an edge/corner
+    # TOUCH survives the prune — shapely `intersects` counts a boundary touch, so a strict
+    # `<`/`>` would drop a tile whose edge exactly aligns with the bbox (integer tile coords
+    # make that common); the exact shapely test then decides.
+    minx, miny, maxx, maxy = geom.bounds
     rows = con.execute(
-        'SELECT id, x, y, w, h FROM tile WHERE project_image_id = ?', (project_image_id,)
-    ).fetchall()
+        'SELECT id, x, y, w, h FROM tile WHERE project_image_id = ? '
+        'AND x <= ? AND x + w >= ? AND y <= ? AND y + h >= ?',
+        (project_image_id, maxx, minx, maxy, miny)).fetchall()
     return [t['id'] for t in rows
             if geom.intersects(shapely_box(t['x'], t['y'], t['x'] + t['w'], t['y'] + t['h']))]
 
