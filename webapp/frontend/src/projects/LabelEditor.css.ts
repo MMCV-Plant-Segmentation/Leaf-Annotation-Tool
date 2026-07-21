@@ -7,6 +7,11 @@ export const section = style({
   border: `1px solid ${vars.color.border}`,
   borderRadius: vars.radius.md,
   background: vars.color.surface,
+  // t73 ROOT CAUSE: as a flex/grid child the editor adopts its content's intrinsic
+  // min-width and can push wider than its column; cap it + let min-width:0 below shrink.
+  maxWidth: '100%',
+  minWidth: 0,
+  boxSizing: 'border-box',
 });
 
 export const head = style({
@@ -25,6 +30,8 @@ export const summary = style({
   fontSize: '0.82rem',
   color: vars.color.textMuted,
   flex: '1 1 auto',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
 });
 
 export const list = style({
@@ -38,6 +45,8 @@ export const row = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
+  // t73: wrap the button cluster onto a new line on narrow widths instead of overflowing.
+  flexWrap: 'wrap',
 });
 
 export const color = style({
@@ -51,7 +60,12 @@ export const color = style({
 });
 
 export const name = style({
-  flex: '1 1 auto',
+  flex: '1 1 8rem',
+  // t73: a text <input> defaults to min-width:auto (~its `size` in ch) and won't shrink as
+  // a flex child → row overflow. min-width:0 lets it share the row; border-box caps padding.
+  minWidth: 0,
+  maxWidth: '100%',
+  boxSizing: 'border-box',
   padding: '0.3rem 0.5rem',
   border: `1px solid ${vars.color.border}`,
   borderRadius: '4px',
@@ -123,33 +137,20 @@ export const groupBlock = style({
   gap: '0.35rem',
 });
 
-// Members render inside a left-railed container (a tree trunk under the group) instead of
-// a flat bulleted list — see GroupEditor. The rail + indent read as "these belong to the group".
+// t75: members render as a plain, slightly-indented list under the group (the same style
+// used elsewhere) — the earlier "tree rail + branch connector" look was reverted.
 export const memberList = style({
   display: 'flex',
   flexDirection: 'column',
   gap: '0.35rem',
-  marginLeft: '0.45rem',
-  paddingLeft: '0.7rem',
-  borderLeft: `2px solid ${vars.color.border}`,
+  marginLeft: '1rem',
 });
 
 export const memberRow = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
-  position: 'relative',
-  // Short horizontal connector from the rail to the member row (the tree "branch").
-  selectors: {
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      left: '-0.7rem',
-      width: '0.5rem',
-      height: '2px',
-      background: vars.color.border,
-    },
-  },
+  flexWrap: 'wrap',
 });
 
 export const checkLabel = style({
@@ -175,6 +176,8 @@ export const pickerLabel = style({
 
 export const compoundName = style({
   flex: '1 1 auto',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
   fontSize: '0.85rem',
   color: vars.color.text,
 });

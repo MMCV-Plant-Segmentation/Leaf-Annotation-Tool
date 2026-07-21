@@ -12,9 +12,14 @@
  * id). The backend enforces this too (webapp.taxonomy.coerce_taxonomy); this is the
  * matching FE affordance so a locked field is never even offered.
  *
+ * t74: the edit draft (`pending`) is OWNED BY LabelEditor and threaded in as controlled
+ * props, so the single outer Save can flush it. This component no longer has its own
+ * "save compound" button for an EXISTING edit — the outer Save persists it. A BRAND-NEW
+ * compound still needs an explicit "Add" (it isn't in the list until valid + added).
+ *
  * Extracted from LabelEditor to keep each FE file under 200 lines.
  */
-import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
+import { type Component, type Setter, For, Show, createMemo } from 'solid-js';
 import type { Compound, Group } from './taxonomy';
 import { isCompoundValid } from './taxonomy';
 import { t } from '../i18n/catalog';
@@ -26,6 +31,9 @@ type Props = {
   compounds: Compound[];
   /** Names of compounds currently painted by some lesion (for the delete-warning). */
   usedNames: () => Set<string>;
+  /** The in-progress compound edit, lifted to LabelEditor (t74). */
+  pending: Compound | null;
+  setPending: Setter<Compound | null>;
   onChange: (compounds: Compound[]) => void;
 };
 
@@ -38,7 +46,8 @@ const selectionNames = (c: Compound, groups: Group[]): string[] =>
     .filter((n): n is string => !!n);
 
 export const CompoundEditor: Component<Props> = (props) => {
-  const [draft, setDraft] = createSignal<Compound | null>(null);
+  const draft = () => props.pending;
+  const setDraft = props.setPending;
   const setCompounds = (fn: (cs: Compound[]) => Compound[]) => props.onChange(fn(props.compounds));
 
   // A draft edits an EXISTING saved compound (composition locked) vs a brand-new one
@@ -65,11 +74,13 @@ export const CompoundEditor: Component<Props> = (props) => {
       return { ...d, selections: sel };
     });
 
-  const save = () => {
+  // A BRAND-NEW compound is committed into the list explicitly (t74: existing edits are
+  // instead flushed by the outer Save). Only reachable when !isExisting().
+  const addNew = () => {
     const d = draft();
     if (!d || !d.name.trim() || !draftValid()) return;
     const saved = { ...d, name: d.name.trim(), id: d.id || uid() };
-    setCompounds((cs) => (isExisting() ? cs.map((c) => (c.id === saved.id ? saved : c)) : [...cs, saved]));
+    setCompounds((cs) => [...cs, saved]);
     setDraft(null);
   };
 
@@ -139,10 +150,18 @@ export const CompoundEditor: Component<Props> = (props) => {
               <span class={styles.pickerLabel}>{t('detail.labels.compositionLocked')}</span>
             </Show>
             <div class={styles.actions}>
-              <button class={styles.btn} disabled={!draftValid() || !d().name.trim()}
-                data-testid="compound-save" onClick={save}>
-                {isExisting() ? t('detail.labels.saveCompoundEdit') : t('detail.labels.saveCompound')}
-              </button>
+              {/* t74: a NEW compound is added explicitly; an EXISTING edit is flushed by the
+                  single outer Save, so no per-compound save button is offered for it. */}
+              <Show when={!isExisting()} fallback={
+                <span class={styles.pickerLabel} data-testid="compound-edit-hint">
+                  {t('detail.labels.editFlushHint')}
+                </span>
+              }>
+                <button class={styles.btn} disabled={!draftValid() || !d().name.trim()}
+                  data-testid="compound-save" onClick={addNew}>
+                  {t('detail.labels.saveCompound')}
+                </button>
+              </Show>
               <button class={styles.btn} onClick={cancel}>{t('common.cancel')}</button>
               <Show when={!draftValid() && d().name.trim()}>
                 <span class={styles.err}>{t('detail.labels.invalidCompound')}</span>
