@@ -57,7 +57,10 @@ export function handleCanvasKeyDown(e: KeyboardEvent, o: CanvasKeyboardOpts): vo
     // and STAYS on the tool, ready for a new line. Only an ESC with no rubber band
     // (empty draft) falls through to the old behaviour of switching to select.
     else if (o.tool() === 'polyline') {
-      if (o.draft().length > 0) { o.setDraft([]); o.setDraftRefs?.([]); o.finishPolyline(); }
+      // Finish BEFORE clearing the draft — the splice check (t67) reads the current draft +
+      // its per-vertex refs synchronously to decide whether this run merges into an existing
+      // stroke, so the draft must still be populated when finishPolyline runs.
+      if (o.draft().length > 0) { o.finishPolyline(); o.setDraft([]); o.setDraftRefs?.([]); }
       else { o.setDraft([]); o.setDraftRefs?.([]); o.setTool('select'); }
     }
     else { o.setDraft([]); o.setDraftRefs?.([]); o.setTool('pan'); }

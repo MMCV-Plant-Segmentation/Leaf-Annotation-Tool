@@ -25,10 +25,10 @@ import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
 import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
 import { createPolylineSnapState } from './canvasSnapIndex';
+import { makeFinishOrSplice } from './canvasSplice';
 import * as styles from './CanvasScreen.css';
 
-// Annotate enables the full tool set (unchanged behavior) — see canvasToolRegistry.ts.
-// 'polyline' is the a11y click-brush (feature #40): same brush data, click-driven input.
+// Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
 const ANNOTATE_TOOLS: Tool[] = ['select', 'pan', 'brush', 'polyline', 'eraser'];
 
 const CanvasScreen: Component = () => {
@@ -47,19 +47,15 @@ const CanvasScreen: Component = () => {
   const [tool, setTool] = createSignal<Tool>('select');
   const [selId, setSelId] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal<number[][]>([]);
-  // Compound labels Phase 2b: `paintLabel` is the last compound the user MANUALLY chose
-  // for painting (the active brush label) — it drives actual paint commits and is what
-  // the drop-down restores to on deselect. See `dropdownLabel`/`pickDropdown` below for
-  // the drop-down's dual role (paint picker + relabel picker).
+  // Compound labels Phase 2b: `paintLabel` is the last compound the user MANUALLY chose for
+  // painting; it drives paint commits + the drop-down's restore-on-deselect (see pickDropdown).
   const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
   const [brushSize, setBrushSize] = createSignal(0);
   // t50 phase 2b: draw-time vertex snapping state (see canvasSnapIndex.ts).
   const { draftRefs, setDraftRefs, snapIndex, snapRadiusImg } = createPolylineSnapState(image, brushSize);
-  // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
-  // (else it briefly floats over a blank/late image). imgLoaded is driven by decode(),
-  // not the SVG <image> onLoad, and is keyed to imageId only — never on pan/zoom — so
-  // there's no flicker while panning/zooming an already-loaded image. See imageDecodeGate.ts.
+  // BUGS #20: the overlay must not paint before the <image> is decode-ready. imgLoaded is
+  // driven by decode() keyed to imageId only (never pan/zoom) — no flicker. See imageDecodeGate.ts.
   const imageId = createMemo(() => image()?.imageId);
   const imgLoaded = createImageDecodeGate(imageId);
 
@@ -78,15 +74,20 @@ const CanvasScreen: Component = () => {
   // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
-  const { commit, relabel, editStroke, moveSharedVertex, polylineStep, resetPolyline, finishPolyline } = createCanvasPersistence({
+  const { commit, relabel, editStroke, moveSharedVertex, polylineStep, resetPolyline,
+    finishPolyline, splicePolyline, polylineStrokeId } = createCanvasPersistence({
     image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId, setDraftRefs,
+  });
+  // t67: on finish, splice the run into an existing stroke (adjacent-pair endpoints) or finish.
+  const finishOrSplice = makeFinishOrSplice({
+    draft, draftRefs, annotations: () => image()?.annotations ?? [],
+    runStrokeId: polylineStrokeId, brushSize, splice: splicePolyline, finish: finishPolyline,
   });
   const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
   // a11y #40 per-click rebuild: leaving polyline ends the session — the next click creates.
   createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); }));
 
-  // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin() is
-  // true, so no gesture writes for the admin (API access left intact for future edits).
+  // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin().
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
     brushSize, setBrushSize, maxBrushSize,
@@ -95,12 +96,11 @@ const CanvasScreen: Component = () => {
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
 
-  // Best-effort viewport telemetry over the shared socket (viewportTelemetry.ts) + unload
-  // guard that warns iff a mutation op is still enqueued/in-flight (canvasUnsavedGuard.ts).
+  // Best-effort viewport telemetry + an unsaved-op unload guard (viewportTelemetry/canvasUnsavedGuard).
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
   createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
-  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setDraftRefs, setSelId, fitImage, draft, finishPolyline });
+  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setDraftRefs, setSelId, fitImage, draft, finishPolyline: finishOrSplice });
 
   // a11y #40 v1b: the selected annotation, only when it's a stroke mask with member
   // strokes to draw handles for; and image-space units per screen pixel (drives
