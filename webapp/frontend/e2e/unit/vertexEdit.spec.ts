@@ -64,4 +64,27 @@ test.describe('canvasVertexEdit', () => {
     // does not mutate the input
     expect(pts[1]).toEqual([40, 10]);
   });
+
+  test('t66: collapseOnAdjacent merges a vertex dropped onto an adjacent one', async () => {
+    const { collapseOnAdjacent } = await import(MOD);
+    const pts = [[10, 10, 4], [40, 10, 4], [40, 40, 4]];
+    // drop the MIDDLE vertex 1 onto its NEXT neighbour (vertex 2 @ 40,40, within 5px) → the
+    // DRAGGED vertex is removed, the neighbour stays; survivors keep their sizes
+    expect(collapseOnAdjacent(pts, 1, 41, 41, 5)).toEqual([[10, 10, 4], [40, 40, 4]]);
+    // drop the ENDPOINT vertex 0 onto its neighbour (vertex 1 @ 40,10) → vertex 0 removed
+    expect(collapseOnAdjacent(pts, 0, 41, 9, 5)).toEqual([[40, 10, 4], [40, 40, 4]]);
+    // does not mutate the input
+    expect(pts.length).toBe(3);
+  });
+
+  test('t66: collapseOnAdjacent is null for an ordinary move / non-adjacent / tiny stroke', async () => {
+    const { collapseOnAdjacent } = await import(MOD);
+    const pts = [[10, 10], [40, 10], [40, 40], [10, 40]];
+    // dropped in open space → ordinary move, no merge
+    expect(collapseOnAdjacent(pts, 1, 25, 25, 5)).toBeNull();
+    // dropped onto a NON-adjacent vertex (index 1 onto index 3 @ (10,40)) → not a merge
+    expect(collapseOnAdjacent(pts, 1, 10, 40, 5)).toBeNull();
+    // a 1-point stroke has nothing to merge into
+    expect(collapseOnAdjacent([[10, 10]], 0, 10, 10, 5)).toBeNull();
+  });
 });

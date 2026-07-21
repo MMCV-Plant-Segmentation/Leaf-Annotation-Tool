@@ -74,6 +74,28 @@ export function moveVertex(
   return points.map((p, i) => (i === index ? [nx, ny] : p));
 }
 
+/**
+ * t66: edit-time vertex MERGE. If the dragged vertex `index` is dropped within
+ * `radiusImg` of an ADJACENT vertex (index-1 or index+1) in the SAME stroke, the two
+ * collapse into one — return a NEW points array with the dragged vertex REMOVED (the
+ * neighbour stays put). Returns null for an ordinary move (no adjacent vertex in range)
+ * or when the stroke has ≤ 1 point (nothing to merge into). Only ADJACENT vertices merge:
+ * dropping onto a non-adjacent vertex of the same polyline is a crossing, not a duplicate.
+ */
+export function collapseOnAdjacent(
+  points: number[][], index: number, nx: number, ny: number, radiusImg: number,
+): number[][] | null {
+  if (points.length <= 1) return null;
+  const rSq = radiusImg * radiusImg;
+  const near = (j: number): boolean => {
+    if (j < 0 || j >= points.length || j === index) return false;
+    const [x, y] = points[j];
+    return (x - nx) ** 2 + (y - ny) ** 2 <= rSq;
+  };
+  if (near(index - 1) || near(index + 1)) return points.filter((_, i) => i !== index);
+  return null;
+}
+
 /** Convenience: the editable strokes from a selected annotation, or []. */
 export function annStrokes(ann: CanvasAnnotation | undefined): EditableStroke[] {
   return ann?.strokes ?? [];
