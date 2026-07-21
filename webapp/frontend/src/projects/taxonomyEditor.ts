@@ -40,12 +40,14 @@ export function restampOrder(groups: Group[], compounds: Compound[]): { groups: 
 
 /**
  * t74: fold a VALID in-progress compound edit (`pending`) into the compounds list —
- * update in place if its id already exists, else append. Invalid/empty/null pending is a
- * no-op. Pure so both the single-Save flush and the dirty check (t76) share it, and so a
- * pending edit is never silently dropped by clicking the outer Save.
+ * update in place if its id already exists, else append. Invalid/null pending is a no-op.
+ * t89: an EMPTY name is now legal (the compound derives its label from its member
+ * selections), so validity is the only gate — the name is trimmed but may be ''. Pure so
+ * both the single-Save flush and the dirty check (t76) share it, and so a pending edit is
+ * never silently dropped by clicking the outer Save.
  */
 export function flushPending(compounds: Compound[], pending: Compound | null, groups: Group[]): Compound[] {
-  if (!pending || !pending.name.trim() || !isCompoundValid(pending, groups)) return compounds;
+  if (!pending || !isCompoundValid(pending, groups)) return compounds;
   const saved = { ...pending, name: pending.name.trim() };
   return compounds.some((c) => c.id === saved.id)
     ? compounds.map((c) => (c.id === saved.id ? saved : c))
