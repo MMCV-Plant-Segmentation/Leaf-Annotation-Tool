@@ -53,6 +53,33 @@ export type LabelSnapshot = {
  * selects an existing member for every required group; every selection present points at a
  * real group+member. Pure (used by the editor to block saving invalid compounds).
  */
+/**
+ * The label DERIVED from a compound's member selections: the selected members' names
+ * joined in GROUP order (a single-group compound => just that member's name). Mirrors
+ * webapp.taxonomy.derive_label. Members deleted since selection contribute nothing.
+ */
+export function deriveLabel(compound: Compound, groups: Group[]): string {
+  const sel = compound.selections || {};
+  const parts: string[] = [];
+  for (const g of groups) {
+    const mid = sel[g.id];
+    if (!mid) continue;
+    const m = g.members.find((mm) => mm.id === mid);
+    if (m && m.name) parts.push(m.name);
+  }
+  return parts.join(' / ');
+}
+
+/**
+ * A compound's DISPLAY label: its custom `name` when set, else the label DERIVED live from
+ * its member selections (t89). Mirrors webapp.taxonomy.compound_label — the single source
+ * of truth so an uncustomised (empty-name) compound tracks member renames everywhere.
+ */
+export function compoundLabel(compound: Compound, groups: Group[]): string {
+  const name = (compound.name || '').trim();
+  return name || deriveLabel(compound, groups);
+}
+
 export function isCompoundValid(compound: Compound, groups: Group[]): boolean {
   const sel = compound.selections || {};
   for (const g of groups) {

@@ -7,6 +7,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { flushPending, taxonomyKey } from '../../src/projects/taxonomyEditor';
+import { compoundLabel, deriveLabel } from '../../src/projects/taxonomy';
 import type { Compound, Group } from '../../src/projects/taxonomy';
 
 const groups: Group[] = [
@@ -29,12 +30,27 @@ test('flushPending appends a valid brand-new compound', () => {
   expect(out.map((c) => c.id)).toEqual(['c1', 'c2']);
 });
 
-test('flushPending is a no-op for null / blank-name / invalid pending', () => {
+test('flushPending is a no-op for null / invalid pending', () => {
   expect(flushPending([thing], null, groups)).toEqual([thing]);
-  expect(flushPending([thing], { ...thing, name: '   ' }, groups)).toEqual([thing]);
   // Missing the required group selection → invalid → not folded in.
   const invalid: Compound = { id: 'c9', name: 'x', color: '#333', selections: {} };
   expect(flushPending([thing], invalid, groups)).toEqual([thing]);
+});
+
+test('t89: flushPending folds a VALID compound whose name was cleared (empty derives)', () => {
+  // Clearing the name of an existing valid compound is now a real edit, not a no-op —
+  // the compound keeps its selection and will derive its label from the member.
+  const out = flushPending([thing], { ...thing, name: '   ' }, groups);
+  expect(out).toEqual([{ ...thing, name: '' }]);
+});
+
+test('t89: compoundLabel/deriveLabel — custom name verbatim, empty derives from members', () => {
+  expect(compoundLabel(thing, groups)).toBe('thing');
+  expect(compoundLabel({ ...thing, name: '' }, groups)).toBe('round');
+  const g2: Group[] = [...groups, { id: 'g2', name: 'size', order: 1, required: false,
+    members: [{ id: 'm3', name: 'big', order: 0 }] }];
+  const empty: Compound = { id: 'c1', name: '', color: '#111', selections: { g1: 'm1', g2: 'm3' } };
+  expect(deriveLabel(empty, g2)).toBe('round / big');
 });
 
 test('flushPending trims the saved name', () => {

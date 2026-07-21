@@ -21,7 +21,7 @@
  */
 import { type Component, type Setter, For, Show, createMemo } from 'solid-js';
 import type { Compound, Group } from './taxonomy';
-import { isCompoundValid } from './taxonomy';
+import { isCompoundValid, compoundLabel, deriveLabel } from './taxonomy';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
 import { uid, nextColor, PALETTE } from './taxonomyEditor';
@@ -75,10 +75,11 @@ export const CompoundEditor: Component<Props> = (props) => {
     });
 
   // A BRAND-NEW compound is committed into the list explicitly (t74: existing edits are
-  // instead flushed by the outer Save). Only reachable when !isExisting().
+  // instead flushed by the outer Save). Only reachable when !isExisting(). t89: an empty
+  // name is legal (the label derives from the selections), so validity is the only gate.
   const addNew = () => {
     const d = draft();
-    if (!d || !d.name.trim() || !draftValid()) return;
+    if (!d || !draftValid()) return;
     const saved = { ...d, name: d.name.trim(), id: d.id || uid() };
     setCompounds((cs) => [...cs, saved]);
     setDraft(null);
@@ -98,7 +99,11 @@ export const CompoundEditor: Component<Props> = (props) => {
       <For each={props.compounds}>
         {(c) => (
           <div class={styles.row} data-testid="compound-row">
-            <span class={styles.compoundName} style={{ color: c.color }}>{c.name}</span>
+            {/* t89: show the DISPLAY label — the custom name, or the live-derived member
+                names when the compound is left unnamed. */}
+            <span class={styles.compoundName} style={{ color: c.color }}>
+              {compoundLabel(c, props.groups)}
+            </span>
             <button class={styles.iconBtn} title={t('detail.labels.compoundEdit')}
               data-testid="compound-edit" onClick={() => startEdit(c)}>✎</button>
             <button class={styles.iconBtn} classList={{ [styles.danger]: true }}
@@ -119,8 +124,10 @@ export const CompoundEditor: Component<Props> = (props) => {
               <input class={styles.color} type="color" value={d().color}
                 data-testid="compound-color"
                 onInput={(e) => setColor(e.currentTarget.value)} />
+              {/* t89: the placeholder PREVIEWS the label a blank name will derive from the
+                  member selections (falls back to the generic hint before any pick). */}
               <input class={styles.name} type="text" value={d().name}
-                placeholder={t('detail.labels.compoundNamePlaceholder')}
+                placeholder={deriveLabel(d(), props.groups) || t('detail.labels.compoundNamePlaceholder')}
                 data-testid="compound-name"
                 onInput={(e) => setName(e.currentTarget.value)} />
             </div>
@@ -157,13 +164,13 @@ export const CompoundEditor: Component<Props> = (props) => {
                   {t('detail.labels.editFlushHint')}
                 </span>
               }>
-                <button class={styles.btn} disabled={!draftValid() || !d().name.trim()}
+                <button class={styles.btn} disabled={!draftValid()}
                   data-testid="compound-save" onClick={addNew}>
                   {t('detail.labels.saveCompound')}
                 </button>
               </Show>
               <button class={styles.btn} onClick={cancel}>{t('common.cancel')}</button>
-              <Show when={!draftValid() && d().name.trim()}>
+              <Show when={!draftValid() && (!!d().name.trim() || Object.keys(d().selections).length > 0)}>
                 <span class={styles.err}>{t('detail.labels.invalidCompound')}</span>
               </Show>
             </div>

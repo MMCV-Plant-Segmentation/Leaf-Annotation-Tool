@@ -236,7 +236,10 @@ def _normalise_v2(obj: dict) -> dict:
         g['order'] = i
     raw_compounds = obj.get('compounds') if isinstance(obj.get('compounds'), list) else []
     compounds = [_normalise_compound(c, i) for i, c in enumerate(raw_compounds)]
-    compounds = [c for c in compounds if c['name']]
+    # t89: an EMPTY name is now legal — such a compound derives its display label from its
+    # member selections. Keep it as long as it carries a name OR at least one selection; a
+    # compound with neither is truly empty and dropped (was: drop any empty name).
+    compounds = [c for c in compounds if c['name'] or c['selections']]
     return {'schema': SCHEMA_V2, 'groups': groups, 'compounds': compounds}
 
 
@@ -327,7 +330,7 @@ def taxonomy_out(raw: Any) -> dict:
     group_by_id = {g['id']: g for g in groups}
     valid_compounds = [c for c in v2['compounds'] if is_compound_valid(c, groups)]
     classes = [
-        {'id': c['id'], 'name': c['name'], 'color': c['color'], 'order': i}
+        {'id': c['id'], 'name': compound_label(c, groups), 'color': c['color'], 'order': i}
         for i, c in enumerate(valid_compounds)
     ]
     # `groups` carries member detail; `compounds` is the paintable (valid) palette.
@@ -362,6 +365,34 @@ def is_compound_valid(compound: dict, groups: list[dict]) -> bool:
     return True
 
 
+# ── compound display label (custom name, else derived from members) ───────────
+
+def derive_label(compound: dict, groups: list[dict]) -> str:
+    """The label DERIVED from a compound's member selections: the selected members' names
+    joined in GROUP order (a single-group compound => just that member's name). Used when a
+    compound carries no custom name (t89). Members deleted since selection contribute
+    nothing (their name is gone)."""
+    sel = compound.get('selections') or {}
+    parts: list[str] = []
+    for g in groups:
+        m_id = sel.get(g['id'])
+        if not m_id:
+            continue
+        member = next((m for m in g['members'] if m['id'] == m_id), None)
+        if member and member.get('name'):
+            parts.append(member['name'])
+    return ' / '.join(parts)
+
+
+def compound_label(compound: dict, groups: list[dict]) -> str:
+    """A compound's DISPLAY label: its custom `name` when set, else the label DERIVED live
+    from its member selections (t89). The single source of truth for how a compound reads
+    in the paint palette, a lesion snapshot, and name-based resolution — so a member rename
+    flows through everywhere for an uncustomised (empty-name) compound."""
+    name = (compound.get('name') or '').strip()
+    return name if name else derive_label(compound, groups)
+
+
 # ── compound snapshot (the denormalised lesion label) ─────────────────────────
 
 def compound_snapshot(compound: dict, groups: list[dict]) -> dict:
@@ -385,7 +416,7 @@ def compound_snapshot(compound: dict, groups: list[dict]) -> dict:
             'groupName': g['name'] if g else '',
         }
     return {
-        'name': compound.get('name') or '',
+        'name': compound_label(compound, groups),
         'color': _hex_color(compound.get('color'), 0),
         'selections': out_sel,
     }
@@ -403,7 +434,7 @@ def snapshot_from_label(raw_taxonomy: Any, label: str | None) -> dict | None:
     if not label:
         return None
     v2 = normalise_taxonomy(raw_taxonomy)
-    match = next((c for c in v2['compounds'] if c['name'] == label), None)
+    match = next((c for c in v2['compounds'] if compound_label(c, v2['groups']) == label), None)
     if not match:
         return None
     return compound_snapshot(match, v2['groups'])
@@ -422,7 +453,7 @@ def id_from_label(raw_taxonomy: Any, label: str | None) -> str | None:
     if not label:
         return None
     v2 = normalise_taxonomy(raw_taxonomy)
-    match = next((c for c in v2['compounds'] if c['name'] == label), None)
+    match = next((c for c in v2['compounds'] if compound_label(c, v2['groups']) == label), None)
     return match['id'] if match else None
 
 
