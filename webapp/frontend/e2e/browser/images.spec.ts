@@ -270,7 +270,8 @@ test('I8: label editor is on its own /labels route, reachable from the hub, abse
   await page.getByTestId('card-labels').click();
   await expect(page).toHaveURL(new RegExp(`/projects/${id}/labels`));
   await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('label-edit')).toBeVisible();
+  // t90: the editor is always open on its route (no Edit step) — its Save control is present.
+  await expect(page.getByTestId('label-save')).toBeVisible();
 
   // Images screen: still no editor.
   await page.goto(`/projects/${id}/images`);
