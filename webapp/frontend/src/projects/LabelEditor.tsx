@@ -12,7 +12,7 @@
  */
 import { type Component, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import { projectsApi } from './api';
-import type { Group, Compound } from './taxonomy';
+import type { Group, Compound, BrokenCompound } from './taxonomy';
 import { ApiError } from './httpJson';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
@@ -20,12 +20,16 @@ import { cloneDraft, restampOrder, flushPending, taxonomyKey } from './taxonomyE
 import GroupEditor from './GroupEditor';
 import CompoundEditor from './CompoundEditor';
 import ReassignPicker from './ReassignPicker';
+import BrokenLabelsSection from './BrokenLabelsSection';
 
 type Props = {
   projectId: string;
   labels: { id: string; name: string; color: string; order: number }[];
   groups: Group[];
   compounds: Compound[];
+  /** t109: INVALID compounds — read-only, carried through save so a normal save doesn't
+   * silently drop them (see `save`'s opaque re-append). */
+  broken: BrokenCompound[];
   /** Names of compounds currently painted by some lesion (for delete-warnings). */
   usedCompoundNames?: () => Set<string>;
   onSaved: () => void;
@@ -34,6 +38,9 @@ type Props = {
 export const LabelEditor: Component<Props> = (props) => {
   const [draftGroups, setDraftGroups] = createSignal<Group[]>([]);
   const [draftCompounds, setDraftCompounds] = createSignal<Compound[]>([]);
+  // t109: broken compounds are carried opaquely (never edited here) so a normal save
+  // doesn't drop them (see `save`'s re-append); the ONLY mutation is Delete.
+  const [draftBroken, setDraftBroken] = createSignal<BrokenCompound[]>([]);
   // t74: the in-progress compound edit lives HERE (lifted out of CompoundEditor) so the
   // single Save can flush it and the dirty check (t76) can see it.
   const [pending, setPending] = createSignal<Compound | null>(null);
@@ -49,21 +56,27 @@ export const LabelEditor: Component<Props> = (props) => {
   // re-renders (which would clobber an in-progress edit).
   const [baseKey, setBaseKey] = createSignal<string | null>(null);
 
-  const seed = (groups: Group[], compounds: Compound[], key: string) => {
+  // t109: the reseed key also tracks `broken` ids so a delete-then-refetch reseeds too.
+  const fullKey = (groups: Group[], compounds: Compound[], broken: BrokenCompound[]) =>
+    `${taxonomyKey(groups, compounds)}|${broken.map((b) => b.id).sort().join(',')}`;
+
+  const seed = (groups: Group[], compounds: Compound[], broken: BrokenCompound[], key: string) => {
     const c = cloneDraft(groups, compounds);
     setDraftGroups(c.groups);
     setDraftCompounds(c.compounds);
+    setDraftBroken(broken);
     setPending(null);
     setErr(''); setBlocked(null);
     setBaseKey(key);
   };
   createEffect(() => {
-    const key = taxonomyKey(props.groups, props.compounds);
-    if (key !== baseKey()) seed(props.groups, props.compounds, key);
+    const key = fullKey(props.groups, props.compounds, props.broken);
+    if (key !== baseKey()) seed(props.groups, props.compounds, props.broken, key);
   });
   // t90: with no collapse-on-save, "Cancel" discards unsaved edits by re-seeding from the
   // persisted taxonomy (shown only while dirty).
-  const revert = () => seed(props.groups, props.compounds, taxonomyKey(props.groups, props.compounds));
+  const revert = () => seed(props.groups, props.compounds, props.broken,
+    fullKey(props.groups, props.compounds, props.broken));
 
   // t76: enabled only when the (flushed) draft differs from what's stored — a pending
   // rename counts because flushPending folds it in before comparing.
@@ -83,21 +96,31 @@ export const LabelEditor: Component<Props> = (props) => {
       setErr(t('detail.labels.emptyError'));
       return;
     }
+    // t109: carry the (post-delete) broken compounds through as opaque Compound objects —
+    // `update_project`'s existing_ids/new_ids diff otherwise sees every broken compound as
+    // "dropped" on a normal save (referenced -> spurious 409; unreferenced -> silently
+    // vanishes). Their `selections` are ignored: `coerce_taxonomy` re-locks an EXISTING
+    // id's selections to the stored value, so this empty placeholder never persists.
+    const brokenAsCompounds: Compound[] = draftBroken().map((b) => (
+      { id: b.id, name: b.name, color: b.color, selections: {} }));
     setSaving(true); setErr('');
     try {
-      await projectsApi.update(props.projectId, { groups, compounds, reassignCompounds });
+      await projectsApi.update(props.projectId,
+        { groups, compounds: [...compounds, ...brokenAsCompounds], reassignCompounds });
       // t90: stay open (no collapse). Fold the persisted values back into the draft and
       // clear the pending edit so the editor reflects the saved state immediately (no
       // stale-name flash before the parent's refetch lands) and Save re-disables (not
       // dirty). Advancing baseKey keeps the re-seed effect from redundantly re-cloning.
-      seed(groups, compounds, taxonomyKey(groups, compounds));
+      seed(groups, compounds, draftBroken(), fullKey(groups, compounds, draftBroken()));
       props.onSaved();
     } catch (e) {
       const body = e instanceof ApiError ? (e.body as { blockedCompoundId?: string } | null) : null;
       if (body?.blockedCompoundId) {
         // The blocked compound is already gone from the draft — recover its name from
-        // the taxonomy this editor opened with (props.compounds), for the picker's message.
-        const name = props.compounds.find((c) => c.id === body.blockedCompoundId)?.name ?? '';
+        // the taxonomy this editor opened with (props.compounds / props.broken), for the
+        // picker's message.
+        const name = props.compounds.find((c) => c.id === body.blockedCompoundId)?.name
+          ?? props.broken.find((b) => b.id === body.blockedCompoundId)?.name ?? '';
         setBlocked({ id: body.blockedCompoundId, name });
       } else {
         setErr(e instanceof Error ? e.message : 'Save failed');
@@ -105,6 +128,11 @@ export const LabelEditor: Component<Props> = (props) => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const deleteBroken = (id: string) => {
+    setDraftBroken((list) => list.filter((b) => b.id !== id));
+    void save();
   };
 
   const confirmReassign = (targetId: string) => {
@@ -128,6 +156,7 @@ export const LabelEditor: Component<Props> = (props) => {
         usedNames={() => props.usedCompoundNames?.() ?? new Set<string>()}
         pending={pending()} setPending={setPending}
         onChange={(c) => setDraftCompounds(c)} />
+      <BrokenLabelsSection broken={draftBroken()} onDelete={deleteBroken} />
       <Show when={blocked()}>
         {(b) => (
           <ReassignPicker blockedName={b().name} compounds={draftCompounds()}

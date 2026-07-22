@@ -334,13 +334,19 @@ def taxonomy_out(raw: Any) -> dict:
     groups = v2['groups']
     group_by_id = {g['id']: g for g in groups}
     valid_compounds = [c for c in v2['compounds'] if is_compound_valid(c, groups)]
+    invalid_compounds = [c for c in v2['compounds'] if not is_compound_valid(c, groups)]
     classes = [
         {'id': c['id'], 'name': compound_label(c, groups), 'color': c['color'], 'order': i}
         for i, c in enumerate(valid_compounds)
     ]
+    broken = [
+        {'id': c['id'], 'name': compound_label(c, groups), 'color': _hex_color(c.get('color'), 0)}
+        for c in invalid_compounds
+    ]
     # `groups` carries member detail; `compounds` is the paintable (valid) palette.
+    # `broken` surfaces INVALID compounds (t109) — never in `compounds`/`classes`.
     return {'groups': groups, 'compounds': valid_compounds, 'classes': classes,
-            'groupById': group_by_id}
+            'groupById': group_by_id, 'broken': broken}
 
 
 # ── compound validation ───────────────────────────────────────────────────────
@@ -485,6 +491,65 @@ def resolve_compound_snapshot(raw_taxonomy: Any, compound_id: str | None) -> dic
     if not match:
         return None
     return compound_snapshot(match, v2['groups'])
+
+
+def fold_orphans(classes_json: Any, painted: list[dict]) -> dict:
+    """Pure migration transform (t109): fold every ORPHANED painted label into a new
+    INVALID compound so it becomes visible/actionable in the editor's `broken` surface,
+    without changing what any lesion renders.
+
+    `painted` is `[{id, label, snapshot, compound_id}]` — `snapshot` is the parsed
+    `label_snapshot` dict (or None). A row is an ORPHAN when its effective label (the
+    snapshot's `name` if present, else the bare `label`) matches no compound the lesion's
+    `compound_id` already resolves to, AND matches no CURRENT compound's display label
+    (valid or invalid — a lesion already pointing at an invalid compound is not an orphan,
+    it's already covered by that compound's `broken` listing).
+
+    Returns `{'classes_json': <str>, 'repoint': {annId: newCompoundId}}`. One new INVALID
+    compound is minted per distinct orphan label (name=label, color=the first snapshot
+    colour seen for that label, else a palette default), APPENDED to the taxonomy.
+    Idempotent: a label that already has a matching compound (including one minted by a
+    prior fold) is left alone.
+    """
+    v2 = normalise_taxonomy(classes_json)
+    groups = v2['groups']
+    compounds = list(v2['compounds'])
+    by_id = {c['id']: c for c in compounds}
+    labels_present = {compound_label(c, groups) for c in compounds}
+
+    # group orphaned rows by effective label, remembering the first snapshot colour seen.
+    orphan_ids_by_label: dict[str, list[str]] = {}
+    orphan_color_by_label: dict[str, str] = {}
+    for row in painted:
+        snapshot = row.get('snapshot')
+        effective = (snapshot or {}).get('name') or row.get('label')
+        if not effective:
+            continue
+        cid = row.get('compound_id')
+        if cid and cid in by_id:
+            continue
+        if effective in labels_present:
+            continue
+        orphan_ids_by_label.setdefault(effective, []).append(row['id'])
+        if effective not in orphan_color_by_label:
+            color = (snapshot or {}).get('color')
+            if color:
+                orphan_color_by_label[effective] = color
+
+    repoint: dict[str, str] = {}
+    for i, (label, ann_ids) in enumerate(orphan_ids_by_label.items()):
+        color = orphan_color_by_label.get(label) or _default_color(len(compounds) + i)
+        new_compound = {
+            'id': _uid(), 'name': label, 'color': _hex_color(color, 0),
+            'selections': {'__deleted__': '__deleted__'},
+        }
+        compounds.append(new_compound)
+        labels_present.add(label)
+        for ann_id in ann_ids:
+            repoint[ann_id] = new_compound['id']
+
+    v2 = {'schema': SCHEMA_V2, 'groups': groups, 'compounds': compounds}
+    return {'classes_json': dump_taxonomy(v2), 'repoint': repoint}
 
 
 def dump_taxonomy(taxonomy: Any) -> str:

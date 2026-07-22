@@ -1,8 +1,11 @@
 // API client + types for the annotator project pipeline.
 // Mirrors webapp/projects.py. Kept thin so the backend stays the single source of truth.
 
-/** A per-project label (Option A taxonomy): flat list, no hierarchy/sharing. */
-export type Label = { id: string; name: string; color: string; order: number };
+/** A per-project label (Option A taxonomy): flat list, no hierarchy/sharing.
+ * `broken` (t109, optional): true when this option is a folded-in BROKEN compound —
+ * still paintable (resolution matches by name against the full compound list), just
+ * flagged in the picker so the user sees it needs fixing in the labels editor. */
+export type Label = { id: string; name: string; color: string; order: number; broken?: boolean };
 
 export type ProjectSummary = {
   id: string;
@@ -12,6 +15,9 @@ export type ProjectSummary = {
   classes: Label[];
   groups: Group[];
   compounds: Compound[];
+  /** t109: INVALID compounds — never in `compounds`/`classes`, shown read-only in the
+   * editor's "Broken labels" section (delete opens the existing reassign flow). */
+  brokenCompounds: BrokenCompound[];
   tiling_confirmed: boolean;
   created_by: string | null;
   created_at: string;
@@ -74,7 +80,7 @@ export type TilePreview = {
 };
 
 import { jbody, jfetch } from './httpJson';
-import type { Group, Compound } from './taxonomy';
+import type { Group, Compound, BrokenCompound } from './taxonomy';
 
 // Canvas annotation types + their API methods live in their own module (keeps this file
 // ≤200 lines) — re-exported here so every existing `projectsApi.foo(...)` / `import type

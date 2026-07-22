@@ -27,6 +27,7 @@ import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } fro
 import { createPolylineSnapState } from './canvasSnapIndex';
 import { makeFinishOrSplice } from './canvasSplice';
 import { createSelectionResize } from './canvasSelectionResize';
+import { buildClassOptions } from './canvasClassOptions';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -128,8 +129,7 @@ const CanvasScreen: Component = () => {
 
   const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas);
 
-  const classOptions = (): Label[] => canvas()?.classes ?? [];
-
+  const classOptions = (): Label[] => buildClassOptions(canvas()?.classes ?? [], canvas()?.broken ?? []);
   // Taxonomy v2: a lesion renders in its SNAPSHOT colour (captured at assign time) so a
   // later preset edit/delete never orphans its colour. Lesions without a snapshot (legacy
   // free-text) fall back to the matching compound's colour, then the canonical blue.

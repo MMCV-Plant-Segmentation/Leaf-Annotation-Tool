@@ -31,7 +31,8 @@ const ProjectLabelsScreen: Component = () => {
               <h2 class={styles.title}>{p().name}</h2>
             </div>
             <LabelEditor projectId={id()} labels={p().classes} groups={p().groups ?? []}
-              compounds={p().compounds ?? []} onSaved={() => void refetch()} />
+              compounds={p().compounds ?? []} broken={p().brokenCompounds ?? []}
+              onSaved={() => void refetch()} />
           </div>
         )}
       </Show>

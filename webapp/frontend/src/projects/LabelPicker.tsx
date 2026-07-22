@@ -24,6 +24,11 @@ type Props = {
   testId: string;
 };
 
+// t109: a broken (folded-in INVALID compound) option is flagged with a leading "⚠" —
+// display only, the underlying `name` (the resolvable paint value) is untouched.
+const labelText = (item: Label | null): string =>
+  item ? (item.broken ? `⚠ ${item.name}` : item.name) : '';
+
 export const LabelPicker: Component<Props> = (props) => {
   const items = (): Label[] => {
     const opts = props.options();
@@ -51,7 +56,7 @@ export const LabelPicker: Component<Props> = (props) => {
       itemComponent={(ip) => (
         <Select.Item item={ip.item} class={styles.item}
           style={{ color: ip.item.rawValue.color }}>
-          <Select.ItemLabel>{ip.item.rawValue.name}</Select.ItemLabel>
+          <Select.ItemLabel>{labelText(ip.item.rawValue)}</Select.ItemLabel>
         </Select.Item>
       )}
     >
@@ -59,7 +64,7 @@ export const LabelPicker: Component<Props> = (props) => {
         {/* Static children (not Select.Value's render-prop form) — driven by OUR OWN
             `selected()` accessor so this never needs Kobalte's internal generic state. */}
         <Select.Value class={styles.value}>
-          <span style={{ color: selected()?.color }}>{selected()?.name}</span>
+          <span style={{ color: selected()?.color }}>{labelText(selected())}</span>
         </Select.Value>
         <Select.Icon class={styles.icon}>▾</Select.Icon>
       </Select.Trigger>

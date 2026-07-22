@@ -79,6 +79,7 @@ def _project_out(row: dict) -> dict:
     out['classes'] = tax['classes']
     out['groups'] = tax['groups']
     out['compounds'] = tax['compounds']
+    out['brokenCompounds'] = tax['broken']
     out.pop('classes_json', None)
     out['tiling_confirmed'] = bool(out.get('tiling_confirmed', 0))
     return out
@@ -1305,6 +1306,7 @@ def get_batch(batch_id: str):
         classes = tax['classes']
         groups = tax['groups']
         compounds = tax['compounds']
+        broken = tax['broken']
         rows = con.execute(
             '''SELECT bt.id bt_id, t.id tile_id, t.project_image_id, t.x, t.y, t.w, t.h
                FROM batch_tile bt JOIN tile t ON t.id = bt.tile_id
@@ -1343,7 +1345,8 @@ def get_batch(batch_id: str):
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
             'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
-            'classes': classes, 'groups': groups, 'compounds': compounds, 'images': images,
+            'classes': classes, 'groups': groups, 'compounds': compounds, 'broken': broken,
+            'images': images,
         })
     finally:
         _db.close_db(con)

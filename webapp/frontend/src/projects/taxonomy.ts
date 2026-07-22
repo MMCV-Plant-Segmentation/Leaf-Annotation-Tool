@@ -26,6 +26,14 @@ export type Compound = {
   selections: Record<string, string>;
 };
 
+/**
+ * A BROKEN compound (t109): an INVALID compound (missing a required group/member, or an
+ * orphaned painted label folded in by the `0012_orphan_labels` migration) projected to
+ * just what the editor/annotator need to surface it — {id,name,color}, no `selections`
+ * (it is never editable in place, only deletable/reassignable via `ReassignPicker`).
+ */
+export type BrokenCompound = { id: string; name: string; color: string };
+
 /** The full taxonomy read surface (groups + the valid compound palette + flat classes). */
 export type Taxonomy = {
   groups: Group[];

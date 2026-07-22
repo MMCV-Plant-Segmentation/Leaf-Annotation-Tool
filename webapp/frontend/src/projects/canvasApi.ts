@@ -2,7 +2,7 @@
 // to keep it ≤200 lines. Re-exported from api.ts so `projectsApi.createAnnotation(...)`
 // etc. keep working unchanged for every existing caller.
 import type { Rect, Label } from './api';
-import type { Group, Compound, LabelSnapshot } from './taxonomy';
+import type { Group, Compound, LabelSnapshot, BrokenCompound } from './taxonomy';
 import { jbody, jfetch } from './httpJson';
 import { strokeEditApi } from './canvasStrokeEditApi';
 export type { StrokeEditBefore, StrokeEditGroup } from './canvasStrokeEditApi';
@@ -61,6 +61,8 @@ export type BatchCanvas = {
   classes: Label[];
   groups: Group[];
   compounds: Compound[];
+  /** t109: broken (INVALID) compounds — merged into the paint dropdown, flagged. */
+  broken: BrokenCompound[];
   images: CanvasImage[];
 };
 
