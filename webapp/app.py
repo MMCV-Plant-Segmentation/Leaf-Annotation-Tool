@@ -292,7 +292,11 @@ def _sync_admin(cfg: AppConfig) -> None:
         if password:
             phash = generate_password_hash(password)
             if row:
-                con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
+                con.execute(
+                    "UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1"
+                    " WHERE username = 'admin'",
+                    (phash,),
+                )
             else:
                 con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
             con.commit()

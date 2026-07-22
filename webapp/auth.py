@@ -16,10 +16,36 @@ _ENV_ONLY  = {'DATA_DIR', 'SECRET_KEY', 'ADMIN_PASSWORD'}  # never stored in set
 
 # ── Decorators ────────────────────────────────────────────────────────────────
 
+def _session_still_valid() -> bool:
+    """t124: re-validate the session's stamped epoch against the user's current
+    `session_epoch` on every request. A password write bumps the epoch, so any
+    session stamped with a stale (or absent) epoch is logged out here.
+
+    BACKWARD-COMPAT (load-bearing): read the stamped value as `session.get('epoch', 0)`
+    — a session with NO epoch key (every session_transaction-based test login; any
+    pre-existing cookie from before this landed) is treated as epoch 0, matching a
+    fresh user's DEFAULT 0. Do NOT use a strict `'epoch' in session` check — that
+    would 401 the entire existing session_transaction-based test corpus.
+    """
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT session_epoch FROM users WHERE id = ?', (session['user_id'],),
+        ).fetchone()
+    finally:
+        _db.close_db(con)
+    if not row:
+        return False
+    return session.get('epoch', 0) == row['session_epoch']
+
+
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
+            return jsonify({'error': 'not logged in'}), 401
+        if not _session_still_valid():
+            session.clear()
             return jsonify({'error': 'not logged in'}), 401
         return f(*args, **kwargs)
     return wrapper
@@ -29,6 +55,9 @@ def admin_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if 'user_id' not in session:
+            return jsonify({'error': 'not logged in'}), 401
+        if not _session_still_valid():
+            session.clear()
             return jsonify({'error': 'not logged in'}), 401
         if session.get('username') != 'admin':
             return jsonify({'error': 'admin required'}), 403
@@ -46,7 +75,8 @@ def api_login():
     con      = _db.get_db()
     try:
         row = con.execute(
-            'SELECT id, username, password_hash FROM users WHERE username = ?', (username,)
+            'SELECT id, username, password_hash, session_epoch FROM users WHERE username = ?',
+            (username,),
         ).fetchone()
     finally:
         _db.close_db(con)
@@ -55,6 +85,7 @@ def api_login():
     session.clear()
     session['user_id']  = row['id']
     session['username'] = row['username']
+    session['epoch']    = row['session_epoch']
     return jsonify({'ok': True})
 
 
@@ -123,12 +154,16 @@ def api_update_password():
         if not row or not row['password_hash'] or not check_password_hash(row['password_hash'], current):
             return jsonify({'error': 'current password is incorrect'}), 400
         con.execute(
-            'UPDATE users SET password_hash = ? WHERE id = ?',
+            'UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?',
             (generate_password_hash(password), session['user_id']),
         )
         con.commit()
     finally:
         _db.close_db(con)
+    # t124 (choice B): do NOT re-stamp session['epoch'] here — the epoch bump above
+    # invalidates every session for this user, including the one that made the change.
+    # The next token-gated request on THIS device 401s too, same as any other device;
+    # a fresh login re-stamps the new epoch.
     return jsonify({'ok': True})
 
 
@@ -227,7 +262,10 @@ def api_reset_user(user_id: int):
             return jsonify({'error': 'user not found'}), 404
         if row['username'] == 'admin':
             return jsonify({'error': 'cannot reset admin via UI'}), 403
-        con.execute('UPDATE users SET password_hash = NULL WHERE id = ?', (user_id,))
+        con.execute(
+            'UPDATE users SET password_hash = NULL, session_epoch = session_epoch + 1 WHERE id = ?',
+            (user_id,),
+        )
         con.execute('DELETE FROM invite_codes WHERE user_id = ?', (user_id,))
         invite = _make_invite(con, user_id)
         con.commit()
@@ -292,7 +330,7 @@ def api_accept_invite(token: str):
         if not row or row['expires'] < time.time():
             return jsonify({'error': 'invalid or expired invite'}), 403
         con.execute(
-            'UPDATE users SET password_hash = ? WHERE id = ?',
+            'UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1 WHERE id = ?',
             (generate_password_hash(password), row['user_id']),
         )
         con.execute('DELETE FROM invite_codes WHERE id = ?', (row['id'],))
