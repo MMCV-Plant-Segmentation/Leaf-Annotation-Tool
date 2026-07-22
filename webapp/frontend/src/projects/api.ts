@@ -43,14 +43,24 @@ export type ProjectImage = {
   leaf_x: number; leaf_y: number; leaf_w: number; leaf_h: number;
 };
 
+/** t126 Phase 2: a batch_member's derived per-tile progress. */
+export type BatchMember = {
+  annotator: string;
+  tilesCompleted: number;
+  tilesTotal: number;
+  percent: number;
+};
+
 export type Batch = {
   id: string;
   seq: number;
   size: number;
   status: string;
   tileCount: number;
-  /** MERGE Phase 1 gate: true once every annotator_tile in the batch is 'completed'. */
+  /** MERGE Phase 1 gate: true once every batch_member has completed every tile. */
   mergeReady: boolean;
+  /** t126 Phase 2: the durable batch_member set + each member's percent-complete. */
+  members: BatchMember[];
 };
 
 export type Progress = {
@@ -141,6 +151,17 @@ export const projectsApi = {
 
   createBatch: (id: string, size: number) =>
     jfetch<Batch & { rosterSize: number }>(`/api/projects/${id}/batches`, jbody('POST', { size })),
+
+  /** t126 Phase 2: batch membership editing. addBatchMember is idempotent; removeBatchMember
+   * needs confirm=true when the member has existing work (else the server 409s with
+   * {needsConfirm: true} — see ApiError.body in httpJson.ts). */
+  addBatchMember: (batchId: string, annotator: string) =>
+    jfetch<{ ok: boolean; members: BatchMember[] }>(
+      `/api/batches/${batchId}/members`, jbody('POST', { annotator })),
+  removeBatchMember: (batchId: string, annotator: string, confirm?: boolean) =>
+    jfetch<{ ok: boolean; members: BatchMember[] }>(
+      `/api/batches/${batchId}/members/${encodeURIComponent(annotator)}${confirm ? '?confirm=1' : ''}`,
+      { method: 'DELETE' }),
 
   ...canvasApi,
 };

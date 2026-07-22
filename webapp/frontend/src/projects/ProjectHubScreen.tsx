@@ -9,7 +9,7 @@ import { type Component, createResource, createSignal, ErrorBoundary, Show } fro
 import { useNavigate, useParams } from '@solidjs/router';
 import { projectsApi } from './api';
 import { t } from '../i18n/catalog';
-import ProjectProgressTable from './ProjectProgressTable';
+import BatchMembership from './BatchMembership';
 import ProjectRosterSection from './ProjectRosterSection';
 import ProjectStepCards from './ProjectStepCards';
 import ProjectNotFound from './ProjectNotFound';
@@ -62,7 +62,13 @@ const ProjectHubScreen: Component = () => {
 
             <ProjectRosterSection projectId={id()} annotators={p().annotators} onReload={reload} />
 
-            <ProjectProgressTable progress={p().progress} />
+            <BatchMembership
+              projectId={id()}
+              batches={p().batches}
+              annotators={p().annotators}
+              tilingConfirmed={p().tiling_confirmed}
+              onReload={reload}
+            />
 
             <section class={styles.dangerZone}>
               <Show

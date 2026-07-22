@@ -641,6 +641,7 @@ def get_project(project_id: str):
                 'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (b['id'],)
             ).fetchone()['c']
             b['mergeReady'] = _merge_ready(con, b['id'])
+            b['members'] = _batch_members_progress(con, b['id'])
         out['batches'] = batches
         out['progress'] = _progress(con, project_id, batches)
         return jsonify(out)
@@ -1231,11 +1232,20 @@ def create_batch(project_id: str):
             return jsonify({'error': 'no unused tiles left to sample'}), 409
 
         batch_id = _uid()
+        now = _now()
         con.execute(
             'INSERT INTO batch (id, project_id, seq, size, status, created_at)'
             " VALUES (?, ?, ?, ?, 'annotation_in_progress', ?)",
-            (batch_id, project_id, seq, size, _now()),
+            (batch_id, project_id, seq, size, now),
         )
+        # t126 Phase 2: batch_member is the durable membership set, SEEDED from the
+        # project roster AT CREATION TIME (preserves today's "membership == live roster"
+        # behaviour for this batch going forward). A later roster add is NOT auto-added.
+        for byline in roster:
+            con.execute(
+                'INSERT OR IGNORE INTO batch_member (batch_id, annotator, created_at) '
+                'VALUES (?, ?, ?)', (batch_id, byline, now),
+            )
         for key in picked:
             im, t = pool[key]
             image_id, x, y = key
@@ -1266,29 +1276,57 @@ def create_batch(project_id: str):
 
 # ── batch / canvas read ───────────────────────────────────────────────────────
 
+def _batch_members(con, batch_id: str) -> list[str]:
+    """batch_member bylines for this batch — the durable membership set (t126 Phase 2),
+    NOT the live project_annotator roster."""
+    return [r['annotator'] for r in con.execute(
+        'SELECT annotator FROM batch_member WHERE batch_id = ?', (batch_id,)).fetchall()]
+
+
 def _merge_ready(con, batch_id: str) -> bool:
-    """MERGE Phase 1 gate: a batch is merge-ready when EVERY CURRENT roster member has
-    completed EVERY tile. t126: completion is lazy (a missing annotator_tile row = not done,
-    NOT pre-provisioned), so readiness is derived from (roster members × batch tiles) vs the
-    count of 'completed' rows for CURRENT members — never from the mere presence of rows. A
-    batch with no tiles or no roster is never ready; adding a member lowers readiness until
-    they complete too."""
+    """MERGE Phase 1 gate: a batch is merge-ready when EVERY batch MEMBER has completed
+    EVERY tile. t126 Phase 2: membership is the durable `batch_member` set, not the live
+    project roster — adding a member lowers readiness until they complete; removing one
+    raises it. Completion is lazy (a missing annotator_tile row = not done, NOT
+    pre-provisioned), so readiness is derived from (members × batch tiles) vs the count of
+    'completed' rows for CURRENT members. A batch with no tiles or no members is never
+    ready."""
     batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
     if not batch:
         return False
-    roster = [r['byline'] for r in con.execute(
-        'SELECT byline FROM project_annotator WHERE project_id = ?', (batch['project_id'],)).fetchall()]
+    members = _batch_members(con, batch_id)
     tile_count = con.execute(
         'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (batch_id,)).fetchone()['c']
-    if not roster or tile_count == 0:
+    if not members or tile_count == 0:
         return False
-    qm = ','.join('?' * len(roster))
+    qm = ','.join('?' * len(members))
     done = con.execute(
         f'''SELECT COUNT(*) c FROM annotator_tile at
             JOIN batch_tile bt ON bt.id = at.batch_tile_id
             WHERE bt.batch_id = ? AND at.state = 'completed' AND at.annotator IN ({qm})''',
-        (batch_id, *roster)).fetchone()['c']
-    return done == len(roster) * tile_count
+        (batch_id, *members)).fetchone()['c']
+    return done == len(members) * tile_count
+
+
+def _batch_members_progress(con, batch_id: str) -> list[dict]:
+    """[{annotator, tilesCompleted, tilesTotal, percent}] for this batch's members, derived
+    from batch_member (durable membership) x batch_tile x completion."""
+    members = _batch_members(con, batch_id)
+    tile_count = con.execute(
+        'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (batch_id,)).fetchone()['c']
+    out = []
+    for byline in members:
+        done = con.execute(
+            '''SELECT COUNT(*) c FROM annotator_tile at
+               JOIN batch_tile bt ON bt.id = at.batch_tile_id
+               WHERE bt.batch_id = ? AND at.annotator = ? AND at.state = 'completed' ''',
+            (batch_id, byline)).fetchone()['c']
+        percent = round(100 * done / tile_count) if tile_count else 0
+        out.append({
+            'annotator': byline, 'tilesCompleted': done, 'tilesTotal': tile_count,
+            'percent': percent,
+        })
+    return out
 
 
 @projects_bp.get('/api/batches/<batch_id>')
@@ -1352,8 +1390,75 @@ def get_batch(batch_id: str):
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
             'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
             'classes': classes, 'groups': groups, 'compounds': compounds, 'broken': broken,
-            'images': images,
+            'images': images, 'members': _batch_members_progress(con, batch_id),
         })
+    finally:
+        _db.close_db(con)
+
+
+# ── batch membership (t126 Phase 2) ───────────────────────────────────────────
+
+@projects_bp.post('/api/batches/<batch_id>/members')
+@login_required
+def add_batch_member(batch_id: str):
+    """Add an annotator to a batch's durable membership set. Idempotent (INSERT OR IGNORE);
+    creates NO annotator_tile rows — completion stays lazy per t126 Phase 1. Gated on
+    project membership (_member_or_403; admin bypasses)."""
+    body = request.json or {}
+    annotator = (body.get('annotator') or '').strip()
+    if not annotator:
+        return jsonify({'error': 'annotator required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        con.execute(
+            'INSERT OR IGNORE INTO batch_member (batch_id, annotator, created_at) '
+            'VALUES (?, ?, ?)', (batch_id, annotator, _now()),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'members': _batch_members_progress(con, batch_id)})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/members/<annotator>')
+@login_required
+def remove_batch_member(batch_id: str, annotator: str):
+    """Remove an annotator from a batch's durable membership set. Membership ONLY is
+    dropped — their annotations and completion (annotator_tile) rows are PRESERVED, so
+    re-adding restores their exact prior state. A member WITH existing work (a 'completed'
+    annotator_tile in this batch, or a live annotation in this project) requires an
+    explicit ?confirm=1, else 409 {needsConfirm: true}. Gated on project membership
+    (_member_or_403; admin bypasses)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        has_completion = con.execute(
+            '''SELECT 1 FROM annotator_tile at JOIN batch_tile bt ON bt.id = at.batch_tile_id
+               WHERE bt.batch_id = ? AND at.annotator = ? AND at.state = 'completed' LIMIT 1''',
+            (batch_id, annotator)).fetchone()
+        has_annotation = con.execute(
+            '''SELECT 1 FROM annotation WHERE project_id = ? AND annotator = ?
+               AND deleted_at IS NULL LIMIT 1''',
+            (batch['project_id'], annotator)).fetchone()
+        has_work = bool(has_completion or has_annotation)
+        if has_work and not request.args.get('confirm'):
+            return jsonify({'needsConfirm': True}), 409
+        con.execute(
+            'DELETE FROM batch_member WHERE batch_id = ? AND annotator = ?',
+            (batch_id, annotator))
+        con.commit()
+        return jsonify({'ok': True, 'members': _batch_members_progress(con, batch_id)})
     finally:
         _db.close_db(con)
 
