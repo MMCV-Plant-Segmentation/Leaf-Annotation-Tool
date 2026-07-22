@@ -20,16 +20,16 @@ mounted read-only at /run/secrets/app-config — never via env, which leaks thro
   ./deploy.py create-config                    # wizard: asks deployment kind (dev/test/prod) first
   ./deploy.py create-config --kind test --yes  # non-interactive (flags + defaults, no prompts)
   ./deploy.py migrate-config                   # upgrade a legacy/flat config to the current schema
-  ./deploy.py dev                              # in-process dev server (no container)
-  ./deploy.py prod                             # build + run prod containers
-  ./deploy.py prod --with-backup               # + the litestream/lsyncd backup sidecars
-  ./deploy.py prod --admin-password '…'        # set the admin password (creates on a fresh DB; overwrites otherwise)
-  ./deploy.py start test --data-mode reset --admin-password '…'  # fresh volume + seed the admin
+  ./deploy.py start dev                        # in-process dev server (no container)
+  ./deploy.py start prod                       # build + run prod containers
+  ./deploy.py start prod --with-backup         # + the litestream/lsyncd backup sidecars
+  ./deploy.py start prod --admin-password '…'  # set the admin password (creates on a fresh DB; overwrites otherwise)
+  ./deploy.py start test --data-mode keep      # resume: reuse whatever's already in the test volume (SAFE default)
+  ./deploy.py start test --data-mode reset --admin-password '…'  # WIPE to a fresh volume + seed the admin
   ./deploy.py start test --data-mode restore   # ...against data restored from BACKUP_DIR (admin comes with it)
-  ./deploy.py start test --data-mode keep      # ...reusing whatever's already in the test volume
   ./deploy.py start test --data-mode fixture   # ...on the in-repo synthetic dataset (subagents)
   ./deploy.py start test --data-mode reset --branch feat/foo   # build+test a branch
-  ./deploy.py stop prod | test
+  ./deploy.py stop prod | test                 # stop the container; data volume PERSISTS (never destroyed)
   ./deploy.py restore                          # seed a fresh/wiped prod host FROM an existing backup
 
 admin_password is CLI-ONLY (never in the config file): --admin-password SETS the admin password —
@@ -404,8 +404,12 @@ def stop(master, target):
         sh(["docker", "compose", "-f", "compose.yaml", "-f", "compose.backup.yaml",
             "down", "--remove-orphans"], cwd=str(ROOT), env=e)
     else:
+        # STOP ≠ DESTROY: only remove the (--rm) container; the data volume PERSISTS so a
+        # later `start test --data-mode keep` resumes the same data. Wiping the test volume is
+        # an EXPLICIT act — `start test --data-mode reset` (or restore/fixture). Historically
+        # stop also `docker volume rm`'d TEST_VOL, which silently destroyed real annotator data
+        # on every stop (see t125) — removed.
         subprocess.run(["docker", "rm", "-f", TEST_CT])
-        subprocess.run(["docker", "volume", "rm", TEST_VOL], capture_output=True)
 
 
 def restore(master):
@@ -485,13 +489,13 @@ def create_config(args):
 def _post_create_next_steps(kind, backup, admin_flag):
     """Kind-specific 'what now': prod/test print the exact command to run next; dev offers to run."""
     if kind == "prod":
-        print("\nNext (prod):  ./deploy.py prod --admin-password '…'   (first boot seeds the admin)")
+        print("\nNext (prod):  ./deploy.py start prod --admin-password '…'   (first boot seeds the admin)")
         return
     if kind == "dev":
         if input("\nstart the dev server now? [y/N] ").strip().lower() == "y":
             start_dev(load_master(), admin_flag)
         else:
-            print("\nNext:  ./deploy.py dev   (first run needs --admin-password to seed the admin)")
+            print("\nNext:  ./deploy.py start dev   (first run needs --admin-password to seed the admin)")
         return
     # test (t71): don't stand up an env from the wizard — just print the exact command to run.
     print("\nNext (test):  ./deploy.py start test --data-mode reset --admin-password '…'")
@@ -523,7 +527,7 @@ def migrate_config():
     if dropped:
         print("\nNOTE: admin_password was removed — it is CLI-only now. This does NOT change any\n"
               "existing admin. On a FRESH DB, seed the admin with:\n"
-              "  ./deploy.py start test --data-mode reset --admin-password '…'   (or ./deploy.py prod --admin-password '…')")
+              "  ./deploy.py start test --data-mode reset --admin-password '…'   (or ./deploy.py start prod --admin-password '…')")
 
 
 def main():
@@ -537,32 +541,47 @@ def main():
                   "an existing one. Omit it to leave the admin alone (restart/restore); required on "
                   "a first deployment. Not stored in the config.")
 
-    # `prod` — build + compose up.
-    pp = sub.add_parser("prod", help="build + run prod containers (compose)")
-    pp.add_argument("--with-backup", action="store_true", help="also run the backup sidecars")
-    pp.add_argument("--admin-password", default=None, help=admin_help)
-    pp.add_argument("--branch", default=None,
-                    help="git ref to build the image from (via a throwaway worktree), instead of "
-                         "the current checkout — e.g. deploy a feature branch without merging it.")
+    # Per-target argument sets — shared by `start <target>` and the deprecated top-level aliases.
+    def _add_prod_args(p):
+        p.add_argument("--with-backup", action="store_true", help="also run the backup sidecars")
+        p.add_argument("--admin-password", default=None, help=admin_help)
+        p.add_argument("--branch", default=None,
+                       help="git ref to build the image from (via a throwaway worktree), instead of "
+                            "the current checkout — e.g. deploy a feature branch without merging it.")
 
-    # `dev` — in-process, no container.
-    pd = sub.add_parser("dev", help="in-process dev server (no container)")
-    pd.add_argument("--admin-password", default=None, help=admin_help)
+    def _add_dev_args(p):
+        p.add_argument("--admin-password", default=None, help=admin_help)
 
-    # `start test` — kept as its own subcommand (throwaway container).
-    ps = sub.add_parser("start", help="throwaway test container (test only; prod is now `./deploy.py prod`)")
-    ps.add_argument("target", choices=["test"])
-    ps.add_argument("--port", type=int, default=None,
-                    help="test: host port (default: auto-assigned free port, so multiple test envs don't collide)")
-    ps.add_argument("--data-mode", choices=["keep", "reset", "restore", "fixture"], default=None,
-                    help="REQUIRED for test: keep (reuse test data as-is), reset (fresh empty "
-                         "data), restore (populate from BACKUP_DIR), fixture (in-repo synthetic "
-                         "dataset, disjoint from prod — for subagents). No default (wipe-guard).")
-    ps.add_argument("--admin-password", default=None, help=admin_help)
-    ps.add_argument("--branch", default=None,
-                    help="git ref to build the image from (via a throwaway worktree).")
+    def _add_test_args(p):
+        p.add_argument("--port", type=int, default=None,
+                       help="host port (default: auto-assigned free port, so multiple test envs don't collide)")
+        p.add_argument("--data-mode", choices=["keep", "reset", "restore", "fixture"], default=None,
+                       help="REQUIRED: keep (reuse test data as-is), reset (fresh empty data), "
+                            "restore (populate from BACKUP_DIR), fixture (in-repo synthetic dataset, "
+                            "disjoint from prod — for subagents). No default (wipe-guard).")
+        p.add_argument("--admin-password", default=None, help=admin_help)
+        p.add_argument("--branch", default=None,
+                       help="git ref to build the image from (via a throwaway worktree).")
 
-    st = sub.add_parser("stop"); st.add_argument("target", choices=["prod", "test"])
+    # `start {dev|test|prod}` — unified launch. dev = in-process (no container); test = throwaway
+    # container on the real prod image; prod = compose up.
+    ps = sub.add_parser("start", help="launch a target: start {dev|test|prod}")
+    ps_t = ps.add_subparsers(dest="target", required=True)
+    _add_dev_args(ps_t.add_parser("dev", help="in-process dev server (no container)"))
+    _add_test_args(ps_t.add_parser("test", help="throwaway test container (real prod image)"))
+    _add_prod_args(ps_t.add_parser("prod", help="build + run prod containers (compose)"))
+
+    # `stop {test|prod}` — stops the CONTAINER; never destroys data. The test volume PERSISTS
+    # (resume with `start test --data-mode keep`); wiping it is explicit (`--data-mode reset`).
+    # dev is in-process — just Ctrl+C, nothing to stop.
+    st = sub.add_parser("stop", help="stop a target: stop {test|prod}")
+    st.add_argument("target", choices=["prod", "test"])
+
+    # Deprecated top-level aliases — kept so muscle memory + docs/scripts don't break; they
+    # forward to `start prod` / `start dev` with a notice.
+    _add_prod_args(sub.add_parser("prod", help="[deprecated → `start prod`]"))
+    _add_dev_args(sub.add_parser("dev", help="[deprecated → `start dev`]"))
+
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
     cc = sub.add_parser("create-config",
                         help="write app.config.toml (asks deployment kind first; --yes for non-interactive)")
@@ -585,16 +604,22 @@ def main():
         migrate_config()
         return
     master = load_master()
-    if a.cmd == "prod":
+    # Resolve (cmd, target), honouring the deprecated top-level `prod`/`dev` aliases.
+    cmd, target = a.cmd, getattr(a, "target", None)
+    if cmd in ("prod", "dev"):
+        print(f"note: `./deploy.py {cmd}` is deprecated — use `./deploy.py start {cmd}`.", file=sys.stderr)
+        cmd, target = "start", cmd
+
+    if cmd == "start" and target == "prod":
         start_prod(master, a.with_backup, a.branch, a.admin_password)
-    elif a.cmd == "dev":
+    elif cmd == "start" and target == "dev":
         rc = start_dev(master, a.admin_password)
         raise SystemExit(rc or 0)
-    elif a.cmd == "start":
+    elif cmd == "start" and target == "test":
         start_test(master, a.port, a.data_mode, a.branch, a.admin_password)
-    elif a.cmd == "stop":
+    elif cmd == "stop":
         stop(master, a.target)
-    elif a.cmd == "restore":
+    elif cmd == "restore":
         restore(master)
 
 

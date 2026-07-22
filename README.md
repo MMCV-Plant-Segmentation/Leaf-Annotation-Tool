@@ -11,11 +11,12 @@ hands each service just its slice, and never runs anything as root.
 
 ```
 ./deploy.py create-config      # write app.config.toml interactively
-./deploy.py dev                # in-process dev server (no container)
+./deploy.py start dev          # in-process dev server (no container)
 ./deploy.py start test --data-mode <mode>   # throwaway test container (see below)
-./deploy.py prod [--with-backup]            # build + run prod containers
-./deploy.py stop test | prod
+./deploy.py start prod [--with-backup]      # build + run prod containers
+./deploy.py stop test | prod   # stop the container; the data volume PERSISTS (never destroyed)
 ./deploy.py restore            # seed a fresh prod host from a backup
+# (`./deploy.py dev|prod` still work as deprecated aliases for `start dev|prod`)
 ```
 
 ---
