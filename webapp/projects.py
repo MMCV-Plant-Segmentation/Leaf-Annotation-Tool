@@ -636,12 +636,17 @@ def get_project(project_id: str):
         batches = con.execute(
             'SELECT * FROM batch WHERE project_id = ? ORDER BY seq', (project_id,)
         ).fetchall()
+        session_username = session.get('username')
         for b in batches:
             b['tileCount'] = con.execute(
                 'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (b['id'],)
             ).fetchone()['c']
             b['mergeReady'] = _merge_ready(con, b['id'])
             b['members'] = _batch_members_progress(con, b['id'])
+            # t127: isMember drives the FE's "Open in canvas" visibility (non-members
+            # get a read-only view of the batch, per row).
+            b['isMember'] = (session_username == 'admin'
+                              or session_username in _batch_members(con, b['id']))
         out['batches'] = batches
         out['progress'] = _progress(con, project_id, batches)
         return jsonify(out)
@@ -1386,11 +1391,15 @@ def get_batch(batch_id: str):
                     [t['tileId'] for t in payload['tiles']],
                     proj['classes_json'] if proj else None)
             images.append(entry)
+        session_username = session.get('username')
+        is_member = (session_username == 'admin'
+                     or session_username in _batch_members(con, batch_id))
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
             'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
             'classes': classes, 'groups': groups, 'compounds': compounds, 'broken': broken,
             'images': images, 'members': _batch_members_progress(con, batch_id),
+            'isMember': is_member,
         })
     finally:
         _db.close_db(con)
@@ -2288,6 +2297,43 @@ def _owner_or_403_direct(row_annotator: str | None, username: str | None):
     return None
 
 
+# ── t127: batch-membership enforcement (t126 Phase 3) ──────────────────────────────────
+#
+# A user who is NOT a member of a batch (the durable `batch_member` set, t126 Phase 2)
+# must not be able to PAINT/EDIT that batch's tiles — their pre-existing annotations stay
+# read/delete-only. The gate lives HERE, inside the shared do_* cores, so it covers BOTH
+# the HTTP route shims and the WebSocket op handler (webapp/asgi.py) that calls the same
+# functions — a gate that only guards the HTTP route would be bypassable over WS.
+
+def _batch_tiles_or_403(con, tile_ids, username: str | None, is_admin: bool):
+    """Require the actor be a member of EVERY batch the given tiles belong to. Tiles that
+    aren't in any batch impose no restriction. Admin bypasses. Returns a 403 tuple or
+    None (permitted)."""
+    if is_admin or not tile_ids:
+        return None
+    qmarks = ','.join('?' * len(tile_ids))
+    batch_ids = {r['batch_id'] for r in con.execute(
+        f'SELECT DISTINCT batch_id FROM batch_tile WHERE tile_id IN ({qmarks})',
+        tile_ids).fetchall()}
+    for batch_id in batch_ids:
+        if (username or '') not in _batch_members(con, batch_id):
+            return {'error': 'forbidden'}, 403
+    return None
+
+
+def _batch_gate_for_annotation_or_403(con, annotation_id: str, username: str | None,
+                                       is_admin: bool):
+    """Resolve the batch(es) an EXISTING annotation currently touches (via its
+    annotation_tile links) and gate on membership. Used by edit/reverse/splice seams
+    where the touched tiles are the annotation's already-committed geometry."""
+    if is_admin:
+        return None
+    tile_ids = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    return _batch_tiles_or_403(con, tile_ids, username, is_admin)
+
+
 # ── The mutation core (do_* functions) ──────────────────────────────────────────────────
 #
 # The polyline undo-determinism fix (feat/annotation-ws Phase 1) makes the WebSocket the
@@ -2361,8 +2407,16 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         # the brush's discard path).
         if footprint is None or footprint.is_empty:
             return {'error': 'annotation must intersect at least one tile'}, 422
-        if tool != 'polyline' and not _tiles_for_geom(con, image_id, footprint):
+        footprint_tile_ids = _tiles_for_geom(con, image_id, footprint)
+        if tool != 'polyline' and not footprint_tile_ids:
             return {'error': 'annotation must intersect at least one tile'}, 422
+        # t127: gate paint on batch membership, resolved from the tile(s) this stroke
+        # touches. A polyline may be off-tile mid-draw (footprint_tile_ids empty) — the
+        # gate applies once/if it lands on a tile (also re-checked on finish, see
+        # _do_finish_stroke).
+        err = _batch_tiles_or_403(con, footprint_tile_ids, username, is_admin)
+        if err:
+            return err
 
         # t68: bbox-index prune (same-annotator/label stroke masks overlapping the new
         # footprint) → exact test, instead of scanning every same-scope mask.
@@ -2428,6 +2482,9 @@ def do_create_annotation(con, project_id: str, body: dict, *,
     tile_ids = _tiles_intersecting(con, image_id, kind, points)
     if not tile_ids:
         return {'error': 'annotation must intersect at least one tile'}, 422
+    err = _batch_tiles_or_403(con, tile_ids, username, is_admin)  # t127
+    if err:
+        return err
     aid = _uid()
     con.execute(
         '''INSERT INTO annotation
@@ -2485,7 +2542,8 @@ def create_annotation(project_id: str):
         _db.close_db(con)
 
 
-def _do_finish_stroke(con, srow, ann, points):
+def _do_finish_stroke(con, srow, ann, points, *, username: str | None = None,
+                       is_admin: bool = False):
     """t59 FINISH: whole-stroke keep/discard, brush-parity. `points` is the stroke's
     current (already-persisted, possibly off-tile mid-draw) vertex list. Keep leaves the
     annotation untouched (same id, same rows) — discard soft-deletes it and drops its
@@ -2522,6 +2580,11 @@ def _do_finish_stroke(con, srow, ann, points):
     tile_ids = _tiles_for_geom(con, image_id, footprint) \
         if footprint is not None and not footprint.is_empty else []
     if tile_ids:
+        # t127: gate the finished (on-tile) stroke on batch membership — a non-member
+        # must not be able to land a polyline on a batch tile via finish either.
+        err = _batch_tiles_or_403(con, tile_ids, username, is_admin)
+        if err:
+            return err
         return {'ok': True, 'strokeId': stroke_id, 'discarded': False, 'before': before,
                 'deletedAnnotationIds': [], 'deletedGroups': [], 'created': [],
                 'createdGroups': [], 'tileStates': []}, 200
@@ -2658,8 +2721,9 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         # no-tile brush stroke otherwise). This is deliberately NOT the full recompute/
         # remint pipeline below (which always mints a fresh annotation id per component,
         # even a no-op) — finish only decides keep-vs-discard on the WHOLE stroke, never
-        # per-point, and never touches the annotation id when kept.
-        return _do_finish_stroke(con, srow, ann, points)
+        # per-point, and never touches the annotation id when kept. t127: the membership
+        # gate lives INSIDE _do_finish_stroke (it's the one that knows the finished tiles).
+        return _do_finish_stroke(con, srow, ann, points, username=username, is_admin=is_admin)
 
     image_id = ann['project_image_id']
     annotator = ann['annotator']
@@ -2677,6 +2741,17 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         except (TypeError, ValueError):
             pass
     outline = body.get('outline')
+
+    # t127: gate on the tiles the EDITED stroke is about to touch (not just where it
+    # already sat) — an edit that drags a stroke onto a batch the actor isn't a member of
+    # must 403, same as painting fresh there.
+    new_footprint = _footprint(points, stroke_width, outline)
+    new_tile_ids = _tiles_for_geom(con, image_id, new_footprint) \
+        if new_footprint is not None and not new_footprint.is_empty else []
+    err = _batch_tiles_or_403(con, new_tile_ids, username, is_admin)
+    if err:
+        return err
+
     # Snapshot the stroke's PRE-edit record so undo can restore it verbatim (robust
     # undo: exact prior rows, not a lossy re-derivation — Christian, "robust > easy").
     before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
@@ -2807,6 +2882,16 @@ def do_splice_polyline(con, project_id: str, body: dict, *,
         except (TypeError, ValueError):
             pass
     outline = body.get('outline')
+
+    # t127: gate on the tiles the RE-WRITTEN stroke is about to touch — same reasoning as
+    # do_edit_stroke's non-final branch.
+    new_footprint = _footprint(points, stroke_width, outline)
+    new_tile_ids = _tiles_for_geom(con, image_id, new_footprint) \
+        if new_footprint is not None and not new_footprint.is_empty else []
+    err = _batch_tiles_or_403(con, new_tile_ids, username, is_admin)
+    if err:
+        return err
+
     before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
               'strokeWidth': srow['stroke_width'],
               'outline': json.loads(srow['outline_json']) if srow['outline_json'] else None}
@@ -3011,6 +3096,9 @@ def do_reverse_stroke_edit(con, project_id: str, stroke_id: str, body: dict, *,
         created_tiles = [r['tile_id'] for r in con.execute(
             f'SELECT tile_id FROM annotation_tile WHERE annotation_id IN ({qm})',
             created_ids).fetchall()]
+    err = _batch_tiles_or_403(con, created_tiles, username, is_admin)  # t127
+    if err:
+        return err
 
     # 1) reset the edited stroke to its pre-edit record.
     before_points = before.get('points') or []
@@ -3241,6 +3329,9 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
                or _owner_or_403_direct(row['annotator'], username))
         if err:
             return err
+        err = _batch_gate_for_annotation_or_403(con, annotation_id, username, is_admin)  # t127
+        if err:
+            return err
         label = body.get('label')
         proj_row = _project(con, row['project_id'])
         classes_json = proj_row.get('classes_json') if proj_row else None
@@ -3271,6 +3362,13 @@ def do_update_annotation(con, annotation_id: str, body: dict, *,
     ).fetchall()]
     points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
     label = body.get('label', row['label'])
+    # t127: gate on old ∪ new tiles — a relocate must not slip a non-member onto (or off
+    # of, undetected) a batch tile it isn't a member of.
+    new_tile_ids_probe = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
+    err = _batch_tiles_or_403(con, list(set(old_tiles) | set(new_tile_ids_probe)),
+                               username, is_admin)
+    if err:
+        return err
     # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
     # selections stay in sync with the newly-assigned compound (Phase 1 has no
     # relabel UI, but the PATCH endpoint stays correct for any caller). t64: also
@@ -3383,6 +3481,9 @@ def do_mutate_annotations(con, project_id: str, body: dict, *,
         e = _owner_or_403_direct(row['annotator'], username)
         if e:
             return e
+        e = _batch_gate_for_annotation_or_403(con, ann_id, username, is_admin)  # t127
+        if e:
+            return e
         if annotator is None:
             annotator = row['annotator']
     now = _now()
@@ -3466,6 +3567,12 @@ def do_erase_stroke(con, project_id: str, body: dict, *,
     eraser_geom = _footprint(points, stroke_width, outline=outline)
     if eraser_geom is None or eraser_geom.is_empty:
         return {'deletedAnnotationIds': [], 'tileStates': []}, 200
+    # t127: gate the eraser sweep on batch membership — resolved from the tile(s) the
+    # eraser itself touches (erasing is a paint-adjacent action).
+    eraser_tile_ids = _tiles_for_geom(con, image_id, eraser_geom)
+    err = _batch_tiles_or_403(con, eraser_tile_ids, username, is_admin)
+    if err:
+        return err
     # t68: bbox-index prune (this annotator's marks, ANY kind, overlapping the eraser) →
     # exact test, instead of scanning every mark this annotator has on the image.
     deleted_ids = [r['id'] for r, _g in _annotations_overlapping(
@@ -3546,6 +3653,9 @@ def do_reverse_annotation_merge(con, project_id: str, body: dict, *,
     created_tiles = [r['tile_id'] for r in con.execute(
         'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
     ).fetchall()]
+    err = _batch_tiles_or_403(con, created_tiles, username, is_admin)  # t127
+    if err:
+        return err
     con.execute('DELETE FROM stroke WHERE id = ?', (stroke_id,))
     consumed_ids = [g['annotationId'] for g in groups]
     for g in groups:

@@ -61,6 +61,8 @@ export type Batch = {
   mergeReady: boolean;
   /** t126 Phase 2: the durable batch_member set + each member's percent-complete. */
   members: BatchMember[];
+  /** t127: is the SESSION user a member of this batch? Drives "Open in canvas". */
+  isMember: boolean;
 };
 
 export type Progress = {

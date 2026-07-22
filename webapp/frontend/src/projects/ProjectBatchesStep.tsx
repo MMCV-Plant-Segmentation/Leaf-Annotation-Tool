@@ -84,9 +84,12 @@ const ProjectBatchesStep: Component<Props> = (props) => {
             {(b) => (
               <li class={styles.batchItem}>
                 <span>{t('detail.batch.info', { seq: b.seq, count: b.tileCount, status: b.status })}</span>
-                <button class={styles.link} onClick={() => openCanvas(b.id)}>
-                  {t('detail.batch.open')}
-                </button>
+                {/* t127: a non-member sees the batch (read-only) but not "Open in canvas". */}
+                <Show when={b.isMember}>
+                  <button class={styles.link} onClick={() => openCanvas(b.id)}>
+                    {t('detail.batch.open')}
+                  </button>
+                </Show>
                 <Show when={b.status === 'merge'}>
                   <button class={styles.link} data-testid="continue-merge-btn"
                     onClick={() => nav(mergeRoute(b.id))}>
