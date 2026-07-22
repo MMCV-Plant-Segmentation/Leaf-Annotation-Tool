@@ -92,6 +92,13 @@ export const muted = style({
   padding: '0.3rem 0',
 });
 
+export const link = style({
+  background: 'none',
+  border: 'none',
+  color: vars.color.accent,
+  cursor: 'pointer',
+});
+
 export const linkDanger = style({
   background: 'none',
   border: 'none',
