@@ -110,7 +110,7 @@ test('merge 2a: grouping brush makes a candidate object; eraser flags a mark, re
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.locator('input[type="number"]').fill('2');
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
@@ -133,7 +133,7 @@ test('merge 2a: grouping brush makes a candidate object; eraser flags a mark, re
   await seedStroke(pB, pid, img0.imageId, img0.tiles[0], uB, 3);
   await completeEveryTile(pB);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByTestId('enter-merge-btn').click();
   await expect(page).toHaveURL(/\/batches\/[a-f0-9-]{36}\/merge$/, { timeout: 5000 });
   await expect(page.getByTestId('merge-toolbar')).toBeVisible({ timeout: 5000 });

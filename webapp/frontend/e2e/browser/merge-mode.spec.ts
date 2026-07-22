@@ -117,7 +117,7 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.locator('input[type="number"]').fill('2');
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
@@ -143,7 +143,7 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
   await completeEveryTile(pA);
 
   // ── Merge button still absent: B has not completed anything yet ─────────────
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await expect(page.getByTestId('enter-merge-btn')).toHaveCount(0);
 
   // ── Annotator B seeds a distinguishably-placed mark (same tile 0) + completes ─
@@ -154,7 +154,7 @@ test('merge gate button + blind pooled read-only viewer @full', async ({ page, b
   await completeEveryTile(pB);
 
   // ── (a) Merge button now VISIBLE — every annotator_tile is completed ────────
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   const mergeBtn = page.getByTestId('enter-merge-btn');
   await expect(mergeBtn).toBeVisible({ timeout: 5000 });
   await mergeBtn.click();

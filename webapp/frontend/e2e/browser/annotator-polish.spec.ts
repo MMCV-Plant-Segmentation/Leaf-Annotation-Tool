@@ -58,7 +58,7 @@ test('sub-routes render as separate pages', async ({ page }) => {
   await expect(page.getByText(/import images first/i)).toBeVisible();
 
   // Batches locked before tiling confirmed
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await expect(page.getByText(/configure tiling first/i)).toBeVisible();
 });
 
@@ -72,13 +72,13 @@ test('tiling route unlocks after import; batches route after tiling', async ({ p
   await expect(page.getByTestId('background-slider')).toBeVisible();
 
   // Batches still locked until tiling saved
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await expect(page.getByText(/configure tiling first/i)).toBeVisible();
 
   // Save tiling, then batches route unlocks
   await page.goto(`/projects/${pid}/tiling`);
   await page.getByRole('button', { name: /save.*default/i }).click();
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await expect(page.getByText(/configure tiling first/i)).toHaveCount(0);
   await expect(page.getByRole('button', { name: /create batch/i })).toBeVisible();
 });

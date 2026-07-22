@@ -175,7 +175,7 @@ test('tile-size control disabled after batch created @full', async ({ page }, te
   await confirmTiling(page, pid);
 
   // Create a batch on the batches route
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
 
@@ -201,7 +201,7 @@ test('canvas has no open-as chooser and annotates as the logged-in user', async 
   await confirmTiling(page, pid);
 
   // Create batch on the batches route.
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
 
@@ -277,7 +277,7 @@ async function setupCanvas(page: Page): Promise<void> {
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
   // Click the "Open" link on the first batch (i18n: detail.batch.open = "open canvas →")
@@ -301,7 +301,7 @@ async function setupCanvasAsAnnotator(page: Page, browser: Browser): Promise<Pag
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: /open canvas/i }).first().click();

@@ -74,7 +74,7 @@ async function setupCanvas(page: Page, browser: Browser):
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: /open canvas/i }).first().click();

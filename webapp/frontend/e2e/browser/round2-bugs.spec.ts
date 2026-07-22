@@ -58,11 +58,8 @@ test('P14: non-existent project tiling screen shows not-found', async ({ page })
   await expect(page.getByRole('link', { name: /back to projects/i })).toBeVisible();
 });
 
-test('P14: non-existent project batches screen shows not-found', async ({ page }) => {
-  await page.goto('/projects/does-not-exist/batches');
-  await expect(page.getByText(/project not found/i)).toBeVisible({ timeout: 5000 });
-  await expect(page.getByRole('link', { name: /back to projects/i })).toBeVisible();
-});
+// (t126 Phase 2b) the standalone /projects/:id/batches route is retired — batches live on the
+// project hub now; its not-found is covered by the tiling-screen case above.
 
 // ── #13: batch-size unit label ────────────────────────────────────────────────
 
@@ -71,7 +68,7 @@ test('P13: batch create form shows "Tiles per batch" label', async ({ page }) =>
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   // Unit text is visible in the create-row label
   await expect(page.getByText(/tiles per batch/i)).toBeVisible({ timeout: 5000 });
 });
