@@ -54,6 +54,21 @@ export function flushPending(compounds: Compound[], pending: Compound | null, gr
     : [...compounds, saved];
 }
 
+/** t116: does an in-progress compound draft hold user work (a name or ≥1 selection)?
+ * Used to decide whether switching away from it needs a discard confirm (a truly empty
+ * just-opened draft is safe to drop silently). */
+export function draftHasContent(pending: Compound | null): boolean {
+  return !!pending && (!!pending.name.trim() || Object.keys(pending.selections ?? {}).length > 0);
+}
+
+/** t115: the outer Save must stay DISABLED while a compound draft is INVALID *and* has
+ * content — otherwise a normal Save silently drops the half-built compound (a valid draft
+ * is fine: the outer Save flushes it via flushPending; an empty just-opened draft is fine
+ * too). Pure so LabelEditor's Save-disabled gate and the tests share one definition. */
+export function pendingBlocksSave(pending: Compound | null, groups: Group[]): boolean {
+  return !!pending && !isCompoundValid(pending, groups) && draftHasContent(pending);
+}
+
 /**
  * t76: a stable string identity of a taxonomy draft for dirty-checking. Order-normalized
  * (contiguous group/member order) and field-order-fixed with selections sorted, so a

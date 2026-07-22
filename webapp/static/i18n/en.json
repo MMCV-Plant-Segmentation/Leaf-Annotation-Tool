@@ -304,6 +304,7 @@
   "detail.labels.emptyError": "A project needs at least one label — add a compound before saving.",
   "detail.labels.pickNone": "— none —",
   "detail.labels.deleteUsedConfirm": "The compound \"{name}\" is used by lesions. Delete it anyway?",
+  "detail.labels.discardDraftConfirm": "You have an unfinished compound. Discard it?",
   "canvas.legend": "Legend",
   "detail.labels.deleteGroupConfirm": "Delete this group? Compounds using it become invalid and are removed; lesions keep their colour.",
   "detail.labels.deleteMemberConfirm": "Delete this member? Compounds using it become invalid and are removed; lesions keep their colour.",

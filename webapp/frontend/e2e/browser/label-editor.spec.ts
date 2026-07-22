@@ -60,3 +60,50 @@ test('t74/t76/t90: single Save flushes a rename; dirty-gated; editor stays open 
   await expect.poll(() => compoundNames(page, id), { timeout: 5000 }).toContain('renamed-leaf');
   expect(await compoundNames(page, id)).not.toContain('thing');
 });
+
+test('t116: building a new compound then editing an existing one PRESERVES the new one', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: `LabelT116 ${Date.now()}` } });
+  const { id } = (await projResp.json()) as { id: string };
+  await page.goto(`/projects/${id}/labels`);
+  await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
+
+  // Start building a NEW, VALID compound — pick the required group's member + give it a name —
+  // but do NOT click the inner "Add".
+  await page.getByTestId('compound-add').click();
+  await page.getByTestId('compound-picker').first().selectOption({ label: 'thing' });
+  await page.getByTestId('compound-name').fill('newcomp');
+
+  // Now click ✎ to edit the EXISTING default compound. The in-progress new compound must be
+  // preserved (flushed into the list), not wiped.
+  await page.getByTestId('compound-edit').first().click();
+  await expect(page.getByTestId('compound-row').filter({ hasText: 'newcomp' })).toBeVisible();
+
+  // And it survives a real save + read.
+  await expect(page.getByTestId('label-save')).toBeEnabled();
+  await page.getByTestId('label-save').click();
+  await expect.poll(() => compoundNames(page, id), { timeout: 5000 }).toContain('newcomp');
+});
+
+test('t115: an invalid in-progress compound draft DISABLES Save until it is valid', async ({ page }) => {
+  const projResp = await page.request.post('/api/projects', { data: { name: `LabelT115 ${Date.now()}` } });
+  const { id } = (await projResp.json()) as { id: string };
+  await page.goto(`/projects/${id}/labels`);
+  await expect(page.getByTestId('label-editor')).toBeVisible({ timeout: 5000 });
+
+  // Commit a first NEW compound so the taxonomy is dirty (Save would be disabled anyway if not).
+  await page.getByTestId('compound-add').click();
+  await page.getByTestId('compound-picker').first().selectOption({ label: 'thing' });
+  await page.getByTestId('compound-name').fill('first');
+  await page.getByTestId('compound-save').click();       // inner "Add" — closes the draft
+  await expect(page.getByTestId('label-save')).toBeEnabled();
+
+  // Open a SECOND compound draft, give it content but leave it INVALID (required group unpicked).
+  await page.getByTestId('compound-add').click();
+  await page.getByTestId('compound-name').fill('wip');
+  // t115: Save must be DISABLED while the half-built draft is invalid (it would be dropped).
+  await expect(page.getByTestId('label-save')).toBeDisabled();
+
+  // Completing the draft (pick the required member) makes it valid → Save re-enables.
+  await page.getByTestId('compound-picker').first().selectOption({ label: 'thing' });
+  await expect(page.getByTestId('label-save')).toBeEnabled();
+});

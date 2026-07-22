@@ -6,7 +6,7 @@
  *                  a change; a pure reorder of equal content must not spuriously differ).
  */
 import { test, expect } from '@playwright/test';
-import { flushPending, taxonomyKey } from '../../src/projects/taxonomyEditor';
+import { flushPending, taxonomyKey, pendingBlocksSave, draftHasContent } from '../../src/projects/taxonomyEditor';
 import { compoundLabel, deriveLabel } from '../../src/projects/taxonomy';
 import type { Compound, Group } from '../../src/projects/taxonomy';
 
@@ -74,4 +74,23 @@ test('taxonomyKey ignores selections key order', () => {
   const a: Compound = { id: 'c1', name: 'thing', color: '#111', selections: { g1: 'm1', g2: 'm3' } };
   const b: Compound = { id: 'c1', name: 'thing', color: '#111', selections: { g2: 'm3', g1: 'm1' } };
   expect(taxonomyKey(g2, [a])).toBe(taxonomyKey(g2, [b]));
+});
+
+// ── t115/t116: pendingBlocksSave + draftHasContent ─────────────────────────────────────
+test('draftHasContent: null / empty are false; a name or a selection is content', () => {
+  expect(draftHasContent(null)).toBe(false);
+  expect(draftHasContent({ id: 'd', name: '  ', color: '#111', selections: {} })).toBe(false);
+  expect(draftHasContent({ id: 'd', name: 'x', color: '#111', selections: {} })).toBe(true);
+  expect(draftHasContent({ id: 'd', name: '', color: '#111', selections: { g1: 'm1' } })).toBe(true);
+});
+
+test('pendingBlocksSave: only an INVALID draft WITH content blocks Save (t115)', () => {
+  // null → never blocks.
+  expect(pendingBlocksSave(null, groups)).toBe(false);
+  // valid draft → the outer Save flushes it, so it does not block.
+  expect(pendingBlocksSave(thing, groups)).toBe(false);
+  // empty just-opened draft (invalid but no content) → does not block.
+  expect(pendingBlocksSave({ id: 'd', name: '', color: '#111', selections: {} }, groups)).toBe(false);
+  // half-built: a name but the required group g1 unpicked → invalid + content → BLOCKS.
+  expect(pendingBlocksSave({ id: 'd', name: 'wip', color: '#111', selections: {} }, groups)).toBe(true);
 });

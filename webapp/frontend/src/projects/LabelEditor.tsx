@@ -16,7 +16,7 @@ import type { Group, Compound, BrokenCompound } from './taxonomy';
 import { ApiError } from './httpJson';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
-import { cloneDraft, restampOrder, flushPending, taxonomyKey } from './taxonomyEditor';
+import { cloneDraft, restampOrder, flushPending, taxonomyKey, pendingBlocksSave } from './taxonomyEditor';
 import GroupEditor from './GroupEditor';
 import CompoundEditor from './CompoundEditor';
 import ReassignPicker from './ReassignPicker';
@@ -83,6 +83,9 @@ export const LabelEditor: Component<Props> = (props) => {
   const dirty = createMemo(() =>
     taxonomyKey(draftGroups(), flushPending(draftCompounds(), pending(), draftGroups()))
       !== taxonomyKey(props.groups, props.compounds));
+  // t115: while a half-built compound draft is invalid, Save must stay disabled — a normal
+  // Save would otherwise silently drop it (flushPending only folds a VALID pending).
+  const saveBlocked = createMemo(() => pendingBlocksSave(pending(), draftGroups()));
 
   const save = async (reassignCompounds?: Record<string, string>) => {
     // t74: flush the in-progress compound edit FIRST, then persist — one button, both jobs.
@@ -164,8 +167,8 @@ export const LabelEditor: Component<Props> = (props) => {
         )}
       </Show>
       <div class={styles.actions}>
-        <button class={styles.btn} disabled={saving() || !!blocked() || !dirty()} data-testid="label-save"
-          onClick={() => void save()}>
+        <button class={styles.btn} disabled={saving() || !!blocked() || !dirty() || saveBlocked()}
+          data-testid="label-save" onClick={() => void save()}>
           {saving() ? t('common.saving') : t('detail.labels.save')}
         </button>
         <Show when={dirty()}>

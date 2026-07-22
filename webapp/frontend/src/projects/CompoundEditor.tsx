@@ -2,21 +2,13 @@
  * Compound editor for taxonomy v2: build/save/colour/delete saved compound labels via a
  * one-member-per-group picker with required-group enforcement.
  *
- * A compound is built by selecting one member per group (required groups MUST be chosen
- * before Save is enabled). Give it a name + colour, then Save. Deleting a compound that
- * lesions use warns first (the BE keeps lesion snapshots, so colours never vanish).
- *
- * t64: a SAVED compound's composition is immutable — editing an EXISTING compound (its id
- * is already in `props.compounds`) only exposes name + colour; its member selections
- * render read-only. Changing composition means starting a brand-new compound (a fresh
- * id). The backend enforces this too (webapp.taxonomy.coerce_taxonomy); this is the
- * matching FE affordance so a locked field is never even offered.
- *
- * t74: the edit draft (`pending`) is OWNED BY LabelEditor and threaded in as controlled
- * props, so the single outer Save can flush it. This component no longer has its own
- * "save compound" button for an EXISTING edit — the outer Save persists it. A BRAND-NEW
- * compound still needs an explicit "Add" (it isn't in the list until valid + added).
- *
+ * t64: a SAVED compound's composition is immutable — editing an EXISTING compound (id
+ * already in `props.compounds`) exposes only name + colour; selections render read-only.
+ * Changing composition means a brand-new compound (fresh id); the backend enforces this
+ * too (coerce_taxonomy). t74: the edit draft (`pending`) is OWNED BY LabelEditor so the
+ * single outer Save can flush it; a BRAND-NEW compound still needs an explicit "Add".
+ * t116: there is ONE draft slot, so switching to another compound FLUSHES a valid draft
+ * first (never lost) and confirms before discarding a half-built invalid one.
  * Extracted from LabelEditor to keep each FE file under 200 lines.
  */
 import { type Component, type Setter, For, Show, createMemo } from 'solid-js';
@@ -24,7 +16,7 @@ import type { Compound, Group } from './taxonomy';
 import { isCompoundValid, compoundLabel, deriveLabel } from './taxonomy';
 import { t } from '../i18n/catalog';
 import * as styles from './LabelEditor.css';
-import { uid, nextColor, PALETTE } from './taxonomyEditor';
+import { uid, nextColor, PALETTE, flushPending, draftHasContent } from './taxonomyEditor';
 
 type Props = {
   groups: Group[];
@@ -58,8 +50,17 @@ export const CompoundEditor: Component<Props> = (props) => {
   });
   const draftValid = createMemo(() => draft() !== null && isCompoundValid(draft()!, props.groups));
 
-  const startNew = () => setDraft(emptyDraft(nextColor(props.compounds)));
-  const startEdit = (c: Compound) => setDraft({ ...c, selections: { ...c.selections } });
+  // t116: switch the single draft slot to `next`, preserving in-progress work — a VALID
+  // draft is flushed into the list first (so it isn't lost), an invalid draft with content
+  // is discarded only after a confirm, an empty draft switches freely.
+  const beginDraft = (next: Compound | null): void => {
+    const d = draft();
+    if (d && draftValid()) props.onChange(flushPending(props.compounds, d, props.groups));
+    else if (d && draftHasContent(d) && !window.confirm(t('detail.labels.discardDraftConfirm'))) return;
+    setDraft(next);
+  };
+  const startNew = () => beginDraft(emptyDraft(nextColor(props.compounds)));
+  const startEdit = (c: Compound) => beginDraft({ ...c, selections: { ...c.selections } });
   const cancel = () => setDraft(null);
   const setName = (name: string) => setDraft((d) => (d ? { ...d, name } : d));
   const setColor = (color: string) => setDraft((d) => (d ? { ...d, color } : d));
@@ -170,7 +171,7 @@ export const CompoundEditor: Component<Props> = (props) => {
                 </button>
               </Show>
               <button class={styles.btn} onClick={cancel}>{t('common.cancel')}</button>
-              <Show when={!draftValid() && (!!d().name.trim() || Object.keys(d().selections).length > 0)}>
+              <Show when={!draftValid() && draftHasContent(d())}>
                 <span class={styles.err}>{t('detail.labels.invalidCompound')}</span>
               </Show>
             </div>
