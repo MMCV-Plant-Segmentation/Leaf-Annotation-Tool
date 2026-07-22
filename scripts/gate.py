@@ -246,6 +246,21 @@ def main() -> int:
     args = ap.parse_args()
     level = 2 if args.verbose else (0 if args.quiet else 1)
 
+    # Fail fast + actionable when the FE toolchain isn't installed (t132): every run does the
+    # static stages (tsc/lint/build), which need node_modules. A fresh `git worktree` never has
+    # it (gitignored), which otherwise surfaces as a confusing `eslint: not found` / `vite: not
+    # found` chain. Don't auto-install/symlink here — the gate is a verifier, not a mutator.
+    if not (FE / 'node_modules').is_dir():
+        print(
+            f"gate: {FE / 'node_modules'} is missing — the FE stages (tsc/lint/build/playwright) "
+            "can't run.\n"
+            "  • In a git worktree: create it with `scripts/worktree.sh add <branch>` "
+            "(symlinks node_modules + sets up an isolated .venv).\n"
+            f"  • Otherwise: run `npm ci` (or `npm install`) in {FE}.",
+            file=sys.stderr,
+        )
+        return 2
+
     run_dir = Path(tempfile.mkdtemp(prefix='leaf-gate-'))
     log_dir = run_dir / 'logs'
     fixture_dir = run_dir / 'fixture'
