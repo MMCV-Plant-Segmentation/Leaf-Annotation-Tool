@@ -326,12 +326,40 @@ def _test_volume_exists():
     return subprocess.run(["docker", "volume", "inspect", TEST_VOL], capture_output=True).returncode == 0
 
 
+def _test_volume_has_data():
+    """True iff the test volume exists AND holds a non-empty app.db — i.e. wiping it would
+    DESTROY real data. Used to gate the destructive data-modes behind a typed confirmation."""
+    if not _test_volume_exists():
+        return False
+    return subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{TEST_VOL}:/data", "alpine", "sh", "-c", "test -s /data/app.db"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def _confirm_destroy(mode, assume_yes):
+    """Guard the destructive data-modes (reset/restore/fixture) that `docker volume rm` the test
+    volume: if it currently holds data, require an explicit confirmation (typed volume name, or
+    `--yes` for non-interactive callers like subagents). An empty/absent volume needs no confirm."""
+    if not _test_volume_has_data():
+        return
+    if assume_yes:
+        print(f"--yes: proceeding to WIPE the existing test volume {TEST_VOL!r} (--data-mode {mode}).")
+        return
+    print(f"\n⚠️  --data-mode {mode} will DESTROY the existing data in volume {TEST_VOL!r} "
+          f"(an app.db with data is present).\n    To resume it instead, use --data-mode keep.")
+    if input(f"    Type the volume name ({TEST_VOL}) to confirm the wipe: ").strip() != TEST_VOL:
+        die("aborted — test volume left intact.")
+
+
 def _prep_test_data(mode, master, puid, pgid):
     if mode == "keep":
         if not _test_volume_exists():
             print("test volume doesn't exist yet — creating it empty (first run)…")
             _reset_test_volume(puid, pgid)
         return
+    # reset/restore/fixture all volume-rm; the destructive-wipe confirmation runs earlier in
+    # start_test (before teardown) so an abort disturbs nothing.
     if mode == "reset":
         print("resetting test volume to empty…")
         _reset_test_volume(puid, pgid)
@@ -345,7 +373,7 @@ def _prep_test_data(mode, master, puid, pgid):
         raise ValueError(f"unknown data-mode: {mode!r}")
 
 
-def start_test(master, port, data_mode, branch, admin_password=None):
+def start_test(master, port, data_mode, branch, admin_password=None, assume_yes=False):
     """Throwaway test container against the SAME image prod would get. Test mounts its own
     resolved-config file at /run/secrets/app-config via a plain bind-mount (no compose here —
     this is a bare `docker run` for concurrency-safety and simpler teardown). Config values
@@ -353,6 +381,10 @@ def start_test(master, port, data_mode, branch, admin_password=None):
     if data_mode is None:
         die("start test requires --data-mode {keep|reset|restore|fixture} (no default — this is a "
             "wipe-guard, since reset/restore/fixture replace the test volume).")
+    # Confirm a destructive wipe BEFORE we tear down the running container / rebuild the image, so
+    # an aborted reset/restore/fixture leaves the current env (and its data) completely untouched.
+    if data_mode in ("reset", "restore", "fixture"):
+        _confirm_destroy(data_mode, assume_yes)
     puid, pgid = str(os.getuid()), str(os.getgid())  # personal identity — test data isn't shared
     build_root, worktree = resolve_build_root(branch)
     try:
@@ -562,6 +594,9 @@ def main():
         p.add_argument("--admin-password", default=None, help=admin_help)
         p.add_argument("--branch", default=None,
                        help="git ref to build the image from (via a throwaway worktree).")
+        p.add_argument("--yes", action="store_true",
+                       help="skip the destructive-wipe confirmation (reset/restore/fixture on a "
+                            "non-empty volume) — for non-interactive callers (subagents/CI).")
 
     # `start {dev|test|prod}` — unified launch. dev = in-process (no container); test = throwaway
     # container on the real prod image; prod = compose up.
@@ -576,11 +611,6 @@ def main():
     # dev is in-process — just Ctrl+C, nothing to stop.
     st = sub.add_parser("stop", help="stop a target: stop {test|prod}")
     st.add_argument("target", choices=["prod", "test"])
-
-    # Deprecated top-level aliases — kept so muscle memory + docs/scripts don't break; they
-    # forward to `start prod` / `start dev` with a notice.
-    _add_prod_args(sub.add_parser("prod", help="[deprecated → `start prod`]"))
-    _add_dev_args(sub.add_parser("dev", help="[deprecated → `start dev`]"))
 
     sub.add_parser("restore", help="seed a fresh prod host from an existing backup")
     cc = sub.add_parser("create-config",
@@ -604,19 +634,14 @@ def main():
         migrate_config()
         return
     master = load_master()
-    # Resolve (cmd, target), honouring the deprecated top-level `prod`/`dev` aliases.
     cmd, target = a.cmd, getattr(a, "target", None)
-    if cmd in ("prod", "dev"):
-        print(f"note: `./deploy.py {cmd}` is deprecated — use `./deploy.py start {cmd}`.", file=sys.stderr)
-        cmd, target = "start", cmd
-
     if cmd == "start" and target == "prod":
         start_prod(master, a.with_backup, a.branch, a.admin_password)
     elif cmd == "start" and target == "dev":
         rc = start_dev(master, a.admin_password)
         raise SystemExit(rc or 0)
     elif cmd == "start" and target == "test":
-        start_test(master, a.port, a.data_mode, a.branch, a.admin_password)
+        start_test(master, a.port, a.data_mode, a.branch, a.admin_password, a.yes)
     elif cmd == "stop":
         stop(master, a.target)
     elif cmd == "restore":
