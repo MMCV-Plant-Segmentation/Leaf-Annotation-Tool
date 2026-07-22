@@ -118,15 +118,20 @@ r_bob = set_tile(bt_ids[0], 'bob', 'completed')
 assert r_bob.status_code == 403, f'a non-member must be 403 on the toggle, got {r_bob.status_code}'
 print('L4 OK — a non-member is forbidden from marking a tile')
 
-# ── L5: merge-readiness = every current roster member × every tile completed ─────────────
+# ── L5: merge-readiness = every current BATCH MEMBER × every tile completed ──────────────
+# t126 Phase 2: readiness derives from batch_member (not the live project roster). dana was
+# added to the PROJECT roster after the batch, so she is NOT a batch member until added — add
+# her to the batch so she counts toward readiness (the Phase-2 durable t112 path).
 def merge_ready():
     return jd(client.get(f'/api/batches/{batch_id}?annotator=alice'))['mergeReady']
 
 as_user(2, 'alice')
+assert client.post(f'/api/batches/{batch_id}/members',
+                   json={'annotator': 'dana'}).status_code in (200, 201)
 assert merge_ready() is False, 'not ready before anything is completed'
 for bt in bt_ids:                          # alice completes every tile
     assert set_tile(bt, 'alice', 'completed').status_code == 200
-assert merge_ready() is False, 'still not ready — dana (a roster member) has not completed'
+assert merge_ready() is False, 'still not ready — dana (a batch member) has not completed'
 as_user(3, 'dana')
 for bt in bt_ids:                          # dana completes every tile
     assert set_tile(bt, 'dana', 'completed').status_code == 200
