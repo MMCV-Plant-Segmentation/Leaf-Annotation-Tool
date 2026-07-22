@@ -49,6 +49,7 @@ from webapp import db, app as appmod
 
 db.auto_create_schema()
 _c = db.get_db()
+_c.execute("INSERT INTO users (id, username) VALUES (1, 'admin')")   # admin (real row: t124 auth requires the session user to still exist)
 _c.execute("INSERT INTO users (id, username) VALUES (2, 'alice')")   # creator
 _c.execute("INSERT INTO users (id, username) VALUES (3, 'dana')")    # on roster at batch time
 _c.execute("INSERT INTO users (id, username) VALUES (4, 'bob')")     # added AFTER the batch
