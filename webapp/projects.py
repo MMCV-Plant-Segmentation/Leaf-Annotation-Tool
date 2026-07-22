@@ -2378,7 +2378,14 @@ def _do_finish_stroke(con, srow, ann, points):
     """t59 FINISH: whole-stroke keep/discard, brush-parity. `points` is the stroke's
     current (already-persisted, possibly off-tile mid-draw) vertex list. Keep leaves the
     annotation untouched (same id, same rows) — discard soft-deletes it and drops its
-    tile links, exactly like a no-tile brush stroke create-time reject."""
+    tile links, exactly like a no-tile brush stroke create-time reject.
+
+    t111: the keep/discard decision is over the WHOLE annotation's footprint (every live
+    member stroke), NOT just the finishing stroke's own points. A polyline click that
+    snapped onto an existing on-tile mask CONSUMES it (fuse-on-create), so the finishing
+    stroke can be entirely off-tile while its annotation still holds co-fused on-tile
+    geometry — discarding on the lone stroke's footprint wiped that geometry (DATA LOSS).
+    Brush-parity is unchanged for a LONE off-tile stroke (its annotation IS just itself)."""
     stroke_id = srow['id']
     aid = ann['id']
     image_id = ann['project_image_id']
@@ -2386,7 +2393,21 @@ def _do_finish_stroke(con, srow, ann, points):
     outline = json.loads(srow['outline_json']) if srow['outline_json'] else None
     before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
               'strokeWidth': srow['stroke_width'], 'outline': outline}
-    footprint = _footprint(points, stroke_width, outline)
+    # Footprint of the WHOLE annotation: union every live member stroke's footprint, using
+    # the finishing stroke's INCOMING points/width/outline for itself (in case `final` also
+    # carried edits) and the stored record for its co-fused siblings.
+    member_polys = []
+    for m in con.execute('SELECT * FROM stroke WHERE annotation_id = ?', (aid,)).fetchall():
+        if m['id'] == stroke_id:
+            m_pts, m_w, m_out = points, stroke_width, outline
+        else:
+            m_pts = json.loads(m['points_json']) if m['points_json'] else []
+            m_w = m['stroke_width']
+            m_out = json.loads(m['outline_json']) if m['outline_json'] else None
+        poly = _footprint(m_pts, m_w, m_out)
+        if poly is not None and not poly.is_empty:
+            member_polys.append(poly)
+    footprint = unary_union(member_polys) if member_polys else None
     tile_ids = _tiles_for_geom(con, image_id, footprint) \
         if footprint is not None and not footprint.is_empty else []
     if tile_ids:
