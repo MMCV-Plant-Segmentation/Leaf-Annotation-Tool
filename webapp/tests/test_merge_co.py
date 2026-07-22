@@ -81,13 +81,13 @@ batch_id = jj(alice.post(f'/api/projects/{pid}/batches', json={'size': 1}))['id'
 
 def _at_id(client, uname):
     cv = jj(client.get(f'/api/batches/{batch_id}?annotator={uname}'))
-    return cv['images'][0]['tiles'][0]['annotatorTileId'], cv
+    return cv['images'][0]['tiles'][0]['batchTileId'], cv  # t126: batch_tile id (lazy completion)
 
 
 a_at, cv_alice = _at_id(alice, 'alice')
 b_at, _ = _at_id(bob, 'bob')
-assert alice.patch(f'/api/annotator-tiles/{a_at}', json={'state': 'completed'}).status_code == 200
-assert bob.patch(f'/api/annotator-tiles/{b_at}', json={'state': 'completed'}).status_code == 200
+assert alice.post(f'/api/batch-tiles/{a_at}/state', json={'annotator':'alice','state':'completed'}).status_code == 200
+assert bob.post(f'/api/batch-tiles/{b_at}/state', json={'annotator':'bob','state':'completed'}).status_code == 200
 assert alice.post(f'/api/batches/{batch_id}/enter-merge').status_code == 200
 
 tile0 = cv_alice['images'][0]['tiles'][0]

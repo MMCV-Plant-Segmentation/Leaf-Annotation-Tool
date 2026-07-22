@@ -11,17 +11,20 @@ import type { Setter } from 'solid-js';
 import { projectsApi, type BatchCanvas, type CanvasTile } from './api';
 import { t } from '../i18n/catalog';
 
-export function createTileToggle(imgIdx: () => number, setCanvas: Setter<BatchCanvas | undefined>) {
+export function createTileToggle(imgIdx: () => number, setCanvas: Setter<BatchCanvas | undefined>,
+                                 annotator: () => string) {
   const [error, setError] = createSignal('');
   const toggle = async (tile: CanvasTile) => {
-    if (!tile.annotatorTileId) return;
+    // t126: no pre-provisioned annotatorTileId guard — completion is lazy, keyed on the
+    // batch tile + the current annotator; the row is minted on the first mark (fixes t112).
     const next = tile.state === 'completed' ? 'assigned' : 'completed';
     try {
-      await projectsApi.setTileState(tile.annotatorTileId, next);
+      const r = await projectsApi.setTileState(tile.batchTileId, annotator(), next);
       setCanvas((c) => c && ({
         ...c,
         images: c.images.map((im, i) => i === imgIdx()
-          ? { ...im, tiles: im.tiles.map((tl) => tl.tileId === tile.tileId ? { ...tl, state: next } : tl) } : im),
+          ? { ...im, tiles: im.tiles.map((tl) => tl.tileId === tile.tileId
+              ? { ...tl, state: next, annotatorTileId: r.annotatorTileId } : tl) } : im),
       }));
       setError('');
     } catch (e) {

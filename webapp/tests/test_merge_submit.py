@@ -86,15 +86,21 @@ image_id = jj(alice.get(f'/api/projects/{pid}'))['images'][0]['id']
 batch_id = jj(alice.post(f'/api/projects/{pid}/batches', json={'size': 1}))['id']
 
 
-def _at_id(client, un):
+def _bt_ids(client, un):
     cv = jj(client.get(f'/api/batches/{batch_id}?annotator={un}'))
-    return cv['images'][0]['tiles'][0]['annotatorTileId'], cv
+    return [t['batchTileId'] for im in cv['images'] for t in im['tiles']], cv
 
 
-a_at, cv_alice = _at_id(alice, 'alice')
-b_at, _ = _at_id(bob, 'bob')
-assert alice.patch(f'/api/annotator-tiles/{a_at}', json={'state': 'completed'}).status_code == 200
-assert bob.patch(f'/api/annotator-tiles/{b_at}', json={'state': 'completed'}).status_code == 200
+# t126: completion is lazy per (batch_tile, annotator). Mark EVERY tile complete for BOTH
+# members so the batch is merge-ready (readiness = every roster member × every tile).
+a_bts, cv_alice = _bt_ids(alice, 'alice')
+b_bts, _ = _bt_ids(bob, 'bob')
+for bt in a_bts:
+    assert alice.post(f'/api/batch-tiles/{bt}/state',
+                      json={'annotator': 'alice', 'state': 'completed'}).status_code == 200
+for bt in b_bts:
+    assert bob.post(f'/api/batch-tiles/{bt}/state',
+                    json={'annotator': 'bob', 'state': 'completed'}).status_code == 200
 assert alice.post(f'/api/batches/{batch_id}/enter-merge').status_code == 200
 
 tile0 = cv_alice['images'][0]['tiles'][0]

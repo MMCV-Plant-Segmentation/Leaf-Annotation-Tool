@@ -101,9 +101,15 @@ batch_id = jdump(r)['id']
 print(f'  batch {batch_id} created (1 tile x 2 annotators)')
 
 
-def _annotator_tile_id(client, username):
+def _batch_tile_id(client, username):
     cv = jdump(client.get(f'/api/batches/{batch_id}?annotator={username}'))
-    return cv['images'][0]['tiles'][0]['annotatorTileId'], cv
+    return cv['images'][0]['tiles'][0]['batchTileId'], cv
+
+
+def _mark(client, username, bt_id, state):
+    # t126: lazy completion keyed on (batch_tile, annotator).
+    return client.post(f'/api/batch-tiles/{bt_id}/state',
+                       json={'annotator': username, 'state': state})
 
 
 # ── M1/M2: mergeReady flips only once every annotator_tile is completed ───────
@@ -117,8 +123,8 @@ cv0 = jdump(alice_client.get(f'/api/batches/{batch_id}'))
 assert cv0['mergeReady'] is False
 print('  ✓  fresh batch: mergeReady=False (batches list + get_batch agree)')
 
-alice_at_id, _ = _annotator_tile_id(alice_client, 'alice')
-r = alice_client.patch(f'/api/annotator-tiles/{alice_at_id}', json={'state': 'completed'})
+alice_bt, _ = _batch_tile_id(alice_client, 'alice')
+r = _mark(alice_client, 'alice', alice_bt, 'completed')
 assert r.status_code == 200, jdump(r)
 
 det1 = jdump(alice_client.get(f'/api/projects/{pid}'))
@@ -126,8 +132,8 @@ b1 = next(b for b in det1['batches'] if b['id'] == batch_id)
 assert b1['mergeReady'] is False, 'still not ready — bob has not completed his tile'
 print('  ✓  alice completed, bob has not -> still mergeReady=False')
 
-bob_at_id, _ = _annotator_tile_id(bob_client, 'bob')
-r = bob_client.patch(f'/api/annotator-tiles/{bob_at_id}', json={'state': 'completed'})
+bob_bt, _ = _batch_tile_id(bob_client, 'bob')
+r = _mark(bob_client, 'bob', bob_bt, 'completed')
 assert r.status_code == 200, jdump(r)
 
 det2 = jdump(alice_client.get(f'/api/projects/{pid}'))
@@ -142,14 +148,14 @@ print('  ✓  both completed -> mergeReady=True (batches list + get_batch agree)
 
 print('\n── M3: enter-merge -> 409 while not ready ──')
 
-r = alice_client.patch(f'/api/annotator-tiles/{alice_at_id}', json={'state': 'dirty'})
+r = _mark(alice_client, 'alice', alice_bt, 'dirty')
 assert r.status_code == 200
 r = alice_client.post(f'/api/batches/{batch_id}/enter-merge')
 assert r.status_code == 409, f'expected 409, got {r.status_code}: {jdump(r)}'
 print('  ✓  enter-merge -> 409 while a tile is not completed')
 
 # Re-complete so we can proceed
-r = alice_client.patch(f'/api/annotator-tiles/{alice_at_id}', json={'state': 'completed'})
+r = _mark(alice_client, 'alice', alice_bt, 'completed')
 assert r.status_code == 200
 
 
@@ -175,7 +181,7 @@ print('  ✓  second enter-merge call is idempotent (200, still merge)')
 
 print('\n── M5: merge-annotations pools cross-annotator ──')
 
-_, cv_alice = _annotator_tile_id(alice_client, 'alice')
+_, cv_alice = _batch_tile_id(alice_client, 'alice')
 tile0 = cv_alice['images'][0]['tiles'][0]
 tx, ty, tw, th = tile0['x'], tile0['y'], tile0['w'], tile0['h']
 

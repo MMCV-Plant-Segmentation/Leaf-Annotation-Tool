@@ -127,7 +127,7 @@ const CanvasScreen: Component = () => {
         annotator)
     : null;
 
-  const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas);
+  const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas, annotator);
 
   const classOptions = (): Label[] => buildClassOptions(canvas()?.classes ?? [], canvas()?.broken ?? []);
   // Taxonomy v2: a lesion renders in its SNAPSHOT colour (captured at assign time) so a

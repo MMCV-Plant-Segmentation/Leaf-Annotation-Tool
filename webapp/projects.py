@@ -1254,12 +1254,9 @@ def create_batch(project_id: str):
                 'INSERT INTO batch_tile (id, batch_id, tile_id) VALUES (?, ?, ?)',
                 (bt_id, batch_id, tile_id),
             )
-            for byline in roster:
-                con.execute(
-                    '''INSERT INTO annotator_tile (id, batch_tile_id, annotator, state, updated_at)
-                       VALUES (?, ?, ?, 'assigned', ?)''',
-                    (_uid(), bt_id, byline, _now()),
-                )
+            # t126: tiles are NOT assigned to users. Per-(member,tile) completion is created
+            # LAZILY when a member first marks a tile (see set_batch_tile_state), so a
+            # late-added roster annotator just works (fixes t112). No pre-provisioning here.
         con.commit()
         return jsonify({'id': batch_id, 'seq': seq, 'size': size,
                         'tileCount': len(picked), 'rosterSize': len(roster)}), 201
@@ -1270,19 +1267,28 @@ def create_batch(project_id: str):
 # ── batch / canvas read ───────────────────────────────────────────────────────
 
 def _merge_ready(con, batch_id: str) -> bool:
-    """MERGE Phase 1 gate: a batch is merge-ready when EVERY annotator_tile for it
-    (all its batch_tiles × all its roster annotators) has state='completed'. A batch
-    with no annotator_tile rows at all (no tiles or no roster) is never ready."""
-    row = con.execute(
-        '''SELECT COUNT(*) total,
-                  SUM(CASE WHEN at.state = 'completed' THEN 1 ELSE 0 END) done
-           FROM annotator_tile at
-           JOIN batch_tile bt ON bt.id = at.batch_tile_id
-           WHERE bt.batch_id = ?''', (batch_id,)
-    ).fetchone()
-    total = row['total'] or 0
-    done = row['done'] or 0
-    return total > 0 and total == done
+    """MERGE Phase 1 gate: a batch is merge-ready when EVERY CURRENT roster member has
+    completed EVERY tile. t126: completion is lazy (a missing annotator_tile row = not done,
+    NOT pre-provisioned), so readiness is derived from (roster members × batch tiles) vs the
+    count of 'completed' rows for CURRENT members — never from the mere presence of rows. A
+    batch with no tiles or no roster is never ready; adding a member lowers readiness until
+    they complete too."""
+    batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+    if not batch:
+        return False
+    roster = [r['byline'] for r in con.execute(
+        'SELECT byline FROM project_annotator WHERE project_id = ?', (batch['project_id'],)).fetchall()]
+    tile_count = con.execute(
+        'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (batch_id,)).fetchone()['c']
+    if not roster or tile_count == 0:
+        return False
+    qm = ','.join('?' * len(roster))
+    done = con.execute(
+        f'''SELECT COUNT(*) c FROM annotator_tile at
+            JOIN batch_tile bt ON bt.id = at.batch_tile_id
+            WHERE bt.batch_id = ? AND at.state = 'completed' AND at.annotator IN ({qm})''',
+        (batch_id, *roster)).fetchone()['c']
+    return done == len(roster) * tile_count
 
 
 @projects_bp.get('/api/batches/<batch_id>')
@@ -3534,6 +3540,50 @@ def set_tile_state(at_id: str):
         )
         con.commit()
         return jsonify({'ok': True, 'state': state})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batch-tiles/<bt_id>/state')
+@login_required
+def set_batch_tile_state(bt_id: str):
+    """t126: mark MY completion of a batch tile — keyed on (batch_tile, annotator), UPSERTing
+    the per-(member,tile) completion record LAZILY. Tiles are not pre-assigned to users, so
+    the row is minted on first mark; this is what lets a late-added roster annotator complete
+    a tile at all (fixes t112, where a missing pre-provisioned row made the checkmark no-op).
+    `annotator` is body-supplied (admin may mark as any annotator; a non-admin is forced to
+    self via _owner_or_403). Gated on project membership (_member_or_403)."""
+    body = request.json or {}
+    state = body.get('state')
+    if state not in ('assigned', 'completed', 'dirty'):
+        return jsonify({'error': 'state must be assigned|completed|dirty'}), 400
+    is_admin = session.get('username') == 'admin'
+    annotator = (body.get('annotator') or '').strip() if is_admin else (session.get('username') or '')
+    con = _db.get_db()
+    try:
+        bt = con.execute(
+            '''SELECT bt.id, b.project_id FROM batch_tile bt
+               JOIN batch b ON b.id = bt.batch_id WHERE bt.id = ?''', (bt_id,)).fetchone()
+        if not bt:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, bt['project_id']) or _owner_or_403(annotator)
+        if err:
+            return err
+        now = _now()
+        existing = con.execute(
+            'SELECT id FROM annotator_tile WHERE batch_tile_id = ? AND annotator = ?',
+            (bt_id, annotator)).fetchone()
+        if existing:
+            at_id = existing['id']
+            con.execute('UPDATE annotator_tile SET state = ?, updated_at = ? WHERE id = ?',
+                        (state, now, at_id))
+        else:
+            at_id = _uid()
+            con.execute(
+                '''INSERT INTO annotator_tile (id, batch_tile_id, annotator, state, updated_at)
+                   VALUES (?, ?, ?, ?, ?)''', (at_id, bt_id, annotator, state, now))
+        con.commit()
+        return jsonify({'ok': True, 'state': state, 'annotatorTileId': at_id})
     finally:
         _db.close_db(con)
 

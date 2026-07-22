@@ -100,14 +100,19 @@ def make_stroke(points, label='lesion', sw=10):
 
 
 def complete(tile):
-    r3 = alice_client.patch(f"/api/annotator-tiles/{tile['annotatorTileId']}", json={'state': 'completed'})
+    # t126: completion is lazy, keyed on (batch_tile, annotator) — no pre-provisioned at_id.
+    r3 = alice_client.post(f"/api/batch-tiles/{tile['batchTileId']}/state",
+                           json={'annotator': 'alice', 'state': 'completed'})
     assert r3.status_code == 200, jdump(r3)
 
 
-def tile_state(at_id):
+def tile_state(tile):
     c = db.get_db()
     try:
-        return c.execute('SELECT state FROM annotator_tile WHERE id = ?', (at_id,)).fetchone()['state']
+        row = c.execute(
+            "SELECT state FROM annotator_tile WHERE batch_tile_id = ? AND annotator = 'alice'",
+            (tile['batchTileId'],)).fetchone()
+        return row['state'] if row else None
     finally:
         db.close_db(c)
 
@@ -117,14 +122,14 @@ def tile_state(at_id):
 print('\n── T1: create into a completed tile ──')
 
 complete(t0)
-assert tile_state(t0['annotatorTileId']) == 'completed'
+assert tile_state(t0) == 'completed'
 
 a1 = make_stroke([[cx - 10, cy], [cx + 10, cy]])
 assert 'tileStates' in a1, f'tileStates missing from create_annotation response: {a1.keys()}'
 ts1 = [s for s in a1['tileStates'] if s['tileId'] == t0['tileId']]
 assert len(ts1) == 1, f'expected t0 in tileStates, got {a1["tileStates"]}'
 assert ts1[0]['state'] == 'dirty'
-assert tile_state(t0['annotatorTileId']) == 'dirty'
+assert tile_state(t0) == 'dirty'
 print('  ✓  create_annotation flips a completed tile to dirty')
 
 
@@ -133,7 +138,7 @@ print('  ✓  create_annotation flips a completed tile to dirty')
 print('\n── T2: mutate delete on a completed tile ──')
 
 complete(t0)
-assert tile_state(t0['annotatorTileId']) == 'completed'
+assert tile_state(t0) == 'completed'
 
 r = alice_client.post(f'/api/projects/{pid}/annotations/mutate',
                       json={'op': 'delete', 'ids': [a1['id']]})
@@ -142,7 +147,7 @@ mut = jdump(r)
 assert 'tileStates' in mut, f'tileStates missing from mutate response: {mut.keys()}'
 ts2 = [s for s in mut['tileStates'] if s['tileId'] == t0['tileId']]
 assert len(ts2) == 1, f'expected t0 in tileStates, got {mut["tileStates"]}'
-assert tile_state(t0['annotatorTileId']) == 'dirty'
+assert tile_state(t0) == 'dirty'
 print('  ✓  mutate(delete) flips a completed tile to dirty')
 
 
@@ -152,7 +157,7 @@ print('\n── T3: DELETE endpoint on a completed tile ──')
 
 a2 = make_stroke([[cx - 8, cy + 8], [cx + 8, cy + 8]])
 complete(t0)
-assert tile_state(t0['annotatorTileId']) == 'completed'
+assert tile_state(t0) == 'completed'
 
 r = alice_client.delete(f"/api/annotations/{a2['id']}")
 assert r.status_code == 200, jdump(r)
@@ -160,7 +165,7 @@ deld = jdump(r)
 assert 'tileStates' in deld, f'tileStates missing from delete response: {deld.keys()}'
 ts3 = [s for s in deld['tileStates'] if s['tileId'] == t0['tileId']]
 assert len(ts3) == 1, f'expected t0 in tileStates, got {deld["tileStates"]}'
-assert tile_state(t0['annotatorTileId']) == 'dirty'
+assert tile_state(t0) == 'dirty'
 print('  ✓  DELETE /api/annotations/<id> flips a completed tile to dirty')
 
 
@@ -170,7 +175,7 @@ print('\n── T4: mutate restore on a completed tile ──')
 
 # a1 is currently soft-deleted (from T2). Re-complete the tile, then restore a1.
 complete(t0)
-assert tile_state(t0['annotatorTileId']) == 'completed'
+assert tile_state(t0) == 'completed'
 
 r = alice_client.post(f'/api/projects/{pid}/annotations/mutate',
                       json={'op': 'restore', 'ids': [a1['id']]})
@@ -179,7 +184,7 @@ rest = jdump(r)
 assert 'tileStates' in rest, f'tileStates missing from restore response: {rest.keys()}'
 ts4 = [s for s in rest['tileStates'] if s['tileId'] == t0['tileId']]
 assert len(ts4) == 1, f'expected t0 in tileStates, got {rest["tileStates"]}'
-assert tile_state(t0['annotatorTileId']) == 'dirty'
+assert tile_state(t0) == 'dirty'
 print('  ✓  mutate(restore) flips a completed tile to dirty')
 
 
@@ -187,11 +192,11 @@ print('  ✓  mutate(restore) flips a completed tile to dirty')
 
 print('\n── T5: editing an assigned (not completed) tile is a no-op for state ──')
 
-assert tile_state(t0['annotatorTileId']) == 'dirty'  # left over from T4 — not 'completed'
+assert tile_state(t0) == 'dirty'  # left over from T4 — not 'completed'
 a3 = make_stroke([[cx - 5, cy - 12], [cx + 5, cy - 12]])
 ts5 = [s for s in a3['tileStates'] if s['tileId'] == t0['tileId']]
 assert ts5 == [], f'tile was not completed; must not appear in tileStates: {a3["tileStates"]}'
-assert tile_state(t0['annotatorTileId']) == 'dirty', 'state must be unchanged (still dirty, not re-touched)'
+assert tile_state(t0) == 'dirty', 'state must be unchanged (still dirty, not re-touched)'
 print('  ✓  a non-completed tile is left alone (no spurious tileStates entry)')
 
 print('\n✓ All tile-reopen tests passed')

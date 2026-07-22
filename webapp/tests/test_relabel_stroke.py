@@ -117,13 +117,13 @@ ann_id = ann['id']
 tile_id = ann['tileIds'][0]
 print('  painted lesion:', ann_id, 'tile:', tile_id)
 
-# Complete that tile (so R2 below can prove relabel re-opens it).
+# Complete that tile (so R2 below can prove relabel re-opens it). t126: completion is lazy,
+# keyed on (batch_tile, annotator) — resolve this tile's batch_tile and mark it via the route.
 con = dbmod.get_db()
-at_id = con.execute(
-    "SELECT at.id FROM annotator_tile at JOIN batch_tile bt ON bt.id = at.batch_tile_id "
-    "WHERE bt.tile_id = ? AND at.annotator = 'carol'", (tile_id,)).fetchone()['id']
+bt_id = con.execute('SELECT id FROM batch_tile WHERE tile_id = ?', (tile_id,)).fetchone()['id']
 dbmod.close_db(con)
-assert _j(client.patch(f'/api/annotator-tiles/{at_id}', json={'state': 'completed'}))['state'] == 'completed'
+assert _j(client.post(f'/api/batch-tiles/{bt_id}/state',
+                      json={'annotator': 'carol', 'state': 'completed'}))['state'] == 'completed'
 
 # R3 (checked first, before relabelling): a geometry edit on a stroke still 422s, even
 # when the body ALSO carries a label change.
@@ -149,7 +149,7 @@ print('  ✓  relabel survives a reload (fresh batch-canvas read)')
 
 # R2: relabelling a completed tile reopens it (dirty) — same policy as any other edit.
 con = dbmod.get_db()
-state = con.execute('SELECT state FROM annotator_tile WHERE id = ?', (at_id,)).fetchone()['state']
+state = con.execute("SELECT state FROM annotator_tile WHERE batch_tile_id = ? AND annotator = 'carol'", (bt_id,)).fetchone()['state']
 dbmod.close_db(con)
 assert state == 'dirty', f'relabel should reopen a completed tile, got {state}'
 print('  ✓  relabelling a completed tile reopens it to dirty')

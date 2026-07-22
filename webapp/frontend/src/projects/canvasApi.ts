@@ -56,7 +56,7 @@ export type BatchCanvas = {
   projectId: string;
   seq: number;
   status: string;
-  /** MERGE Phase 1 gate: true once every annotator_tile in the batch is 'completed'. */
+  /** MERGE Phase 1 gate: true once every current roster member has completed every tile (t126). */
   mergeReady: boolean;
   classes: Label[];
   groups: Group[];
@@ -97,12 +97,10 @@ export const canvasApi = {
   batchCanvas: (batchId: string, annotator: string) =>
     jfetch<BatchCanvas>(`/api/batches/${batchId}?annotator=${encodeURIComponent(annotator)}`),
 
-  /** MERGE Phase 1: batch structure (images/tiles) with no per-annotator annotations —
-   * MergeCanvasScreen pairs this with mergeAnnotations() for the pooled, blind read. */
+  /** MERGE Phase 1: batch structure (images/tiles), no annotations — MergeCanvasScreen pairs it with mergeAnnotations() for the pooled blind read. */
   mergeBatch: (batchId: string) => jfetch<BatchCanvas>(`/api/batches/${batchId}`),
 
-  /** MERGE Phase 1: every non-deleted annotation from every annotator, scoped to this
-   * batch's tiles — the pooled read rendered one-colour/outline-only (blind). */
+  /** MERGE Phase 1: every non-deleted annotation from every annotator, scoped to this batch's tiles — the pooled read rendered one-colour/outline-only (blind). */
   mergeAnnotations: (batchId: string) =>
     jfetch<MergeAnnotations>(`/api/batches/${batchId}/merge-annotations`),
 
@@ -163,8 +161,10 @@ export const canvasApi = {
 
   ...strokeEditApi,
 
-  setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
-    jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
+  // t126: completion is lazy, keyed on (batch_tile, annotator) — minted server-side on first mark.
+  setTileState: (batchTileId: string, annotator: string, state: 'assigned' | 'completed' | 'dirty') =>
+    jfetch<{ ok: boolean; state: string; annotatorTileId: string }>(
+      `/api/batch-tiles/${batchTileId}/state`, jbody('POST', { annotator, state })),
 
   /** Batch-insert viewport (pan/zoom) telemetry samples — see viewportTelemetry.ts.
    * Best-effort by design: callers swallow rejections, never surface them to the user. */

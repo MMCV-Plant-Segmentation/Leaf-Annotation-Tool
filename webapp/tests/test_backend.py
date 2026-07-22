@@ -96,13 +96,9 @@ r = client.post(f'/api/projects/{pid}/annotations', json={'imageId':target['imag
 assert r.status_code==422, jdump(r)
 print('out-of-tile annotation rejected (422) ok')
 
-# 8) complete the tile, check progress
-at_id = None
-# fetch annotator_tile id via canvas? need it: get from batch_tile/annotator_tile. Use a direct API: state toggle needs at_id.
-con = db.get_db()
-at_id = con.execute("SELECT at.id FROM annotator_tile at JOIN batch_tile bt ON bt.id=at.batch_tile_id WHERE bt.tile_id=? AND at.annotator='alice'", (t0['tileId'],)).fetchone()['id']
-db.close_db(con)
-assert jdump(client.patch(f'/api/annotator-tiles/{at_id}', json={'state':'completed'}))['state']=='completed'
+# 8) complete the tile, check progress (t126: lazy completion via the batch-tile route)
+assert jdump(client.post(f"/api/batch-tiles/{t0['batchTileId']}/state",
+                         json={'annotator':'alice','state':'completed'}))['state']=='completed'
 prog = {p['annotator']:p for p in jdump(client.get(f'/api/projects/{pid}'))['progress']}
 print('progress alice:', prog['alice'])
 assert prog['alice']['tilesCompleted']==1
@@ -112,7 +108,7 @@ assert prog['alice']['vertexCount']==4
 # 9) edit annotation -> tile goes dirty
 client.patch(f'/api/annotations/{ann["id"]}', json={'points':[[p[0]+1,p[1]+1] for p in poly]})
 con = db.get_db()
-state = con.execute('SELECT state FROM annotator_tile WHERE id=?', (at_id,)).fetchone()['state']
+state = con.execute("SELECT state FROM annotator_tile WHERE batch_tile_id=? AND annotator='alice'", (t0['batchTileId'],)).fetchone()['state']
 db.close_db(con)
 print('after edit, tile state =', state)
 assert state=='dirty', 'editing a completed tile should dirty it'
