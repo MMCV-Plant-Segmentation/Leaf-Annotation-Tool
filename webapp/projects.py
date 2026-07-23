@@ -13,6 +13,7 @@ webapp/imaging.py. This module is DB + HTTP glue only.
 from __future__ import annotations
 
 import json
+import math
 import random
 import threading
 import uuid
@@ -180,6 +181,82 @@ def _stroke_polygon(points, stroke_width, outline=None):
         return _rings_to_geom(geo_engine.outline_polyline(pts, [width / 2] * len(pts)))
     except geo_engine.GeoEngineError:
         return None
+
+
+def _densify(pts: list, size: float, max_points: int = 2000) -> list:
+    """Linearly interpolate extra samples into any segment of `pts` (`[(x,y),...]`) that's
+    long relative to the brush `size`, so a straight run between just a couple of
+    far-apart points isn't under-sampled.
+
+    A real freehand brush drag naturally emits many close-together mousemove samples; a
+    programmatic / test-authored 2-point straight line does not. The engine's
+    `outline_brush` op (a Rust port of perfect-freehand, fused with a same-radius circle
+    at every INPUT point so the outline always covers each one) can still under-cover the
+    straight run BETWEEN two sparse, far-apart points — the freedraw curve and the two
+    endpoint circles can end up disjoint, and only the largest piece survives. Segments no
+    longer than `size` are left untouched (already dense enough relative to the brush
+    radius — this is also what keeps an ordinary, already-densely-sampled brush stroke
+    input bit-identical to a raw engine call). Longer segments get intermediate points
+    every ~`size/2`, capped so total point count stays bounded by `max_points`.
+    """
+    if len(pts) < 2 or size <= 0:
+        return pts
+    step = max(size / 2, 1e-6)
+    total = sum(math.dist(pts[i - 1], pts[i]) for i in range(1, len(pts)))
+    if total <= 0:
+        return pts
+    step = max(step, total / max_points)
+    out = [pts[0]]
+    for i in range(1, len(pts)):
+        x0, y0 = pts[i - 1]
+        x1, y1 = pts[i]
+        d = math.dist((x0, y0), (x1, y1))
+        if d <= size:
+            out.append((x1, y1))
+            continue
+        n = max(1, int(d // step))
+        for k in range(1, n + 1):
+            t = k / n
+            out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    return out
+
+
+def _compute_stroke_outline(points, stroke_width, tool='brush'):
+    """t103 Phase D — compute a stroke's outline SERVER-SIDE via the geo-engine wasm
+    module; the SINGLE source of stroke geometry (any wire `outline` is ignored — this
+    replaces it).
+
+    Tool-aware: `brush` strokes use the engine's BRUSH op (perfect-freehand-equivalent)
+    at the stroke width; everything else (`polyline`) uses the PER-VERTEX-radius
+    polyline op — a polyline point may be `[x, y, size]`, radius = size/2, falling back
+    to `stroke_width/2` for a legacy 2-tuple point (t62 taper, reproduced server-side).
+
+    Returns a flat outline point list `[[x,y],...]` (the ring with the most points, i.e.
+    the main contour) or None for degenerate/empty input.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
+    if len(pts) < 2:
+        return None
+    width = max(float(stroke_width or 0) or 1, 1)
+    try:
+        if tool == 'polyline':
+            radii = []
+            for p in (points or []):
+                r = None
+                if len(p) >= 3 and p[2] is not None:
+                    try:
+                        r = max(float(p[2]) / 2, 0.5)
+                    except (TypeError, ValueError):
+                        r = None
+                radii.append(r if r is not None else width / 2)
+            rings = geo_engine.outline_polyline(pts, radii)
+        else:
+            rings = geo_engine.outline_brush(_densify(pts, width), width)
+    except geo_engine.GeoEngineError:
+        return None
+    if not rings:
+        return None
+    return max(rings, key=len)
 
 
 def _poly_rings(poly) -> list:
@@ -2442,8 +2519,10 @@ def do_create_annotation(con, project_id: str, body: dict, *,
                 stroke_width = max(1.0, min(w, diag) if diag else w)
             except (TypeError, ValueError):
                 stroke_width = None
-        outline = body.get('outline')
         tool = 'polyline' if body.get('tool') == 'polyline' else 'brush'
+        # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — the server
+        # is the single source of stroke geometry, computed via the geo-engine wasm module.
+        outline = _compute_stroke_outline(points, stroke_width, tool)
         footprint = _footprint(points, stroke_width, outline)
         # t59 (Christian, 2026-07-19): defer the tile check for POLYLINE ONLY. A polyline
         # is drawn click-by-click and an intermediate click may legitimately land off-tile
@@ -2788,7 +2867,9 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
             stroke_width = max(1.0, min(w, diag) if diag else w)
         except (TypeError, ValueError):
             pass
-    outline = body.get('outline')
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — recompute the
+    # stroke's contour server-side from its (possibly new) points via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, srow['tool'] or 'brush')
 
     # t127: gate on the tiles the EDITED stroke is about to touch (not just where it
     # already sat) — an edit that drags a stroke onto a batch the actor isn't a member of
@@ -2929,7 +3010,9 @@ def do_splice_polyline(con, project_id: str, body: dict, *,
             stroke_width = max(1.0, min(w, diag) if diag else w)
         except (TypeError, ValueError):
             pass
-    outline = body.get('outline')
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — recompute the
+    # stroke's contour server-side from its (spliced) points via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, srow['tool'] or 'brush')
 
     # t127: gate on the tiles the RE-WRITTEN stroke is about to touch — same reasoning as
     # do_edit_stroke's non-final branch.
@@ -3601,7 +3684,9 @@ def do_erase_stroke(con, project_id: str, body: dict, *,
     image_id = body.get('imageId')
     points = body.get('points') or []
     stroke_width = body.get('strokeWidth')
-    outline = body.get('outline')
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — the eraser is
+    # always a round brush sweep, computed server-side via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, 'brush')
     # Annotate-as-yourself, same admin bypass as create_annotation.
     if is_admin:
         annotator = (body.get('annotator') or '').strip()

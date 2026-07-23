@@ -40,6 +40,24 @@ const SCALE: f64 = 1024.0;
 /// Number of segments used to approximate a circle (vertex/cap disk) as a polygon.
 const CIRCLE_SEGMENTS: usize = 32;
 
+/// cos threshold above which a polyline vertex counts as "straight enough" to SKIP its round-join
+/// disk — the tangent quads already cover a straight run, so an interior near-collinear disk is pure
+/// redundant work (t140). cos(2.5°) ≈ 0.99905, so anything straighter than ~2.5° is skipped.
+const TURN_COS: f64 = 0.999;
+
+/// True when the direction changes appreciably at `b` (segment a→b vs b→c) — a visible round join
+/// whose disk matters. Near-collinear vertices return false (their disk is redundant with the quads).
+fn significant_turn(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    let (d1x, d1y) = (b[0] - a[0], b[1] - a[1]);
+    let (d2x, d2y) = (c[0] - b[0], c[1] - b[1]);
+    let l1 = (d1x * d1x + d1y * d1y).sqrt();
+    let l2 = (d2x * d2x + d2y * d2y).sqrt();
+    if l1 < 1e-9 || l2 < 1e-9 {
+        return true; // degenerate/coincident → keep the disk (cheap safety)
+    }
+    (d1x * d2x + d1y * d2y) / (l1 * l2) < TURN_COS
+}
+
 // ---------------------------------------------------------------------------------------------
 // Quantization
 // ---------------------------------------------------------------------------------------------
@@ -164,11 +182,17 @@ pub fn outline_polyline(points: &[[f64; 2]], radii: &[f64]) -> Vec<Vec<[f64; 2]>
         return fuse_polygons(&[circle_polygon(points[0], radii[0].max(0.0))]);
     }
 
-    let mut pieces: Vec<Vec<[f64; 2]>> = Vec::with_capacity(points.len() * 2);
-    for (p, r) in points.iter().zip(radii.iter()) {
-        pieces.push(circle_polygon(*p, r.max(0.0)));
+    let n = points.len();
+    let mut pieces: Vec<Vec<[f64; 2]>> = Vec::with_capacity(n * 2);
+    // Round-join / cap disks ONLY at the endpoints and at real corners — a straight run's interior
+    // disks are already covered by the tangent quads, so stamping one at every vertex is the t140
+    // cost. Same shape (the quads carry the straight parts; disks round the actual turns).
+    for i in 0..n {
+        if i == 0 || i == n - 1 || significant_turn(points[i - 1], points[i], points[i + 1]) {
+            pieces.push(circle_polygon(points[i], radii[i].max(0.0)));
+        }
     }
-    for i in 0..points.len() - 1 {
+    for i in 0..n - 1 {
         if let Some(quad) = tangent_quad(points[i], radii[i].max(0.0), points[i + 1], radii[i + 1].max(0.0)) {
             pieces.push(quad);
         }
@@ -232,8 +256,23 @@ pub fn outline_brush(points: &[[f64; 2]], size: f64) -> Vec<Vec<[f64; 2]>> {
     if outline.len() >= 3 {
         pieces.push(outline);
     }
-    for p in points {
-        pieces.push(circle_polygon(*p, radius));
+    // Coverage disks: freedraw's ribbon covers dense input but can short-ribbon on long/straight runs.
+    // Instead of a full disk at EVERY sample (the t140 cost), add one every ~radius of arc length (+
+    // both endpoints). Spacing ≤ radius keeps consecutive disks overlapping, so a far disk can never
+    // disconnect and get dropped by `largest_ring_by_area` (the sparse/collinear coverage bug). Same
+    // shape — freedraw's outline is unchanged; these only guarantee containment.
+    let step = (radius * 0.34).max(1.0);
+    let last = points.len() - 1;
+    let mut acc = step; // force a disk at the first point
+    for (i, p) in points.iter().enumerate() {
+        if i > 0 {
+            let (dx, dy) = (p[0] - points[i - 1][0], p[1] - points[i - 1][1]);
+            acc += (dx * dx + dy * dy).sqrt();
+        }
+        if i == 0 || i == last || acc >= step {
+            pieces.push(circle_polygon(*p, radius));
+            acc = 0.0;
+        }
     }
 
     // `freedraw`'s ported outline can leave a tiny self-intersection sliver (a near-zero-area
