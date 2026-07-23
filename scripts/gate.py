@@ -134,11 +134,18 @@ def static_stages(log_dir: Path) -> list[Stage]:
     return stages
 
 
-def rust_stages(log_dir: Path) -> list[Stage]:
+def rust_stages(log_dir: Path, skip_wasm_diff: bool = False) -> list[Stage]:
     """`cargo test` (t103 Phase B geo-engine crate) + rebuild the release wasm32 artifact and diff
     it byte-for-byte against the committed `geo-engine/geo_engine.wasm` — the pinned toolchain
-    (`geo-engine/rust-toolchain.toml`) makes the wasm build reproducible, so any drift (a code
-    change that wasn't rebuilt+recommitted) is a hard failure.
+    (`geo-engine/rust-toolchain.toml`) makes the build reproducible WITHIN a build environment.
+
+    `skip_wasm_diff` (t137): the committed wasm is byte-reproducible within one environment, but NOT
+    yet across environments — the jail and the host embed different absolute paths (crate/registry/
+    sysroot) into the artifact, so a jail rebuild != the host-built committed bytes. Until that's
+    fixed (--remap-path-prefix, t137), the byte-diff freshness check is the AUTHORITATIVE (host) gate's
+    job — the managed in-jail `gate`/`check` pass this flag to SKIP the diff (still running `cargo test`
+    for correctness), and Opus's host gate runs it in full. This mirrors the existing division of labour
+    (Opus runs the one authoritative gate).
     """
     stages: list[Stage] = []
 
@@ -154,6 +161,10 @@ def rust_stages(log_dir: Path) -> list[Stage]:
 
     test_log = log_dir / 'rust-test.log'
     stages.append(Stage('rust:test', run(['cargo', 'test'], test_log, env=cargo_env, cwd=GE), test_log))
+
+    if skip_wasm_diff:
+        stages.append(Stage('rust:wasm-diff', True, test_log, 'skipped (host-authoritative; t137)'))
+        return stages
 
     build_log = log_dir / 'rust-wasm-build.log'
     build_ok = run(
@@ -283,6 +294,9 @@ def render(stages: list[Stage], log_dir: Path, level: int) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description='Project gate (concurrency-safe).')
     ap.add_argument('--no-e2e', action='store_true', help='skip Playwright (backend + tsc/lint/build only)')
+    ap.add_argument('--skip-wasm-diff', action='store_true',
+                    help='skip the geo-engine wasm byte-diff (t137: host-authoritative; managed in-jail '
+                         'gate/check pass this since jail bytes != host bytes until --remap-path-prefix)')
     g = ap.add_mutually_exclusive_group()
     g.add_argument('-v', '--verbose', action='store_true', help='tail each stage log')
     g.add_argument('-q', '--quiet', action='store_true', help='only the final summary')
@@ -313,7 +327,7 @@ def main() -> int:
 
     ok = False
     try:
-        stages = backend_stages(log_dir) + rust_stages(log_dir) + static_stages(log_dir)
+        stages = backend_stages(log_dir) + rust_stages(log_dir, args.skip_wasm_diff) + static_stages(log_dir)
         if not args.no_e2e:
             stages.append(playwright_stage(log_dir, fixture_dir, state_file))
         render(stages, log_dir, level)
