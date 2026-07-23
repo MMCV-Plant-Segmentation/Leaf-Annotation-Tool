@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js';
-import type { CanvasAnnotation, CanvasImage, CreateAnnotationResult, TileStateUpdate } from './api';
+import type { CanvasAnnotation, CanvasImage, CreateAnnotationResult, TileStateUpdate, PointerSample } from './api';
 import type { EditStrokeResult } from './canvasStrokeEditApi';
 import { clampRect, mergeTileStates, strokeOutline } from './canvasShapes';
 import { polylineOutline } from './canvasPolylineGeometry';
@@ -40,8 +40,8 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   // ── Body builders ──────────────────────────────────────────────────────────────────
   // Kept as pure funcs so both the socket path (commit/editStroke/polylineSession) and
   // any redo re-issue use IDENTICAL wire bodies (server contract unchanged).
-  const buildCreateBody = (kind: string, points: number[][], passNo?: number,
-                            strokeWidth?: number, tool?: string, vertexRefs?: (string | null)[]) => {
+  const buildCreateBody = (kind: string, points: number[][], passNo?: number, strokeWidth?: number,
+                            tool?: string, vertexRefs?: (string | null)[], samples?: PointerSample[]) => {
     const im = o.image();
     const outline = (kind === 'stroke' && strokeWidth != null)
       ? (tool === 'polyline'
@@ -54,7 +54,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
       strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
       outline,
       tool: kind === 'stroke' ? tool : undefined,
-      vertexRefs,
+      vertexRefs, samples: kind === 'stroke' ? samples : undefined,  // t141: additive rich capture
     };
   };
   const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number,
@@ -127,12 +127,12 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
 
   // Create/paint commit — routed over the socket. Erase stays REST (out of scope).
   const commit = async (kind: string, points: number[][], passNo?: number,
-                         strokeWidth?: number, tool?: string):
+                         strokeWidth?: number, tool?: string, samples?: PointerSample[]):
       Promise<{ createdStrokeId: string } | null> => {
     if (kind === 'erase') { void eraseStroke(points, strokeWidth ?? 1); return null; }
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return null;
-    const body = buildCreateBody(kind, points, passNo, strokeWidth, tool);
+    const body = buildCreateBody(kind, points, passNo, strokeWidth, tool, undefined, samples);
     const r = await o.socket.enqueue<CreateAnnotationResult | null>(async (send) => {
       const ack = await send<CreateAnnotationResult>('create', body);
       if (!ack.ok) { alert(ack.message); return null; }

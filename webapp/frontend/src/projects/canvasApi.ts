@@ -1,7 +1,7 @@
 // Canvas annotation types + the annotation-mutation API surface — split out of api.ts
 // to keep it ≤200 lines. Re-exported from api.ts so `projectsApi.createAnnotation(...)`
 // etc. keep working unchanged for every existing caller.
-import type { Rect, Label } from './api';
+import type { Rect, Label, PointerSample } from './api';
 import type { Group, Compound, LabelSnapshot, BrokenCompound } from './taxonomy';
 import { jbody, jfetch } from './httpJson';
 import { strokeEditApi } from './canvasStrokeEditApi';
@@ -23,7 +23,7 @@ export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 
  * `vertexIds` (t50 phase 2b, parallel to `points`) is the stable per-vertex id the
  * server assigns — draw-time snapping indexes these to detect a nearby existing
  * vertex to reference. */
-export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number; vertexIds?: string[] };
+export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number; vertexIds?: string[]; samples?: PointerSample[] | null };
 
 /** A persisted annotation (mask). kind='stroke' renders from `rings` (fused, hole-less
  * exterior ring the server stores); other kinds render from their own `points`.
@@ -133,7 +133,7 @@ export const canvasApi = {
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number; outline?: number[][]; tool?: string;
+    strokeWidth?: number; outline?: number[][]; tool?: string; samples?: PointerSample[];
     /** t50 phase 2b: per-point vertex ref (existing vertex id to share/lock, or
      * null to mint) — parallel to `points`; draw-time snapping populates this. */
     vertexRefs?: (string | null)[];

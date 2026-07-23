@@ -103,6 +103,7 @@ export type {
   CandidateObject, CandidateObjects, Erasures,
   CanvasStroke, StrokeEditBefore, StrokeEditGroup,
 } from './canvasApi';
+export type { PointerSample } from './canvasCapture';
 import { canvasApi } from './canvasApi';
 
 // Streaming import lives in its own module to keep this file ≤200 lines; re-export so

@@ -2,6 +2,7 @@ import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
 import { firePolylineClick } from './canvasPolyline';
 import type { VertexIndex } from './canvasSnap';
+import { createSampleCapture, type PointerSample } from './canvasCapture';
 
 export interface CanvasInteractionOpts {
   getSvg: () => SVGSVGElement | undefined; vb: Accessor<ViewBox>; setVb: Setter<ViewBox>; tool: Accessor<Tool>;
@@ -11,7 +12,7 @@ export interface CanvasInteractionOpts {
   // Optional — only CanvasScreen's polyline tool wires these (MergeCanvasScreen shares this type).
   draftRefs?: Accessor<(string | null)[]>; setDraftRefs?: (v: (string | null)[]) => void;
   snapIndex?: Accessor<VertexIndex>; snapRadiusImg?: Accessor<number>;
-  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string) => void;
+  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string, samples?: PointerSample[]) => void;
   /** Polyline per-click hook: fires with growing point list; persistence picks create/edit. */
   polylineStep?: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
   /** t65: scroll over a SELECTED mask resizes it; true = handled (else the caller pans). */
@@ -54,6 +55,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if (!ctm) return [clientX, clientY];
     return [(clientX - ctm.e) / ctm.a, (clientY - ctm.f) / ctm.d];
   };
+  const capture = createSampleCapture(toImage);  // t141: max-rate rich brush capture
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
 
@@ -120,7 +122,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     const tl = o.tool();
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
-    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
+    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); capture.reset(); capture.collect(e); return; }
     if (tl === 'polyline') { firePolylineClick(ix, iy, o); return; }  // per-click persist (see canvasPolyline.ts)
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
@@ -162,7 +164,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     }
     if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
-      o.setDraft((d) => [...d, [ix, iy]]);
+      o.setDraft((d) => [...d, [ix, iy]]); capture.collect(e);  // t141: + this frame's max-rate samples
     }
   };
 
@@ -173,15 +175,12 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
       // Commit (1-point click ok). kind='erase'=CanvasScreen delete-by-intersection;
       // 'group'=MergeCanvasScreen POST candidate-object (server resolves); 'stroke'=brush create.
-      const pts = o.draft();  // keep sub-pixel float precision (t61) — the BE + polyline already store floats
+      capture.collect(e); const pts = o.draft();  // t61 float precision; t141 final samples
       const kind = ({eraser: 'erase', group: 'group'} as const)[o.tool() as 'eraser' | 'group'] ?? 'stroke';
-      o.commit(kind, pts, 1, o.brushSize());
-      o.setDraft([]);
-      strokeInProgress = false;
+      o.commit(kind, pts, 1, o.brushSize(), undefined, o.tool() === 'brush' ? capture.take() : undefined);
+      o.setDraft([]); strokeInProgress = false;
     }
-    panDragging = false;
-    spacePanRef = null;
-    lastPanClient = null;
+    panDragging = false; spacePanRef = null; lastPanClient = null;
   };
 
   const handleKeyDown = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceDown(true); };

@@ -98,7 +98,7 @@ const CanvasScreen: Component = () => {
   const interaction = createCanvasInteraction({
     getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
     brushSize, setBrushSize, maxBrushSize, resizeSelected: selResize.resizeSelected,
-    commit: (kind, points, passNo, strokeWidth, tool) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool),
+    commit: (kind, points, passNo, strokeWidth, tool, samples) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool, samples),
     polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
