@@ -17,6 +17,7 @@ import { createTileToggle } from './tileComplete';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
 import { createViewportTelemetry } from './viewportTelemetry';
+import { createViewportUrlSync } from './viewportUrlSync';
 import { createUnsavedGuard } from './canvasUnsavedGuard';
 import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasStage } from './CanvasStage';
@@ -28,6 +29,7 @@ import { createPolylineSnapState } from './canvasSnapIndex';
 import { makeFinishOrSplice } from './canvasSplice';
 import { createSelectionResize } from './canvasSelectionResize';
 import { buildClassOptions } from './canvasClassOptions';
+import { createTileNav } from './canvasTileNav';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -43,7 +45,6 @@ const CanvasScreen: Component = () => {
     () => { const bid = batchId(); const ann = annotator(); return (bid && ann) ? `${bid}|${ann}` : undefined; },
     (key: string) => { const s = key.indexOf('|'); return projectsApi.batchCanvas(key.slice(0, s), key.slice(s + 1)); }
   );
-
   const [imgIdx, setImgIdx] = createSignal(0);
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
   const [tool, setTool] = createSignal<Tool>('select');
@@ -55,14 +56,20 @@ const CanvasScreen: Component = () => {
   const [brushSize, setBrushSize] = createSignal(0);
   // t50 phase 2b: draw-time vertex snapping state (see canvasSnapIndex.ts).
   const { draftRefs, setDraftRefs, snapIndex, snapRadiusImg } = createPolylineSnapState(image, brushSize);
-  // BUGS #20: the overlay must not paint before the <image> is decode-ready. imgLoaded is
-  // driven by decode() keyed to imageId only (never pan/zoom) — no flicker. See imageDecodeGate.ts.
-  const imageId = createMemo(() => image()?.imageId);
+  const imageId = createMemo(() => image()?.imageId);  // BUGS #20: gate paint on decode-ready
   const imgLoaded = createImageDecodeGate(imageId);
 
   let svgRef: SVGSVGElement | undefined;
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
-  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); setSelId(null); }));
+  // t139: prev/next step a FLAT tile list (canvasTileNav.ts), framing the landed tile.
+  // Initial open/same-image stays whole-image-fit; consumeFraming() lets a tile-nav image
+  // switch skip that fit so the tile frame wins instead.
+  const { tileIndex, flatTiles, tilePrev, tileNext, consumeFraming } = createTileNav(() => canvas()?.images, imgIdx, setImgIdx, setVb);
+  createEffect(on(imageId, () => {
+    if (!image()) return;
+    if (!consumeFraming()) fitImage();
+    history.reset(); setSelId(null);
+  }));
 
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
@@ -95,29 +102,25 @@ const CanvasScreen: Component = () => {
     polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
     onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
-
-  // Best-effort viewport telemetry + an unsaved-op unload guard (viewportTelemetry/canvasUnsavedGuard).
+  // Best-effort viewport telemetry, URL persist/restore (t92), + an unsaved-op unload guard.
   createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
+  createViewportUrlSync({ imageId, vb, setVb });
   createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
   createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setDraftRefs, setSelId, fitImage, draft, finishPolyline: finishOrSplice });
 
-  // a11y #40 v1b: the selected annotation, only when it's a stroke mask with member
-  // strokes to draw handles for; and image-space units per screen pixel (drives
-  // handleRadiusImg so the dot stays a CONSTANT ~6-screen-px target across zooms).
+  // a11y #40 v1b: the selected stroke-mask annotation (for vertex handles), if any.
   const selectedStrokeAnn = createMemo(() => {
     const id = selId(); if (!id) return undefined;
     const a = image()?.annotations.find((x) => x.id === id);
     return a?.kind === 'stroke' && (a.strokes?.length ?? 0) > 0 ? a : undefined;
   });
-  // "meet" fits the viewBox to the more-constraining axis → image-px-per-screen-px is the
-  // max of both ratios (exact whether width- or height-limited; handle stays ~6 screen px).
+  // "meet" fits to the more-constraining axis → image-px-per-screen-px = max of both ratios.
   const imgPerScreenPx = () =>
     svgRef ? Math.max(vb().w / svgRef.clientWidth, vb().h / svgRef.clientHeight) : 1;
 
-  // Admin-only viewport-attention HEATMAP overlay (dwell x zoom-closeness). The math
-  // lives in viewportHeatmap.ts; the SVG layer + control panel in ViewportHeatmapOverlay.
-  // Non-admin annotators never get this — it's analysis data, gated admin-only backend-side.
+  // Admin-only viewport-attention HEATMAP overlay (math in viewportHeatmap.ts); gated
+  // admin-only backend-side since it's analysis data non-admin annotators never see.
   const heat = isAdmin()
     ? createViewportHeatmap(
         () => canvas()?.projectId ?? '',
@@ -130,18 +133,15 @@ const CanvasScreen: Component = () => {
   const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas, annotator);
 
   const classOptions = (): Label[] => buildClassOptions(canvas()?.classes ?? [], canvas()?.broken ?? []);
-  // Taxonomy v2: a lesion renders in its SNAPSHOT colour (captured at assign time) so a
-  // later preset edit/delete never orphans its colour. Lesions without a snapshot (legacy
-  // free-text) fall back to the matching compound's colour, then the canonical blue.
+  // Taxonomy v2: a lesion renders in its SNAPSHOT colour; legacy free-text falls back to
+  // the matching compound's colour, then the canonical blue.
   const labelColor = (label: string | null, snap?: string | null): string => {
     if (snap) return snap;
     const match = (canvas()?.classes ?? []).find((c) => c.name === label);
     return match ? match.color : '#2563eb';
   };
 
-  // Keep paintLabel valid against the project's labels. The backend is LENIENT (a label
-  // need not be configured), so an out-of-set paintLabel is preserved as a free-text
-  // option rather than dropped — but when empty, default to the first configured label.
+  // Backend is LENIENT (a label need not be configured); default paintLabel when empty.
   createEffect(on(classOptions, (opts) => {
     if (!paintLabel() && opts.length) setPaintLabel(opts[0].name);
   }));
@@ -161,9 +161,9 @@ const CanvasScreen: Component = () => {
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
         selectionSize={selResize.selectionSize} setSelectionSize={selResize.setSelectionSize}
         selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
-        imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
+        imgIdx={tileIndex} imgCount={flatTiles().length}
         onBack={() => nav(-1)} onFit={fitImage}
-        onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
+        onImgPrev={tilePrev} onImgNext={tileNext}
         onUndo={() => void history.undo()} onRedo={() => void history.redo()}
         canUndo={history.canUndo} canRedo={history.canRedo}
       />
