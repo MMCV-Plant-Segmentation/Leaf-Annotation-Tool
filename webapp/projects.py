@@ -2250,12 +2250,15 @@ def _member_strokes_out(con, annotation_id: str) -> list:
     tables (the source of truth), NOT `stroke.points_json` — see `_read_stroke_vertices`.
     """
     rows = con.execute(
-        'SELECT id, tool, stroke_width FROM stroke WHERE annotation_id = ?',
+        'SELECT id, tool, stroke_width, samples_json FROM stroke WHERE annotation_id = ?',
         (annotation_id,)).fetchall()
     return [{'id': s['id'], 'tool': s['tool'],
              'points': _read_stroke_vertices(con, s['id']),
              'vertexIds': _read_stroke_vertex_ids(con, s['id']),
-             'strokeWidth': s['stroke_width']} for s in rows]
+             'strokeWidth': s['stroke_width'],
+             # t141 P1a: the raw max-rate capture (None when the stroke has no rich samples).
+             'samples': json.loads(s['samples_json']) if s['samples_json'] else None}
+            for s in rows]
 
 
 def _annotation_out(row: dict, con=None, raw_taxonomy: Any = _UNSET) -> dict:
@@ -2303,7 +2306,7 @@ def _annotation_out(row: dict, con=None, raw_taxonomy: Any = _UNSET) -> dict:
 
 def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
                    stroke_width, outline, now: str, tool: str = 'brush',
-                   vertex_refs: list | None = None) -> None:
+                   vertex_refs: list | None = None, samples: list | None = None) -> None:
     """INSERT the provenance-only `stroke` row bridged to its owning `annotation`.
 
     `tool` records the input mode that created the stroke (brush | polyline) — brush and
@@ -2311,13 +2314,18 @@ def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
     affordances (a polyline's clicked vertices are editable), never fusion.
 
     `vertex_refs` (t50 phase 2a) — see `_write_stroke_vertices`.
+
+    `samples` (t141 P1a) — the OPTIONAL raw max-rate input stream (one entry per pointer
+    sample: x, y, t, pressure, tiltX, tiltY, twist, pointerType), stored verbatim as a JSON
+    blob. Additive: None ⇒ NULL ⇒ no rich capture. Never affects geometry.
     """
     con.execute(
         '''INSERT INTO stroke (id, annotation_id, kind, points_json, stroke_width,
-             outline_json, created_at, tool)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+             outline_json, created_at, tool, samples_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         (sid, annotation_id, kind, json.dumps(points), stroke_width,
-         json.dumps(outline) if outline is not None else None, now, tool),
+         json.dumps(outline) if outline is not None else None, now, tool,
+         json.dumps(samples) if samples is not None else None),
     )
     _write_stroke_vertices(con, sid, points, vertex_refs)
 
@@ -2568,7 +2576,7 @@ def do_create_annotation(con, project_id: str, body: dict, *,
              json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
         )
         _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now,
-                      tool=tool, vertex_refs=vertex_refs)
+                      tool=tool, vertex_refs=vertex_refs, samples=body.get('samples'))
         _set_bbox(con, aid, merged)  # t68 index
 
         consumed_groups = []
@@ -2892,6 +2900,12 @@ def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
         'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
         (json.dumps(points), stroke_width,
          json.dumps(outline) if outline is not None else None, stroke_id))
+    # t141 P1a: an edit MAY carry a fresh max-rate capture (a re-draw) — replace the stored
+    # stream when `samples` is present; a plain reshape (no samples key) leaves it untouched.
+    if 'samples' in body:
+        s = body.get('samples')
+        con.execute('UPDATE stroke SET samples_json = ? WHERE id = ?',
+                    (json.dumps(s) if s is not None else None, stroke_id))
     # t50 phase 1/2a: write through to the normalized tables — the source of truth for
     # reads. `vertexRefs` (optional, parallel to `points`) lets the per-click polyline edit
     # reconcile rather than re-mint — see `_write_stroke_vertices`.
