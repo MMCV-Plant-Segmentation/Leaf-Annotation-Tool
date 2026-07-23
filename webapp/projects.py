@@ -20,12 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file, session, stream_with_context
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, MultiPolygon, Point
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
 from . import db as _db
+from . import geo_engine
 from . import imaging, tile_cache, tiling
 from .auth import admin_required, login_required
 from . import taxonomy
@@ -106,32 +107,79 @@ def _shape_geom(kind: str, points: list):
     return LineString(pts) if len(pts) >= 2 else Point(pts[0])
 
 
+def _rings_to_geom(rings: list):
+    """Build a shapely Polygon (or MultiPolygon, for disjoint pieces) from geo-engine
+    `rings` (`[[[x,y],...],...]`, exterior-only — the engine never emits holes). Returns
+    None for empty/degenerate input."""
+    polys = []
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        try:
+            poly = ShapelyPolygon(ring)
+        except Exception:
+            continue
+        if poly.is_valid and not poly.is_empty:
+            polys.append(poly)
+    if not polys:
+        return None
+    return polys[0] if len(polys) == 1 else MultiPolygon(polys)
+
+
+def _geom_exterior_rings(geom) -> list:
+    """Flatten a shapely Polygon/MultiPolygon's exterior ring(s) into geo-engine's
+    `[[[x,y],...],...]` request shape (holes dropped — masks never persist holes)."""
+    if geom is None or geom.is_empty:
+        return []
+    parts = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
+    return [[[float(x), float(y)] for x, y in p.exterior.coords]
+            for p in parts if p.geom_type == 'Polygon' and p.exterior]
+
+
+def _engine_fuse(geoms) -> object:
+    """Union shapely Polygon/MultiPolygon geoms (None entries skipped) via the geo-engine
+    wasm `fuse` op (repairs self-intersections, drops interior holes) — the t103 Phase C
+    replacement for `shapely.ops.unary_union` on STROKE geometry. Returns None when there's
+    nothing to fuse."""
+    polygons = []
+    for g in geoms:
+        polygons.extend(_geom_exterior_rings(g))
+    if not polygons:
+        return None
+    return _rings_to_geom(geo_engine.fuse(polygons))
+
+
 def _stroke_polygon(points, stroke_width, outline=None):
-    """Build a shapely geometry for a brush stroke's footprint.
+    """Build a shapely geometry for a brush stroke's footprint, via the geo-engine wasm
+    module (t103 Phase C).
 
-    When `outline` (≥3 pts, a perfect-freehand outline polygon) is provided, use
-    ShapelyPolygon(outline).buffer(0) — buffer(0) repairs self-intersecting contours
-    (e.g. figure-eight loops) into valid (multi)polygon geometry. Falls back to the
-    centerline buffer for legacy rows without an outline.
+    When `outline` (≥3 pts, a perfect-freehand outline polygon) is provided, run it through
+    the engine's `fuse` op (a single-polygon fuse repairs self-intersecting contours, e.g.
+    figure-eight loops, into valid (multi)polygon geometry — same repair `buffer(0)` used to
+    do). Falls back to the engine's `outline_polyline` (round joins/caps, per-vertex radius
+    == strokeWidth/2) for legacy rows without an outline.
 
-    Returns None for degenerate input. May return a MultiPolygon when buffer(0) splits
-    a self-intersecting outline into disconnected regions.
+    Returns None for degenerate input. May return a MultiPolygon when the fuse splits a
+    self-intersecting outline into disconnected regions.
     """
     outline_pts = [(float(p[0]), float(p[1])) for p in (outline or []) if len(p) >= 2]
     if len(outline_pts) >= 3:
         try:
-            return ShapelyPolygon(outline_pts).buffer(0)
-        except Exception:
-            pass  # fall through to centerline buffer
+            geom = _rings_to_geom(geo_engine.fuse([outline_pts]))
+            if geom is not None:
+                return geom
+        except geo_engine.GeoEngineError:
+            pass  # fall through to centerline outline
 
-    # Legacy / no-outline fallback: centerline buffer
+    # Legacy / no-outline fallback: centerline outline (uniform half-width per vertex).
     width = max(float(stroke_width or 0) or 1, 1)
     pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
     if not pts:
         return None
-    if len(pts) == 1:
-        return Point(pts[0]).buffer(width / 2)
-    return LineString(pts).buffer(width / 2, cap_style='round', join_style='round')
+    try:
+        return _rings_to_geom(geo_engine.outline_polyline(pts, [width / 2] * len(pts)))
+    except geo_engine.GeoEngineError:
+        return None
 
 
 def _poly_rings(poly) -> list:
@@ -209,8 +257,8 @@ def _stroke_components(rows: list[dict]) -> list[dict]:
     if not valid:
         return components
 
-    union = unary_union([p for _, p in valid])
-    if union.is_empty:
+    union = _engine_fuse([p for _, p in valid])
+    if union is None or union.is_empty:
         return components + [{'member_ids': [rid], 'geometry': None} for rid, _ in valid]
 
     pieces = list(union.geoms) if union.geom_type == 'MultiPolygon' else [union]
@@ -2423,7 +2471,7 @@ def do_create_annotation(con, project_id: str, body: dict, *,
         fuse_set = _annotations_overlapping(con, image_id, footprint,
                                             annotator=annotator, kind='stroke', label=label)
 
-        merged = unary_union([footprint] + [g for _, g in fuse_set]) if fuse_set else footprint
+        merged = _engine_fuse([footprint] + [g for _, g in fuse_set]) if fuse_set else footprint
         if merged.geom_type == 'MultiPolygon':
             # Defensive: every fuse_set member was chosen because it intersects the new
             # footprint, so the union should already be one piece; a boundary-only touch
@@ -2576,7 +2624,7 @@ def _do_finish_stroke(con, srow, ann, points, *, username: str | None = None,
         poly = _footprint(m_pts, m_w, m_out)
         if poly is not None and not poly.is_empty:
             member_polys.append(poly)
-    footprint = unary_union(member_polys) if member_polys else None
+    footprint = _engine_fuse(member_polys) if member_polys else None
     tile_ids = _tiles_for_geom(con, image_id, footprint) \
         if footprint is not None and not footprint.is_empty else []
     if tile_ids:
