@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned to match the jail's baked toolchain (t103 Phase A) so the committed geo_engine.wasm
+# is byte-reproducible (the gate rebuilds + diffs it against the committed artifact).
+channel = "1.97.1"
+targets = ["wasm32-unknown-unknown"]

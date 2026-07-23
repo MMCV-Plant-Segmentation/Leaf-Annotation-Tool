@@ -1,0 +1,26 @@
+[package]
+name = "geo-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Shared stroke-geometry engine (outline + fusion) — one .wasm called by the leaf FE and BE (t96/t103)."
+license = "MIT"
+
+[lib]
+# cdylib -> the committed wasm32 artifact; rlib -> native `cargo test` of the same code.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Boolean/fusion on an integer core (spike-verified major; pure Rust, wasm-clean).
+i_overlay = "6"
+# perfect-freehand Rust port for the brush outline (MIT, pure Rust, wasm-clean).
+freedraw = "1"
+# JSON message ABI (points+sizes+ops in -> rings out), driven from wasmtime-py + browser WebAssembly.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# Small, reproducible wasm.
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

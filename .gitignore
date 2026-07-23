@@ -14,3 +14,10 @@ app.config.toml.bak*
 
 docs/plans/
 .cc_jail_gate_output.log
+
+# t103 geo-engine build output (the .wasm is committed; the target dir is not)
+geo-engine/target/
+
+# stray repo-root cargo target dir (a mis-set CARGO_TARGET_DIR can land build junk here)
+/target/
+/target2/
