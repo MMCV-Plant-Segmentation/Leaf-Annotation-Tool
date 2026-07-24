@@ -27,6 +27,7 @@ import { CanvasToolbar } from './CanvasToolbar';
 import { CanvasStage } from './CanvasStage';
 import { CandidateObjectLayer, coHullPoints } from './CandidateObjectLayer';
 import { createMergeMutations } from './mergeMutations';
+import { projectHubRoute } from './canvasBackRoute';
 import * as styles from './CanvasScreen.css';
 import * as mstyles from './MergeCanvasScreen.css';
 
@@ -147,7 +148,7 @@ const MergeCanvasScreen: Component = () => {
         wrapTestId="merge-toolbar"
         badge={<span class={mstyles.blindBadge} data-testid="merge-blind-badge">{t('mergeCanvas.blindLabel')}</span>}
         imgIdx={imgIdx} imgCount={batch()?.images.length ?? 0}
-        onBack={() => nav(-1)} onFit={fitImage}
+        onBack={() => nav(projectHubRoute(params.id))} onFit={fitImage}
         onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
       />
 

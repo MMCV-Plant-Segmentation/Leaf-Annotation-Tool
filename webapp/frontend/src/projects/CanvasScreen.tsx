@@ -30,6 +30,7 @@ import { makeFinishOrSplice } from './canvasSplice';
 import { createSelectionResize } from './canvasSelectionResize';
 import { buildClassOptions } from './canvasClassOptions';
 import { createTileNav } from './canvasTileNav';
+import { createPersistedBrushSize } from './brushSizePersistSync';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -53,7 +54,7 @@ const CanvasScreen: Component = () => {
   // `paintLabel` = the last compound the user chose for painting (drives commits + pickDropdown).
   const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
-  const [brushSize, setBrushSize] = createSignal(0);
+  const [brushSize, setBrushSize] = createPersistedBrushSize(); // t93: persist across reloads
   // t50 phase 2b: draw-time vertex snapping state (see canvasSnapIndex.ts).
   const { draftRefs, setDraftRefs, snapIndex, snapRadiusImg } = createPolylineSnapState(image, brushSize);
   const imageId = createMemo(() => image()?.imageId);  // BUGS #20: gate paint on decode-ready
@@ -70,7 +71,6 @@ const CanvasScreen: Component = () => {
     if (!consumeFraming()) fitImage();
     history.reset(); setSelId(null);
   }));
-
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
     if (!c || brushSize() !== 0) return;
@@ -162,7 +162,7 @@ const CanvasScreen: Component = () => {
         selectionSize={selResize.selectionSize} setSelectionSize={selResize.setSelectionSize}
         selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
         imgIdx={tileIndex} imgCount={flatTiles().length}
-        onBack={() => nav(-1)} onFit={fitImage}
+        onBack={() => nav(params.id ? `/projects/${params.id}` : '/projects')} onFit={fitImage}
         onImgPrev={tilePrev} onImgNext={tileNext}
         onUndo={() => void history.undo()} onRedo={() => void history.redo()}
         canUndo={history.canUndo} canRedo={history.canRedo}
@@ -186,7 +186,7 @@ const CanvasScreen: Component = () => {
             onMoveSharedVertex={(vid, b, a) => void moveSharedVertex(vid, b, a)} />
         }</Show>
         <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
-          hover={interaction.hoverImg()} />
+          hover={interaction.hoverImg()} color={labelColor(paintLabel())} />
         {heat && <ViewportHeatmapLayer heat={heat} />}
       </CanvasStage>
 

@@ -31,6 +31,9 @@ export const LIVE_DRAFT = {
  * hairline) plus a dashed centerline as a direction cue. ESC/tool-switch clears the draft. */
 export const LiveDraftOverlay: Component<{
   tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
+  // t123: the currently-selected label's colour, so the polyline rubber-band centerline
+  // reads in that colour instead of a fixed tone. Optional — falls back to the tuned default.
+  color?: string;
 }> = (props) => (
   <>
     <Show when={props.draft.length > 0 && (props.tool === 'brush' || props.tool === 'eraser')}>
@@ -94,7 +97,7 @@ export const LiveDraftOverlay: Component<{
               vector-effect="non-scaling-stroke" pointer-events="none" />
             <line data-testid="polyline-rubberband"
               x1={last()[0]} y1={last()[1]} x2={c()[0]} y2={c()[1]}
-              stroke={LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
+              stroke={props.color ?? LIVE_DRAFT.brushStroke} stroke-width={LIVE_DRAFT.strokeWidth}
               stroke-dasharray={LIVE_DRAFT.polylineDash}
               vector-effect="non-scaling-stroke" pointer-events="none" />
           </>

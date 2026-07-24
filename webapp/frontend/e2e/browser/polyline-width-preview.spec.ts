@@ -168,3 +168,30 @@ test('polyline: size slider + scroll resize work, and rubber-band anchors to the
   }, 'rubber-band anchor must move to the newest vertex').toBeGreaterThan(0.5);
 });
 
+test('t123: polyline rubber-band renders in the selected label colour, not a fixed tone @full',
+  async ({ page, browser }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  test.setTimeout(90_000);
+  const p = await setupCanvasAsAnnotator(page, browser);
+  const canvasSvg = p.locator('[data-screen="canvas"] svg').first();
+  await expect(canvasSvg).toBeVisible({ timeout: 15_000 });
+  p.on('dialog', (d) => void d.dismiss());
+  await p.getByTestId('tool-polyline').click();
+
+  // Place one vertex + hover so the rubber-band renders (open polyline, nothing commits).
+  const box = await canvasSvg.boundingBox();
+  const cx = (box?.x ?? 200) + (box?.width ?? 200) / 2;
+  const cy = (box?.y ?? 200) + (box?.height ?? 200) / 2;
+  await p.mouse.move(cx - 40, cy - 40);
+  await p.mouse.click(cx - 40, cy - 40);
+  await p.mouse.move(cx + 50, cy + 50, { steps: 8 });
+
+  const rubber = p.locator('[data-testid="polyline-rubberband"]');
+  await expect(rubber).toBeVisible();
+  const stroke = await rubber.getAttribute('stroke');
+  // The colour now flows from the selected label (labelColor(paintLabel)) — it must be a real
+  // colour and NOT the retired fixed tone (#1e3a8a) the centerline used before t123.
+  expect(stroke).toBeTruthy();
+  expect(stroke!.toLowerCase()).not.toBe('#1e3a8a');
+});
+
