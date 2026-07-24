@@ -2,6 +2,7 @@ import { type Component, createSignal, createEffect, Show } from 'solid-js';
 import { useLocation, useNavigate } from '@solidjs/router';
 import type { RouteSectionProps } from '@solidjs/router';
 import { currentUser, fetchMe, logout } from '../auth';
+import { recordVisit } from '../projects/inAppHistory';
 import { darkThemeClass, lightThemeClass, THEME_STORAGE_KEY } from '../theme/index';
 import { t } from '../i18n/catalog';
 import VersionFooter from './VersionFooter';
@@ -15,6 +16,9 @@ const AppRoot: Component<RouteSectionProps> = (props) => {
   const nav = useNavigate();
   const loc = useLocation();
   w._navigate = (to: string) => nav(to);
+  // t85: feed every route change to the in-app history tracker so a canvas "Back" button can
+  // pop the page that pushed it (nav(-1)) vs. fall back to a parent on a deep link.
+  createEffect(() => recordVisit(loc.pathname));
 
   fetchMe().then((user) => {
     if (!user && !PUBLIC_ROUTES.has(loc.pathname) && !loc.pathname.startsWith('/invite/')) {

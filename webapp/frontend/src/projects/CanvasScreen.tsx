@@ -31,6 +31,7 @@ import { createSelectionResize } from './canvasSelectionResize';
 import { buildClassOptions } from './canvasClassOptions';
 import { createTileNav } from './canvasTileNav';
 import { createPersistedBrushSize } from './brushSizePersistSync';
+import { goBack, projectHubRoute } from './canvasBackRoute';
 import * as styles from './CanvasScreen.css';
 
 // Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
@@ -77,8 +78,7 @@ const CanvasScreen: Component = () => {
     const tile = c.images.flatMap((im) => im.tiles)[0];
     setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
   }));
-  const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
-    setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
+  const updateImg = (fn: (im: CanvasImage) => CanvasImage) => setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
   // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
   const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
   const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
@@ -162,7 +162,7 @@ const CanvasScreen: Component = () => {
         selectionSize={selResize.selectionSize} setSelectionSize={selResize.setSelectionSize}
         selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
         imgIdx={tileIndex} imgCount={flatTiles().length}
-        onBack={() => nav(params.id ? `/projects/${params.id}` : '/projects')} onFit={fitImage}
+        onBack={() => goBack(nav, projectHubRoute(params.id))} onFit={fitImage}
         onImgPrev={tilePrev} onImgNext={tileNext}
         onUndo={() => void history.undo()} onRedo={() => void history.redo()}
         canUndo={history.canUndo} canRedo={history.canRedo}

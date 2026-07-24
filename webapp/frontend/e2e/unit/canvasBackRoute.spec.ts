@@ -1,9 +1,34 @@
 /**
- * t85 — the annotator / merge canvas "Back" button must not use browser-history back
- * (`nav(-1)`), which dead-ends on a pasted / deep-linked canvas URL. It navigates to the
- * project hub, a route that always exists as the parent of a batch canvas.
+ * t85 — the annotator / merge canvas "Back" button returns to whatever page pushed the user
+ * here (nav(-1)) when there is in-app history, and only falls back to the project hub on a
+ * deep-linked / fresh load with nothing to pop.
  */
 import { test, expect } from '@playwright/test';
+
+test.describe('goBack', () => {
+  test('pops the browser history when an in-app page is behind us', async () => {
+    const { recordVisit, resetInAppHistory } = await import('../../src/projects/inAppHistory');
+    const { goBack } = await import('../../src/projects/canvasBackRoute');
+    resetInAppHistory();
+    recordVisit('/projects/p1');
+    recordVisit('/projects/p1/batches/b1');    // hub → canvas
+    const calls: unknown[] = [];
+    const nav = ((arg: unknown) => calls.push(arg)) as never;
+    goBack(nav, '/projects/p1');
+    expect(calls).toEqual([-1]);               // popped, did not push the fallback
+  });
+
+  test('navigates to the fallback on a deep link (no in-app history)', async () => {
+    const { recordVisit, resetInAppHistory } = await import('../../src/projects/inAppHistory');
+    const { goBack } = await import('../../src/projects/canvasBackRoute');
+    resetInAppHistory();
+    recordVisit('/projects/p1/batches/b1');    // landed directly on the canvas
+    const calls: unknown[] = [];
+    const nav = ((arg: unknown) => calls.push(arg)) as never;
+    goBack(nav, '/projects/p1');
+    expect(calls).toEqual(['/projects/p1']);   // fell back to the hub, not nav(-1)
+  });
+});
 
 test.describe('projectHubRoute', () => {
   test('returns the project hub path for a project id', async () => {
