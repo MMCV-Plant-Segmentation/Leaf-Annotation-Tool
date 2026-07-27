@@ -133,7 +133,7 @@ export const canvasApi = {
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number; outline?: number[][]; tool?: string; samples?: PointerSample[];
+    strokeWidth?: number; tool?: string; samples?: PointerSample[];
     /** t50 phase 2b: per-point vertex ref (existing vertex id to share/lock, or
      * null to mint) — parallel to `points`; draw-time snapping populates this. */
     vertexRefs?: (string | null)[];
@@ -149,7 +149,7 @@ export const canvasApi = {
   mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
     jfetch<{ ok: boolean; ids: string[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
-  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number; outline?: number[][] }) =>
+  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number }) =>
     jfetch<{ deletedAnnotationIds: string[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/erase-stroke`, jbody('POST', body)),
   /** Undo a brush create/merge: hard-deletes the created annotation+stroke server-side

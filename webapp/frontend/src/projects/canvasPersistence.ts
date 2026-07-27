@@ -1,8 +1,7 @@
 import type { Accessor } from 'solid-js';
 import type { CanvasAnnotation, CanvasImage, CreateAnnotationResult, TileStateUpdate, PointerSample } from './api';
 import type { EditStrokeResult } from './canvasStrokeEditApi';
-import { clampRect, mergeTileStates, strokeOutline } from './canvasShapes';
-import { polylineOutline } from './canvasPolylineGeometry';
+import { clampRect, mergeTileStates } from './canvasShapes';
 import type { ViewBox } from './canvasShapes';
 import type { createCanvasHistory } from './canvasHistory';
 import type { CanvasSocket } from './canvasSocket';
@@ -43,27 +42,18 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   const buildCreateBody = (kind: string, points: number[][], passNo?: number, strokeWidth?: number,
                             tool?: string, vertexRefs?: (string | null)[], samples?: PointerSample[]) => {
     const im = o.image();
-    const outline = (kind === 'stroke' && strokeWidth != null)
-      ? (tool === 'polyline'
-          ? polylineOutline(points, strokeWidth)
-          : strokeOutline(points, strokeWidth))
-      : undefined;
     return {
       imageId: im!.imageId, annotator: o.annotator(), kind, points, passNo,
       label: o.selClass(), viewport: clampRect(o.vb(), im!.width, im!.height),
       strokeWidth: kind === 'stroke' ? strokeWidth : undefined,
-      outline,
       tool: kind === 'stroke' ? tool : undefined,
       vertexRefs, samples: kind === 'stroke' ? samples : undefined,  // t141: additive rich capture
     };
   };
-  const buildEditBody = (strokeId: string, tool: string, points: number[][], strokeWidth: number,
-                          vertexRefs?: (string | null)[]) => {
-    const outline = tool === 'polyline'
-      ? polylineOutline(points, strokeWidth)
-      : strokeOutline(points, strokeWidth);
-    return { strokeId, points, strokeWidth, outline, vertexRefs };
-  };
+  // `tool` is still taken so callers keep one shape; the server re-derives geometry from it.
+  const buildEditBody = (strokeId: string, _tool: string, points: number[][], strokeWidth: number,
+                          vertexRefs?: (string | null)[]) =>
+    ({ strokeId, points, strokeWidth, vertexRefs });
 
   // ── Delta appliers (splice into view + push history) ───────────────────────────────
   const applyCreate = (ann: CreateAnnotationResult, body: unknown) => {
@@ -98,9 +88,7 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
   const eraseStroke = async (points: number[][], strokeWidth: number) => {
     const im = o.image(); const pid = o.getProjectId();
     if (!im || !pid) return;
-    const outline = strokeOutline(points, strokeWidth);
-    const body = { imageId: im.imageId, annotator: o.annotator(),
-                   points, strokeWidth, outline };
+    const body = { imageId: im.imageId, annotator: o.annotator(), points, strokeWidth };
     await o.socket.enqueue(async (send) => {
       const ack = await send<{ deletedAnnotationIds: string[]; tileStates: TileStateUpdate[] }>('erase', body);
       if (!ack.ok) { alert(ack.message); return; }
@@ -180,9 +168,8 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
     buildEditPayload:   (strokeId, points, strokeWidth, refs) =>
       buildEditBody(strokeId, 'polyline', points, strokeWidth, refs),
     buildFinishPayload: (strokeId) => ({ strokeId, final: true }),
-    buildSplicePayload: (existingStrokeId, points, refs, removeStrokeId, strokeWidth) =>
-      ({ strokeId: existingStrokeId, points, vertexRefs: refs, removeStrokeId,
-         outline: polylineOutline(points, strokeWidth) }),
+    buildSplicePayload: (existingStrokeId, points, refs, removeStrokeId) =>
+      ({ strokeId: existingStrokeId, points, vertexRefs: refs, removeStrokeId }),
     applyCreate,
     applyEdit,
     applyDiscard,
