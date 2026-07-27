@@ -420,6 +420,17 @@ def catch_all(path: str):
     return send_file(STATIC / 'index.html')
 
 
+# ── geo-engine wasm (t104/D2) ─────────────────────────────────────────────────
+# The browser runs the SAME stroke engine the server does, so it fetches the SAME
+# committed artifact — served straight from geo-engine/, never copied into static/.
+# A copy could drift; this cannot. (The gate's rust:wasm-diff separately proves the
+# committed artifact still matches the crate source.)
+@app.get('/api/geo-engine.wasm')
+def geo_engine_wasm():
+    from .geo_engine import _WASM_PATH
+    return send_file(_WASM_PATH, mimetype='application/wasm')
+
+
 # ── i18n catalog ──────────────────────────────────────────────────────────────
 # The message catalog lives in the data volume (<data_dir>/i18n/<locale>.json) so
 # strings can be edited + reloaded with no rebuild. The bundled copy under
