@@ -167,8 +167,11 @@ def rust_stages(log_dir: Path, skip_wasm_diff: bool = False) -> list[Stage]:
         return stages
 
     build_log = log_dir / 'rust-wasm-build.log'
+    # t137: go through build-wasm.sh, never raw cargo — it remaps $CARGO_HOME and the crate dir
+    # so the embedded source paths (and therefore the bytes) don't depend on WHERE it was built.
+    # A raw `cargo build` here would reintroduce the host-vs-jail byte drift this check trips on.
     build_ok = run(
-        ['cargo', 'build', '--release', '--target', 'wasm32-unknown-unknown'],
+        [str(GE / 'build-wasm.sh')],
         build_log, env=cargo_env, cwd=GE,
     )
     built_wasm = Path(target_dir) / 'wasm32-unknown-unknown' / 'release' / 'geo_engine.wasm'

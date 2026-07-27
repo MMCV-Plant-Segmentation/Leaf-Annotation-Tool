@@ -53,25 +53,42 @@ for key, case in FIXTURE['fuse'].items():
         _fail.append(f'fuse {key} ring count')
         print(f'  ✗  fuse {key}: expected a single unioned ring, got {len(got)}')
 
-print('\n── P4: the wasm the browser fetches is the one the server runs ──')
-from webapp.app import app  # noqa: E402
+print('\n── P4: the engine identifies itself, and both bindings agree on the version ──')
+# Runtime drift detection (Christian's idea): a copying build step catches a stale artifact at
+# BUILD time; this catches it at RUNTIME — the case no build step can see, e.g. a stale wasm
+# baked into a deployed container. The FE spec pins the SAME fixture value.
+got_version = geo_engine.version()
+check('engine version', got_version, FIXTURE['version'])
 
-with app.test_client() as c:
-    resp = c.get('/api/geo-engine.wasm')
-    if resp.status_code != 200:
-        _fail.append('wasm route status')
-        print(f'  ✗  /api/geo-engine.wasm returned {resp.status_code}')
+print('\n── P5: t147 — malformed input ERRORS, it does not silently vanish ──')
+# Each of these used to return [], which reads downstream as "this stroke has no geometry",
+# so a caller bug made the stroke disappear with no error.
+malformed = [
+    ('polyline radii shorter than points', lambda: geo_engine.outline_polyline([[0, 0], [1, 1]], [1])),
+    ('polyline radii longer than points', lambda: geo_engine.outline_polyline([[0, 0], [1, 1]], [1, 2, 3])),
+    ('polyline zero radius', lambda: geo_engine.outline_polyline([[0, 0], [1, 1]], [1, 0])),
+    ('brush with no points', lambda: geo_engine.outline_brush([], 5)),
+    ('brush with a negative size', lambda: geo_engine.outline_brush([[0, 0], [10, 10]], -5)),
+]
+for label, fn in malformed:
+    try:
+        result = fn()
+        _fail.append(label)
+        print(f'  ✗  {label}: returned {result!r} instead of raising')
+    except geo_engine.GeoEngineError as e:
+        print(f'  ✓  {label} → {e}')
+
+print('\n── P6: legitimate degenerate input is still ACCEPTED (guard is not overzealous) ──')
+for label, fn, want_rings in [
+    ('one-point polyline (renders as a disk)', lambda: geo_engine.outline_polyline([[5, 5]], [3]), 1),
+    ('one-point brush dab', lambda: geo_engine.outline_brush([[5, 5]], 4), 1),
+]:
+    got = fn()
+    if len(got) == want_rings:
+        print(f'  ✓  {label}')
     else:
-        served = resp.get_data()
-        on_disk = open(geo_engine._WASM_PATH, 'rb').read()
-        if served != on_disk:
-            _fail.append('wasm route bytes')
-            print('  ✗  served bytes differ from the committed artifact')
-        elif served[:4] != b'\x00asm':
-            _fail.append('wasm magic')
-            print('  ✗  served payload is not a wasm module')
-        else:
-            print(f'  ✓  serves the committed artifact byte-for-byte ({len(served)} bytes)')
+        _fail.append(label)
+        print(f'  ✗  {label}: expected {want_rings} ring(s), got {len(got)}')
 
 if _fail:
     raise SystemExit(f'\nFAILED: {len(_fail)} parity check(s): {", ".join(_fail)}')

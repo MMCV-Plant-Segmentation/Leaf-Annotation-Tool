@@ -109,3 +109,16 @@ def fuse(polygons: list) -> list[list[list[float]]]:
     return _rings(_call({'op': 'fuse',
                           'polygons': [[[float(p[0]), float(p[1])] for p in poly]
                                        for poly in polygons]}))
+
+
+def version() -> str:
+    """The engine's own version — lets a caller prove which engine it is actually running.
+
+    A copying build step catches a stale artifact at BUILD time; this catches it at RUNTIME,
+    which is the case no build step can see (e.g. a stale wasm inside a deployed container).
+    The FE binding exposes the same call, and the parity fixture pins both to one answer.
+    """
+    resp = _call({'op': 'version'})
+    if 'error' in resp:
+        raise GeoEngineError(resp['error'])
+    return resp['version']

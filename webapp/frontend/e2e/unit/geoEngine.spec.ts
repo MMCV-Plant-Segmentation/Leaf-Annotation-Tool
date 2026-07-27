@@ -29,7 +29,9 @@ const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as {
   brush: Record<string, Case>;
   polyline: Record<string, Case>;
   fuse: Record<string, { polygons: number[][][]; rings: number[][][] }>;
+  version: string;
 };
+const fixtureVersion = fixture.version;
 
 async function engine() {
   const mod = await import('../../src/projects/geoEngine');
@@ -93,29 +95,38 @@ test.describe('binding robustness', () => {
     }
   });
 
-  test('malformed input throws instead of silently yielding a vanished stroke', async () => {
-    // The ENGINE answers all of these with [] rather than an error (confirmed identically on
-    // the Python binding), and [] means "no geometry" — i.e. the stroke silently disappears.
-    // The binding must reject at the boundary. If the engine is ever fixed to error, these
-    // stay green; the guard is belt-and-braces, not a workaround to be removed.
+  test('t147: malformed input errors instead of silently yielding a vanished stroke', async () => {
+    // These all used to return [] — and [] reads downstream as "this stroke has no geometry",
+    // so a caller bug made the stroke silently disappear. The ENGINE now rejects them (t147),
+    // and the binding surfaces that as a thrown Error rather than an empty result. Validation
+    // lives in the engine ONLY: duplicating it here is how the two drift apart.
     const mod = await engine();
     await expect(mod.outlinePolyline([[0, 0], [1, 1]], [1]),
       'radii shorter than points').rejects.toThrow(/one radius per point/);
     await expect(mod.outlinePolyline([[0, 0], [1, 1]], [1, 2, 3]),
       'radii longer than points').rejects.toThrow(/one radius per point/);
-    await expect(mod.outlinePolyline([[0, 0]], [1]),
-      'a single-point polyline').rejects.toThrow(/>= 2 points/);
     await expect(mod.outlinePolyline([[0, 0], [1, 1]], [1, 0]),
-      'a zero radius').rejects.toThrow(/> 0/);
+      'a zero radius').rejects.toThrow(/finite and > 0/);
     await expect(mod.outlineBrush([], 5), 'no points').rejects.toThrow(/at least one point/);
     await expect(mod.outlineBrush([[0, 0], [10, 10]], -5),
-      'a negative size').rejects.toThrow(/size must be > 0/);
+      'a negative size').rejects.toThrow(/must be finite and > 0/);
   });
 
-  test('the guard does not reject legitimate degenerate-ish input', async () => {
-    // A one-point brush dab and a hairline-thin stroke are REAL things a user can draw.
+  test('legitimate degenerate-ish input is still accepted', async () => {
+    // A one-point brush dab, a ONE-POINT POLYLINE (renders as a disk — an earlier version of
+    // this binding wrongly rejected it), and a hairline stroke are all real things to draw.
     const mod = await engine();
     await expect(mod.outlineBrush([[5, 5]], 4)).resolves.toBeDefined();
+    expect(await mod.outlinePolyline([[5, 5]], [3]), 'one-point polyline').toHaveLength(1);
     await expect(mod.outlinePolyline([[0, 0], [1, 1]], [0.5, 0.5])).resolves.toBeDefined();
+  });
+
+  test('the engine identifies itself, and both bindings report the same version', async () => {
+    // Christian's runtime drift check: a build step only catches drift at BUILD time, so the
+    // engine says which one it is. Pinned against the backend's answer in the same fixture.
+    const mod = await engine();
+    const v = await mod.version();
+    expect(v, 'version must be a non-empty string').toMatch(/^\d+\.\d+\.\d+$/);
+    expect(v, 'FE and BE must report the SAME engine version').toBe(fixtureVersion);
   });
 });

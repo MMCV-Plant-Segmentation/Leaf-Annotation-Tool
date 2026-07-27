@@ -29,8 +29,14 @@ export function instantiateGeoEngine(bytes: BufferSource): Promise<Exports> {
     (res) => res.instance.exports as unknown as Exports);
 }
 
-/** Fetch + instantiate the engine once; later callers share the same instance. */
-export function loadGeoEngine(url = '/api/geo-engine.wasm'): Promise<Exports> {
+/** Fetch + instantiate the engine once; later callers share the same instance.
+ *
+ * The default URL is a STATIC asset, not an API route (Christian, 2026-07-27): serving a build
+ * artifact off the data API also forces the geo-engine/ SOURCE dir into the deployed image. The
+ * build step that copies geo_engine.wasm into static/ — failing LOUDLY if it is missing or
+ * stale — lands with D2-b, when the app actually fetches this. Until then only tests call it,
+ * and they pass bytes directly via instantiateGeoEngine(). */
+export function loadGeoEngine(url = '/static/geo_engine.wasm'): Promise<Exports> {
   if (!enginePromise) {
     enginePromise = fetch(url)
       .then((r) => {
@@ -76,31 +82,25 @@ function rings(resp: { rings?: Ring[]; error?: string }): Ring[] {
   return resp.rings ?? [];
 }
 
-// The engine answers MALFORMED input with an empty ring list rather than an error (verified
-// on both bindings: mismatched radii, no points, and a negative size all return []). Empty
-// rings mean "this stroke has no geometry", so a caller bug would make a stroke silently
-// VANISH instead of failing. Guard at the boundary so it breaks noisily here. The engine
-// itself still needs fixing — see the t104 follow-up ticket; that needs a wasm rebuild.
-function reject(cond: boolean, msg: string): void {
-  if (cond) throw new Error(`geo-engine: ${msg}`);
-}
-
-/** Outline a polyline stroke — round joins/caps, per-vertex radius. */
+/** Outline a polyline stroke — round joins/caps, per-vertex radius.
+ * A ONE-point polyline is legitimate (it renders as a disk), so it is not rejected. */
 export async function outlinePolyline(points: Ring, radii: number[]): Promise<Ring[]> {
-  reject(points.length < 2, `polyline needs >= 2 points, got ${points.length}`);
-  reject(radii.length !== points.length,
-    `polyline needs one radius per point, got ${radii.length} for ${points.length} points`);
-  reject(radii.some((r) => !(r > 0)), 'polyline radii must all be > 0');
   const ex = await loadGeoEngine();
   return rings(call(ex, { op: 'outline', kind: 'polyline', points, radii }));
 }
 
 /** Outline a freehand brush stroke of constant `size`. */
 export async function outlineBrush(points: Ring, size: number): Promise<Ring[]> {
-  reject(points.length < 1, 'brush needs at least one point');
-  reject(!(size > 0), `brush size must be > 0, got ${size}`);
   const ex = await loadGeoEngine();
   return rings(call(ex, { op: 'outline', kind: 'brush', points, size }));
+}
+
+/** The engine's own version — lets a caller prove which engine it is actually running. */
+export async function version(): Promise<string> {
+  const ex = await loadGeoEngine();
+  const resp = call(ex, { op: 'version' }) as { version?: string; error?: string };
+  if (resp.error) throw new Error(`geo-engine: ${resp.error}`);
+  return resp.version!;
 }
 
 /** Union polygons into the fused mask — the real-time fusion the FE could not do before. */

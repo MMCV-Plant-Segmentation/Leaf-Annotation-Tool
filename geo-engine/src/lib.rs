@@ -299,11 +299,24 @@ enum Request {
     Fuse {
         polygons: Vec<Vec<[f64; 2]>>,
     },
+    /// Self-identification, so a caller can prove which engine it is actually running
+    /// (runtime drift detection — a build step only catches drift at build time).
+    Version,
 }
 
 #[derive(Serialize)]
 struct RingsResponse {
     rings: Vec<Vec<[f64; 2]>>,
+}
+
+#[derive(Serialize)]
+struct VersionResponse {
+    version: &'static str,
+}
+
+/// Reject non-finite coordinates — NaN/inf silently poison every downstream boolean op.
+fn all_finite(points: &[[f64; 2]]) -> bool {
+    points.iter().all(|p| p[0].is_finite() && p[1].is_finite())
 }
 
 #[derive(Serialize)]
@@ -335,6 +348,24 @@ pub fn handle_request_json(bytes: &[u8]) -> String {
                     Some(r) => r,
                     None => return error_response("outline: polyline requires \"radii\""),
                 };
+                // t147: malformed input used to fall through to an EMPTY ring list, which reads
+                // downstream as "this stroke has no geometry" — so a caller bug made a stroke
+                // silently VANISH. Reject loudly instead; empty rings now mean only that the
+                // geometry genuinely collapsed.
+                if points.is_empty() {
+                    return error_response("outline: polyline requires at least one point");
+                }
+                if points.len() != radii.len() {
+                    return error_response(format!(
+                        "outline: polyline needs one radius per point — got {} radii for {} points",
+                        radii.len(), points.len()));
+                }
+                if !all_finite(&points) {
+                    return error_response("outline: polyline points must all be finite");
+                }
+                if !radii.iter().all(|r| r.is_finite() && *r > 0.0) {
+                    return error_response("outline: polyline radii must all be finite and > 0");
+                }
                 rings_response(outline_polyline(&points, &radii))
             }
             "brush" => {
@@ -342,11 +373,31 @@ pub fn handle_request_json(bytes: &[u8]) -> String {
                     Some(s) => s,
                     None => return error_response("outline: brush requires \"size\""),
                 };
+                if points.is_empty() {
+                    return error_response("outline: brush requires at least one point");
+                }
+                if !all_finite(&points) {
+                    return error_response("outline: brush points must all be finite");
+                }
+                if !(size.is_finite() && size > 0.0) {
+                    return error_response(format!(
+                        "outline: brush size must be finite and > 0, got {size}"));
+                }
                 rings_response(outline_brush(&points, size))
             }
             other => error_response(format!("outline: unknown kind \"{other}\"")),
         },
-        Request::Fuse { polygons } => rings_response(fuse_polygons(&polygons)),
+        Request::Fuse { polygons } => {
+            if polygons.iter().any(|p| !all_finite(p)) {
+                return error_response("fuse: polygon points must all be finite");
+            }
+            rings_response(fuse_polygons(&polygons))
+        }
+        // Deliberately the crate version, not a git hash: the engine cannot know its own commit,
+        // and a wrong claim is worse than a coarse one. Callers hash the ARTIFACT for exactness.
+        Request::Version => serde_json::to_string(&VersionResponse {
+            version: env!("CARGO_PKG_VERSION"),
+        }).unwrap_or_else(|_| error_response("version: serialize failed")),
     }
 }
 
