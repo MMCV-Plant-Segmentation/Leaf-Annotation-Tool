@@ -147,7 +147,7 @@ const CanvasScreen: Component = () => {
   }));
 
   return (
-    <div class={styles.wrap} data-screen="canvas">
+    <div class={styles.wrap}>
       <Show when={!annotator()}>
         <div class={styles.banner}>{t('canvas.noAnnotator')}</div>
       </Show>

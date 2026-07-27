@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from '@solidjs/router';
 import type { RouteSectionProps } from '@solidjs/router';
 import { currentUser, fetchMe, logout } from '../auth';
 import { recordVisit } from '../projects/inAppHistory';
+import { screenKindFor } from './screenKind';
 import { darkThemeClass, lightThemeClass, THEME_STORAGE_KEY } from '../theme/index';
 import { t } from '../i18n/catalog';
 import VersionFooter from './VersionFooter';
@@ -19,6 +20,16 @@ const AppRoot: Component<RouteSectionProps> = (props) => {
   // t85: feed every route change to the in-app history tracker so a canvas "Back" button can
   // pop the page that pushed it (nav(-1)) vs. fall back to a parent on a deep link.
   createEffect(() => recordVisit(loc.pathname));
+  // t110: tag the shell ONCE, from the route, so the static card gets the right width without
+  // every screen having to remember `data-screen` in its own wrap (it kept getting forgotten).
+  // Set on the existing #home-screen element rather than a new wrapper div — no DOM shape change.
+  createEffect(() => {
+    const kind = screenKindFor(loc.pathname);
+    const shell = document.getElementById('home-screen');
+    if (!shell) return;
+    if (kind) shell.setAttribute('data-screen', kind);
+    else shell.removeAttribute('data-screen');
+  });
 
   fetchMe().then((user) => {
     if (!user && !PUBLIC_ROUTES.has(loc.pathname) && !loc.pathname.startsWith('/invite/')) {

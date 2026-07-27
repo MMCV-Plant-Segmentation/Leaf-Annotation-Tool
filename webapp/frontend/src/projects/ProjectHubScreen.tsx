@@ -41,7 +41,7 @@ const ProjectHubScreen: Component = () => {
     <ErrorBoundary fallback={<ProjectNotFound />}>
       <Show when={project()} fallback={<div class={styles.wrap}>{t('common.loading')}</div>}>
         {(p) => (
-          <div class={styles.wrap} data-screen="project">
+          <div class={styles.wrap}>
             <div class={styles.header}>
               <button class={styles.back} onClick={() => nav('/projects')}>
                 {t('detail.back')}

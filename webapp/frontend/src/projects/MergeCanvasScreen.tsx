@@ -141,7 +141,7 @@ const MergeCanvasScreen: Component = () => {
   });
 
   return (
-    <div class={styles.wrap} data-screen="merge-canvas">
+    <div class={styles.wrap}>
       <CanvasToolbar
         tools={MERGE_TOOLS}
         tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
