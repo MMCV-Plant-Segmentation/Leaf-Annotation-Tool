@@ -16,6 +16,19 @@
 
 import { test, expect } from '@playwright/test';
 
+// t150: these exercise geometry that now comes from the shared wasm engine rather than a pure-JS
+// implementation, so the engine must be loaded first. Same artifact the server runs.
+async function loadEngine() {
+  const { readFileSync } = await import('node:fs');
+  const { dirname, resolve } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const mod = await import('../../src/projects/geoEngine');
+  const b = readFileSync(resolve(repo, 'geo-engine/geo_engine.wasm'));
+  mod.setGeoEngine(await mod.instantiateGeoEngine(
+    b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer));
+}
+
 // ── Duck-typed event helpers (no DOM globals in Node unit tests) ───────────────
 
 function kbEvent(key: string, extra: Record<string, unknown> = {}) {
@@ -40,6 +53,7 @@ function fakeSvg() {
 
 test.describe('buildStrokePath', () => {
   test('returns a non-empty SVG path for a single point (click = circle)', async () => {
+    await loadEngine();
     const { buildStrokePath } = await import('../../src/projects/canvasShapes');
     const d = buildStrokePath([[100, 100]], 20);
     expect(d.length).toBeGreaterThan(0);
@@ -47,6 +61,7 @@ test.describe('buildStrokePath', () => {
   });
 
   test('returns a non-empty SVG path for a multi-point stroke', async () => {
+    await loadEngine();
     const { buildStrokePath } = await import('../../src/projects/canvasShapes');
     const d = buildStrokePath([[0,0],[10,5],[20,0],[30,5],[40,0]], 10);
     expect(d.length).toBeGreaterThan(0);

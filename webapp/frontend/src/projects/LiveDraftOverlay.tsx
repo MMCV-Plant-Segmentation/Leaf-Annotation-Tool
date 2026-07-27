@@ -1,6 +1,7 @@
 import { type Component, Show } from 'solid-js';
 import { buildStrokePath, ringsToPath, type Tool } from './canvasShapes';
-import { polylineOutline } from './canvasPolylineGeometry';
+import { polylineOutlineRings } from './canvasPolylineGeometry';
+import { preloadGeoEngine } from './geoEngine';
 
 // Accessibility-tuned colours for the *live* brush/eraser/polyline draft + hover preview —
 // deliberately louder than the committed-stroke rendering (AnnotationShape), since a
@@ -29,6 +30,8 @@ export const LIVE_DRAFT = {
  * before dropping a vertex), and the PENDING segment (last placed vertex → cursor) drawn as the
  * SAME width-buffered outline that will be committed on the next click (its real thickness, not a
  * hairline) plus a dashed centerline as a direction cue. ESC/tool-switch clears the draft. */
+preloadGeoEngine();  // t150: the preview's sync path needs the engine warm
+
 export const LiveDraftOverlay: Component<{
   tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
   // t123: the currently-selected label's colour, so the polyline rubber-band centerline
@@ -37,10 +40,10 @@ export const LiveDraftOverlay: Component<{
 }> = (props) => (
   <>
     <Show when={props.draft.length > 0 && (props.tool === 'brush' || props.tool === 'eraser')}>
-      <path d={buildStrokePath(props.draft, props.brushSize, false)} fill="none"
+      <path d={buildStrokePath(props.draft, props.brushSize)} fill="none"
         stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
         vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={buildStrokePath(props.draft, props.brushSize, false)}
+      <path d={buildStrokePath(props.draft, props.brushSize)}
         fill={props.tool === 'eraser' ? LIVE_DRAFT.eraserFill : LIVE_DRAFT.brushFill}
         stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
         stroke-width={LIVE_DRAFT.strokeWidth}
@@ -85,7 +88,7 @@ export const LiveDraftOverlay: Component<{
         // so `last` must be an accessor — a captured value would freeze on the FIRST vertex and the
         // rubber band would anchor there instead of the most-recently-placed one.
         const last = () => props.draft[props.draft.length - 1];
-        const bandPath = () => ringsToPath([polylineOutline([last(), c()], props.brushSize)]);
+        const bandPath = () => ringsToPath(polylineOutlineRings([last(), c()], props.brushSize));
         return (
           <>
             <path d={bandPath()} fill="none"

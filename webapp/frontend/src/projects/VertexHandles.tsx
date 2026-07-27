@@ -5,7 +5,7 @@
  * stored input point across the mask's member strokes. Pointer-down on a dot begins a
  * drag (pointer captured on the circle so we keep tracking past the SVG edge);
  * pointer-move updates a LIVE preview outline of the affected stroke (polyline →
- * polylineOutline, brush → perfect-freehand strokeOutline), and pointer-up commits
+ * polylineOutlineRings, brush → the shared engine), and pointer-up commits
  * the moved points via `onCommit` which round-trips through the PATCH endpoint (see
  * canvasPersistence.ts `editStroke`).
  *
@@ -15,8 +15,9 @@
 import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
 import type { CanvasAnnotation } from './canvasApi';
 import { annStrokes, decideDrop, handleRadiusImg, moveVertex } from './canvasVertexEdit';
-import { polylineOutline } from './canvasPolylineGeometry';
-import { ringsToPath, strokeOutline } from './canvasShapes';
+import { polylineOutlineRings } from './canvasPolylineGeometry';
+import { ringsToPath } from './canvasShapes';
+import { outlineBrushSyncOrEmpty } from './geoEngine';
 import { t } from '../i18n/catalog';
 import * as styles from './VertexHandles.css';
 
@@ -88,10 +89,10 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
   const previewPath = createMemo(() => {
     const d = drag(); if (!d) return '';
     const moved = moveVertex(d.points, d.index, d.x, d.y);
-    const outline = d.tool === 'polyline'
-      ? polylineOutline(moved, d.strokeWidth)
-      : strokeOutline(moved, d.strokeWidth);
-    return outline.length ? ringsToPath([outline]) : '';
+    const rings = d.tool === 'polyline'
+      ? polylineOutlineRings(moved, d.strokeWidth)
+      : outlineBrushSyncOrEmpty(moved, Math.max(d.strokeWidth, 1));
+    return rings.length ? ringsToPath(rings) : '';
   });
 
   return (

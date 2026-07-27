@@ -21,3 +21,6 @@ geo-engine/target/
 # stray repo-root cargo target dir (a mis-set CARGO_TARGET_DIR can land build junk here)
 /target/
 /target2/
+
+# t150: build-copied from geo-engine/ (the committed artifact is the source of truth)
+webapp/static/geo_engine.wasm

@@ -1,5 +1,5 @@
 import { type Component, For, Show } from 'solid-js';
-import { getStroke } from 'perfect-freehand';
+import { outlineBrushSyncOrEmpty } from './geoEngine';
 import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
 export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select' | 'group' | 'polyline';
@@ -9,33 +9,21 @@ export const TILE_COLORS: Record<string, string> = {
   assigned: '#9ca3af', completed: '#16a34a', dirty: '#f59e0b',
 };
 
-// Convert a flat outline polygon (from getStroke) to a smooth SVG path via
-// quadratic bezier chords — the Steve Ruiz idiom for perfect-freehand output.
-function outlineToPath(pts: number[][]): string {
-  if (!pts.length) return '';
-  const d: (string | number)[] = ['M', pts[0][0], pts[0][1], 'Q'];
-  for (let i = 0; i < pts.length; i++) {
-    const [x0, y0] = pts[i];
-    const [x1, y1] = pts[(i + 1) % pts.length];
-    d.push(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
-  }
-  d.push('Z');
-  return d.join(' ');
-}
+// t150: the brush preview now comes from the SHARED ENGINE, so what you see while drawing is
+// what gets stored. The old path went through perfect-freehand's `getStroke` plus a
+// quadratic-bezier smoothing of its output — a second implementation of geometry the server
+// already owned, and the reason preview and stored mask could disagree.
+//
+// One deliberate consequence (Christian's call, 2026-07-27): perfect-freehand took a `last`
+// flag, and the live draft passed `last=false` to leave the leading edge OPEN and tapered while
+// the stroke was in progress. The engine has no such concept, so an in-progress stroke now
+// renders CLOSED and capped throughout — which is precisely the divergence D2 exists to remove.
 
-// Compute the perfect-freehand outline polygon for a brush stroke.
-// Returns the raw getStroke result (number[][] polygon in image coords).
-// The outline is the actual painted shape; re-used by buildStrokePath and the API commit.
-export function strokeOutline(points: number[][], size: number, last = true): number[][] {
-  return getStroke(points, {
-    size, thinning: 0, smoothing: 0.5, last, simulatePressure: false,
-  }) as number[][];
-}
-
-// Build an SVG path string for a brush stroke (or live draft when last=false).
-// size is in image-space pixels (constant world size regardless of zoom).
-export function buildStrokePath(points: number[][], size: number, last = true): string {
-  return outlineToPath(strokeOutline(points, size, last));
+/** Build an SVG path for a brush stroke. `size` is in image-space pixels (constant world size
+ * regardless of zoom). Empty while the engine is still loading — see preloadGeoEngine(). */
+export function buildStrokePath(points: number[][], size: number): string {
+  if (!points.length) return '';
+  return ringsToPath(outlineBrushSyncOrEmpty(points, Math.max(size, 1)));
 }
 
 /** Build an SVG "M…L…Z" path from polygon rings (exterior first, then holes). */

@@ -19,7 +19,7 @@ export type CanvasTile = Rect & {
 export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
 
 /** One member stroke of a fused mask (a11y #40 v1b — `tool` picks the outline
- * builder on vertex-edit drop: polyline → polylineOutline, brush → perfect-freehand).
+ * builder on vertex-edit drop: `tool` selects the engine outline kind).
  * `vertexIds` (t50 phase 2b, parallel to `points`) is the stable per-vertex id the
  * server assigns — draw-time snapping indexes these to detect a nearby existing
  * vertex to reference. */

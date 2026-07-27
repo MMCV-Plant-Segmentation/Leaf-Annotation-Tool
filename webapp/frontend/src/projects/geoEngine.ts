@@ -21,6 +21,10 @@ type Exports = {
 };
 
 let enginePromise: Promise<Exports> | null = null;
+// The wasm CALL is synchronous — only LOADING is async. Previews run per frame, so they need a
+// synchronous path: preload once at canvas mount, then read this. A promise per frame would be
+// both slower and impossible to use from Solid's synchronous render.
+let loaded: Exports | null = null;
 
 /** Instantiate from raw bytes. The crate imports nothing, so an empty import object is the
  * whole contract. Exposed so a test can feed the committed artifact straight off disk. */
@@ -44,19 +48,53 @@ export function loadGeoEngine(url = '/static/geo_engine.wasm'): Promise<Exports>
         return r.arrayBuffer();
       })
       .then(instantiateGeoEngine)
+      .then((ex) => { loaded = ex; return ex; })
       .catch((err) => { enginePromise = null; throw err; });  // let a retry re-fetch
   }
   return enginePromise;
 }
 
+/** Warm the engine so the synchronous preview path can use it. Call at canvas mount.
+ * Failure is logged, never thrown: a missing preview is cosmetic — the stroke still lands
+ * correctly because the SERVER derives the stored geometry from the points. */
+export function preloadGeoEngine(url?: string): void {
+  void loadGeoEngine(url).catch((err) => {
+    console.error('[geo-engine] preload failed — live stroke preview will not render until it '
+      + 'loads. Strokes still commit correctly (the server derives geometry).', err);
+  });
+}
+
+/** The instance if it is ready, else null. Synchronous — for the per-frame preview path. */
+export function geoEngineSync(): Exports | null {
+  return loaded;
+}
+
 /** Seed the shared instance (tests). */
 export function setGeoEngine(ex: Exports): void {
   enginePromise = Promise.resolve(ex);
+  loaded = ex;
 }
 
 /** Reset the cached instance — tests only. */
 export function resetGeoEngine(): void {
   enginePromise = null;
+  loaded = null;
+}
+
+/** Synchronous outline for the live preview. Returns [] when the engine is not loaded YET
+ * (cosmetic, self-healing); a malformed request still throws, since that is a real bug. */
+export function outlineBrushSyncOrEmpty(points: Ring, size: number): Ring[] {
+  const ex = loaded;
+  if (!ex) return [];
+  return rings(call(ex, { op: 'outline', kind: 'brush', points, size }));
+}
+
+/** Synchronous per-vertex-radius polyline outline for the live preview. Same empty-until-loaded
+ * contract as the brush. */
+export function outlinePolylineSyncOrEmpty(points: Ring, radii: number[]): Ring[] {
+  const ex = loaded;
+  if (!ex) return [];
+  return rings(call(ex, { op: 'outline', kind: 'polyline', points, radii }));
 }
 
 function call(ex: Exports, req: unknown): { rings?: Ring[]; error?: string } {
