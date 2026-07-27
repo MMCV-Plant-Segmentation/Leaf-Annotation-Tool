@@ -168,6 +168,44 @@ test('polyline: size slider + scroll resize work, and rubber-band anchors to the
   }, 'rubber-band anchor must move to the newest vertex').toBeGreaterThan(0.5);
 });
 
+test('t91: size presets are a native combobox ON the number input, on the PAINT tools too @full',
+  async ({ page, browser }, testInfo) => {
+  if (testInfo.project.name !== 'full') return;
+  test.setTimeout(90_000);
+  const p = await setupCanvasAsAnnotator(page, browser);
+  const canvasSvg = p.locator('[data-screen="canvas"] svg').first();
+  await expect(canvasSvg).toBeVisible({ timeout: 15_000 });
+  p.on('dialog', (d) => void d.dismiss());
+
+  // t65 shipped the presets as a SEPARATE <select> button, and only on the Select tool.
+  // t91: they belong ON the number input as a font-size-picker style combobox, and they
+  // apply to the brush too. Assert on the BRUSH tool — the case that had no presets at all.
+  await p.getByTestId('tool-brush').click();
+  const sizeInput = p.getByTestId('brush-size-input');
+  await expect(sizeInput).toBeVisible();
+
+  // The retired standalone dropdown must be gone.
+  await expect(p.getByTestId('size-presets')).toHaveCount(0);
+
+  // The number input is wired to a datalist, which supplies the presets.
+  const listId = await sizeInput.getAttribute('list');
+  expect(listId, 'the size input must reference a datalist').toBeTruthy();
+  const datalist = p.locator(`datalist#${listId}`);
+  await expect(datalist.locator('option')).not.toHaveCount(0);
+
+  // Every offered preset is a positive number (a real px size, not a placeholder row like
+  // the old select's empty "Preset…" option).
+  const values = await datalist.locator('option').evaluateAll(
+    (els) => els.map((el) => Number((el as HTMLOptionElement).value)));
+  expect(values.length).toBeGreaterThan(1);
+  for (const v of values) expect(v).toBeGreaterThan(0);
+
+  // Free-typing a custom size still works — a combobox must not become a closed list.
+  await sizeInput.fill('37');
+  await sizeInput.blur();
+  await expect.poll(async () => Number(await sizeInput.inputValue())).toBe(37);
+});
+
 test('t123: polyline rubber-band renders in the selected label colour, not a fixed tone @full',
   async ({ page, browser }, testInfo) => {
   if (testInfo.project.name !== 'full') return;

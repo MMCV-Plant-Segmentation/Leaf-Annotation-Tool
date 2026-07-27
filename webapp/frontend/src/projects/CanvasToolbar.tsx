@@ -58,18 +58,22 @@ const SLIDER_RESOLUTION = 1000;
 
 const clampBrushSize = (v: number, max: number) => Math.max(1, Math.min(max, Math.round(v)));
 
-// Quick absolute sizes for the Select-tool presets dropdown (t65). Clamped to maxBrushSize on pick.
+// Quick absolute sizes offered by the size combobox (t65 → t91). Clamped to maxBrushSize on pick.
 const SIZE_PRESETS = [2, 4, 8, 16, 32, 64];
+// t91: the presets hang off the number input as a native combobox (font-size-picker style),
+// so this id ties the <input list=…> to its <datalist>.
+const SIZE_PRESETS_ID = 'canvas-size-presets';
 
 // The active size control target: the brush (paint tools) or the SELECTED mask (Select tool,
-// t65) — or null when no size control applies. `presets` gates the dropdown (selection only).
-type SizeCtx = { get: () => number; set: (n: number) => void; presets: boolean };
+// t65) — or null when no size control applies. t91: presets now apply to BOTH, so there is
+// no longer a flag gating them.
+type SizeCtx = { get: () => number; set: (n: number) => void };
 const activeSizeCtx = (props: Props): SizeCtx | null => {
   const tl = props.tool();
   if ((tl === 'brush' || tl === 'eraser' || tl === 'polyline') && props.brushSize && props.setBrushSize)
-    return { get: props.brushSize, set: props.setBrushSize, presets: false };
+    return { get: props.brushSize, set: props.setBrushSize };
   if (tl === 'select' && props.selectionSize && props.setSelectionSize && props.selectionSize() != null)
-    return { get: () => props.selectionSize!() ?? 1, set: props.setSelectionSize, presets: true };
+    return { get: () => props.selectionSize!() ?? 1, set: props.setSelectionSize };
   return null;
 };
 
@@ -125,26 +129,21 @@ export const CanvasToolbar: Component<Props> = (props) => (
               step={1} value={sizeToSliderPos(ctx().get(), props.maxBrushSize!())}
               data-testid="brush-size-slider"
               onInput={(e) => ctx().set(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize!()))} />
+            {/* t91: native combobox — the presets drop out of the number input itself (click
+                to reveal, still free-typeable), not a separate button. Applies to every tool
+                the size control serves, brush included. */}
             <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize!()}
-              step={1} value={ctx().get()} data-testid="brush-size-input"
+              step={1} value={ctx().get()} data-testid="brush-size-input" list={SIZE_PRESETS_ID}
               onChange={(e) => {
                 const parsed = Number(e.currentTarget.value);
                 const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize!()) : ctx().get();
                 e.currentTarget.value = String(next);
                 ctx().set(next);
               }} />
+            <datalist id={SIZE_PRESETS_ID}>
+              <For each={SIZE_PRESETS}>{(px) => <option value={px} />}</For>
+            </datalist>
             <span data-testid="brush-size-value">{'px'}</span>
-            <Show when={ctx().presets}>
-              <select class={styles.sizeNumberInput} data-testid="size-presets"
-                onChange={(e) => {
-                  const v = Number(e.currentTarget.value);
-                  e.currentTarget.value = '';
-                  if (v) ctx().set(clampBrushSize(v, props.maxBrushSize!()));
-                }}>
-                <option value="">{t('canvas.sizePresets')}</option>
-                <For each={SIZE_PRESETS}>{(px) => <option value={px}>{px + ' px'}</option>}</For>
-              </select>
-            </Show>
           </label>
         )}
       </Show>
