@@ -186,7 +186,7 @@ const CanvasScreen: Component = () => {
             onMoveSharedVertex={(vid, b, a) => void moveSharedVertex(vid, b, a)} />
         }</Show>
         <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
-          hover={interaction.hoverImg()} color={labelColor(paintLabel())} />
+          hover={interaction.hoverImg()} color={labelColor(paintLabel())} scale={imgPerScreenPx()} />
         {heat && <ViewportHeatmapLayer heat={heat} />}
       </CanvasStage>
 

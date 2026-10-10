@@ -1,5 +1,6 @@
 import { type Component, Show } from 'solid-js';
-import { buildStrokePath, ringsToPath, type Tool } from './canvasShapes';
+import { ringsToPath, type Tool } from './canvasShapes';
+import { BrushDraftStroke } from './BrushDraftStroke';
 import { polylineOutlineRings } from './canvasPolylineGeometry';
 import { preloadGeoEngine } from './geoEngine';
 
@@ -37,17 +38,13 @@ export const LiveDraftOverlay: Component<{
   // t123: the currently-selected label's colour, so the polyline rubber-band centerline
   // reads in that colour instead of a fixed tone. Optional — falls back to the tuned default.
   color?: string;
+  /** t158: image px per screen px — the draft's halo/edge widths are screen-px constants. */
+  scale?: number;
 }> = (props) => (
   <>
     <Show when={props.draft.length > 0 && (props.tool === 'brush' || props.tool === 'eraser')}>
-      <path d={buildStrokePath(props.draft, props.brushSize)} fill="none"
-        stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={buildStrokePath(props.draft, props.brushSize)}
-        fill={props.tool === 'eraser' ? LIVE_DRAFT.eraserFill : LIVE_DRAFT.brushFill}
-        stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
-        stroke-width={LIVE_DRAFT.strokeWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
+      <BrushDraftStroke draft={props.draft} size={Math.max(props.brushSize, 1)}
+        scale={props.scale ?? 1} eraser={props.tool === 'eraser'} />
     </Show>
     <Show when={(props.tool === 'brush' || props.tool === 'eraser') && props.hover}>
       {(c) => (

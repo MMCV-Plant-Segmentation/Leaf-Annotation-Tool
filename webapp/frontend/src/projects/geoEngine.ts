@@ -89,6 +89,18 @@ export function outlineBrushSyncOrEmpty(points: Ring, size: number): Ring[] {
   return rings(call(ex, { op: 'outline', kind: 'brush', points, size }));
 }
 
+/** t158: the brush's smoothed centreline (sync, live preview). A round brush of diameter `size`
+ * dragged along it IS the brush outline, so the preview paints it as a round-capped stroke
+ * instead of recomputing the full outline union every pointer move (which grew with stroke
+ * length — quadratic over a stroke). Same empty-until-loaded contract as the outlines. */
+export function brushCenterlineSyncOrEmpty(points: Ring, size: number): Ring {
+  const ex = loaded;
+  if (!ex || !points.length) return [];
+  const resp = call(ex, { op: 'centerline', points, size }) as { points?: Ring; error?: string };
+  if (resp.error) throw new Error(`geo-engine: ${resp.error}`);
+  return resp.points ?? [];
+}
+
 /** Synchronous per-vertex-radius polyline outline for the live preview. Same empty-until-loaded
  * contract as the brush. */
 export function outlinePolylineSyncOrEmpty(points: Ring, radii: number[]): Ring[] {
