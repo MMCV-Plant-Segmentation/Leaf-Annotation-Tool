@@ -101,6 +101,24 @@ export function brushCenterlineSyncOrEmpty(points: Ring, size: number): Ring {
   return resp.points ?? [];
 }
 
+/** t158: one step of the live brush's incremental centreline. Feeds only the NEW draft points to
+ * engine stream `id` (a fresh stream when undefined); answers just the centreline points that
+ * became final since the last push, plus the provisional tail. null when not loaded yet. */
+export function brushStreamPushSync(id: number | undefined, size: number, points: Ring):
+  { id: number; frozen: Ring; tail: Ring } | null {
+  const ex = loaded;
+  if (!ex) return null;
+  const resp = call(ex, { op: 'stream_push', id, size, points }) as
+    { id: number; frozen: Ring; tail: Ring; error?: string };
+  if (resp.error) throw new Error(`geo-engine: ${resp.error}`);
+  return resp;
+}
+
+/** Free a live brush stream (stroke finished or abandoned). */
+export function brushStreamEndSync(id: number): void {
+  if (loaded) call(loaded, { op: 'stream_end', id });
+}
+
 /** Synchronous per-vertex-radius polyline outline for the live preview. Same empty-until-loaded
  * contract as the brush. */
 export function outlinePolylineSyncOrEmpty(points: Ring, radii: number[]): Ring[] {

@@ -16,7 +16,11 @@
 //! { "op": "outline", "kind": "brush",    "points": [[x,y],...], "size": w }
 //! { "op": "fuse",    "polygons": [[[x,y],...], ...] }
 //! { "op": "centerline", "points": [[x,y],...], "size": w }
+//! { "op": "stream_push", "id": n?, "size": w, "points": [[x,y],...] }
+//! { "op": "stream_end",  "id": n }
 //! ```
+//! `stream_push` (the live brush preview) answers `{ "id": n, "frozen": [...], "tail": [...] }`:
+//! the centreline points that became final since the last push, and the provisional tail.
 //! Response: `{ "rings": [[[x,y],...], ...] }` on success (`centerline`: `{ "points": [[x,y],...] }`
 //! — the brush's smoothed centreline), `{ "error": "..." }` on failure.
 //!
@@ -33,6 +37,9 @@ use i_overlay::core::overlay::{Overlay, ShapeType};
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::i_float::int::point::IntPoint;
 use serde::{Deserialize, Serialize};
+
+mod brush;
+pub use brush::{brush_centerline, BrushStream, BRUSH_TAIL_RADII};
 
 /// Integer grid scale: 1 float unit == `SCALE` integer units. Finer than 1/100 px (1024 > 100)
 /// so the quantization error is well below anything visually meaningful, while staying an
@@ -227,6 +234,14 @@ fn ring_area(ring: &[[f64; 2]]) -> f64 {
 
 /// Keep only the largest-by-area ring, discarding negligible artifact rings — used where the
 /// result is conceptually a single contiguous shape (a brush stroke).
+/// Distance from `p` to segment a–b.
+pub(crate) fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
+}
+
 fn largest_ring_by_area(rings: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
     match rings
         .into_iter()
@@ -237,154 +252,10 @@ fn largest_ring_by_area(rings: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
     }
 }
 
-/// Brush centerline sampling: one spline sample per this many brush radii of chord length.
-/// Fine enough that each sample-to-sample turn on a curve is a few degrees (a smooth edge), coarse
-/// enough to keep the union small.
-const BRUSH_SPLINE_STEP_RADII: f64 = 0.5;
-
-/// Cap on spline samples per input span — bounds the cost of a long straight jump.
-const BRUSH_SPLINE_MAX_SUBDIV: usize = 32;
-
-/// Drop consecutive (near-)coincident points — repeats carry no shape, and a zero-length span has
-/// no direction (Safari doubles every Pencil move; strokes stored before t157 contain the repeats).
-fn dedupe_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    let mut out: Vec<[f64; 2]> = Vec::with_capacity(points.len());
-    for p in points {
-        match out.last() {
-            Some(q) if (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9 => {}
-            _ => out.push(*p),
-        }
-    }
-    out
-}
-
-/// Brush input thinning: keep a point only once it is this many brush radii from the last kept
-/// one. Slow drawing delivers points ~1–3 px apart whose sub-pixel hand/sensor jitter swings the
-/// local direction by ~10–15° per point; a curve through every one of them traces that wobble as
-/// a bumpy edge. Spacing kept points ~2 radii apart smooths it to the fast-stroke level.
-const BRUSH_THIN_STEP_RADII: f64 = 2.0;
-
-/// …but never at the cost of the drawn shape: any dropped point farther than this many radii from
-/// the thinned path is put back (hooks and sharp corners stay exact). Measured on Christian's
-/// kanji (16 px brush): slow-stroke edge wiggle 37 → 15 (fast strokes ≈ 11), every raw point
-/// within 0.25 r of the thinned path.
-const BRUSH_THIN_TOL_RADII: f64 = 0.25;
-
-fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    (p[0] - a[0] - t * dx).hypot(p[1] - a[1] - t * dy)
-}
-
-/// Thin `points` (already deduped) to ~`step` spacing, then restore fidelity: within each kept
-/// span, re-insert the farthest dropped point while it lies more than `tol` from the span
-/// (Douglas–Peucker, restricted to the span). Always keeps the first and last point.
-fn thin_points(points: &[[f64; 2]], step: f64, tol: f64) -> Vec<[f64; 2]> {
-    let n = points.len();
-    if n < 3 {
-        return points.to_vec();
-    }
-    let dist = |i: usize, j: usize| (points[i][0] - points[j][0]).hypot(points[i][1] - points[j][1]);
-    let mut kept = vec![0usize];
-    for i in 1..n - 1 {
-        if dist(i, *kept.last().unwrap()) >= step {
-            kept.push(i);
-        }
-    }
-    // The end point is always kept; if it is crowded by the last kept point, it replaces it.
-    if kept.len() > 1 && dist(n - 1, *kept.last().unwrap()) < step {
-        kept.pop();
-    }
-    kept.push(n - 1);
-
-    let mut out = vec![kept[0]];
-    for w in kept.windows(2) {
-        // Explicit stack (no recursion depth limit): refine span (i, j), emitting in order.
-        let mut stack = vec![(w[0], w[1])];
-        let mut span_out: Vec<usize> = Vec::new();
-        while let Some((i, j)) = stack.pop() {
-            let far = (i + 1..j)
-                .map(|m| (m, seg_dist(points[m], points[i], points[j])))
-                .fold(None, |best: Option<(usize, f64)>, c| match best {
-                    Some(b) if b.1 >= c.1 => Some(b),
-                    _ => Some(c),
-                });
-            match far {
-                Some((m, d)) if d > tol => {
-                    stack.push((m, j));
-                    stack.push((i, m));
-                }
-                _ => span_out.push(j),
-            }
-        }
-        out.extend(span_out);
-    }
-    out.into_iter().map(|i| points[i]).collect()
-}
-
-/// The brush stroke's centreline (t158): the input deduped, thinned (jitter smoothed, shape kept)
-/// and resampled as a smooth curve through the kept points. A round brush of diameter `size`
-/// dragged along this curve IS the brush outline — exposed so the live preview can paint it
-/// directly (the browser's round-capped/joined stroke of the same curve is the same shape)
-/// instead of recomputing the full outline union every pointer move.
-pub fn brush_centerline(points: &[[f64; 2]], size: f64) -> Vec<[f64; 2]> {
-    let radius = size.max(0.0) / 2.0;
-    let pts = thin_points(&dedupe_points(points), radius * BRUSH_THIN_STEP_RADII, radius * BRUSH_THIN_TOL_RADII);
-    smooth_centerline(&pts, (radius * BRUSH_SPLINE_STEP_RADII).max(0.5))
-}
-
-/// One point of the CENTRIPETAL Catmull-Rom segment p1→p2 at parameter u∈[0,1] (Barry–Goldman
-/// form, knot spacing |Δp|^½). Centripetal parameterization never cusps or self-intersects within
-/// a segment, even at sharp corners or very uneven spacing.
-fn catmull_rom_point(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], u: f64) -> [f64; 2] {
-    let knot = |a: [f64; 2], b: [f64; 2]| ((b[0] - a[0]).hypot(b[1] - a[1])).sqrt().max(1e-9);
-    let t0 = 0.0;
-    let t1 = t0 + knot(p0, p1);
-    let t2 = t1 + knot(p1, p2);
-    let t3 = t2 + knot(p2, p3);
-    let t = t1 + u * (t2 - t1);
-    let lerp = |a: [f64; 2], b: [f64; 2], ta: f64, tb: f64| {
-        let (wa, wb) = ((tb - t) / (tb - ta), (t - ta) / (tb - ta));
-        [wa * a[0] + wb * b[0], wa * a[1] + wb * b[1]]
-    };
-    let a1 = lerp(p0, p1, t0, t1);
-    let a2 = lerp(p1, p2, t1, t2);
-    let a3 = lerp(p2, p3, t2, t3);
-    let b1 = lerp(a1, a2, t0, t2);
-    let b2 = lerp(a2, a3, t1, t3);
-    lerp(b1, b2, t1, t2)
-}
-
-/// Resample a (deduped) polyline as a smooth curve THROUGH every input point: a centripetal
-/// Catmull-Rom spline, each span subdivided at ≤ `step` chord length. The ends use reflected
-/// phantom points so the curve leaves/arrives along the first/last span.
-fn smooth_centerline(points: &[[f64; 2]], step: f64) -> Vec<[f64; 2]> {
-    let n = points.len();
-    if n < 3 {
-        return points.to_vec();
-    }
-    let reflect = |a: [f64; 2], b: [f64; 2]| [2.0 * a[0] - b[0], 2.0 * a[1] - b[1]];
-    let mut out = Vec::with_capacity(n * 4);
-    out.push(points[0]);
-    for i in 0..n - 1 {
-        let p0 = if i == 0 { reflect(points[0], points[1]) } else { points[i - 1] };
-        let (p1, p2) = (points[i], points[i + 1]);
-        let p3 = if i + 2 < n { points[i + 2] } else { reflect(points[n - 1], points[n - 2]) };
-        let len = (p2[0] - p1[0]).hypot(p2[1] - p1[1]);
-        let k = ((len / step).ceil() as usize).clamp(1, BRUSH_SPLINE_MAX_SUBDIV);
-        for j in 1..k {
-            out.push(catmull_rom_point(p0, p1, p2, p3, j as f64 / k as f64));
-        }
-        out.push(p2); // land exactly on every input point
-    }
-    out
-}
-
 /// Outline a freehand brush stroke (t158): a round brush of diameter `size` dragged along the
-/// smooth `brush_centerline` through the input points — outlined by the same
-/// capsule union as `outline_polyline` (constant radius). The edge is exactly `size/2` from the
-/// curve everywhere, so it is smooth and contains every input point by construction (no
+/// smooth `brush_centerline` (see `brush.rs`) — outlined by the same capsule union as
+/// `outline_polyline` (constant radius). The edge is exactly `size/2` from the curve everywhere,
+/// so it is smooth, and the curve stays well within the radius of every input point (no
 /// containment patches). Replaces the perfect-freehand ribbon ∪ per-point disks, whose smoothed
 /// ribbon cut inside curves and let the raw-point disks poke out as one bump per point.
 pub fn outline_brush(points: &[[f64; 2]], size: f64) -> Vec<Vec<[f64; 2]>> {
@@ -415,10 +286,24 @@ enum Request {
     Fuse {
         polygons: Vec<Vec<[f64; 2]>>,
     },
-    /// The brush centreline (t158) — the live preview paints it as a round-capped stroke.
+    /// The brush centreline (t158) — the whole stroke's curve in one call.
     Centerline {
         points: Vec<[f64; 2]>,
         size: f64,
+    },
+    /// The live preview's incremental brush (t158): append points to stream `id` (a new stream
+    /// when absent). Returns only the newly FROZEN centreline points plus the provisional tail.
+    #[serde(rename = "stream_push")]
+    StreamPush {
+        #[serde(default)]
+        id: Option<u32>,
+        size: f64,
+        points: Vec<[f64; 2]>,
+    },
+    /// Free a stream (stroke finished or abandoned).
+    #[serde(rename = "stream_end")]
+    StreamEnd {
+        id: u32,
     },
     /// Self-identification, so a caller can prove which engine it is actually running
     /// (runtime drift detection — a build step only catches drift at build time).
@@ -433,6 +318,51 @@ struct RingsResponse {
 #[derive(Serialize)]
 struct PointsResponse {
     points: Vec<[f64; 2]>,
+}
+
+#[derive(Serialize)]
+struct StreamResponse<'a> {
+    id: u32,
+    frozen: &'a [[f64; 2]],
+    tail: &'a [[f64; 2]],
+}
+
+/// Live brush streams by id, each with how many frozen points were already returned. The engine
+/// is single-threaded (wasm), so a thread-local map is the whole store.
+struct Streams {
+    next: u32,
+    live: std::collections::HashMap<u32, (BrushStream, usize)>,
+}
+
+thread_local! {
+    static STREAMS: std::cell::RefCell<Streams> =
+        std::cell::RefCell::new(Streams { next: 1, live: std::collections::HashMap::new() });
+}
+
+fn stream_push(id: Option<u32>, size: f64, points: &[[f64; 2]]) -> String {
+    STREAMS.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let id = match id {
+            Some(id) => id,
+            None => {
+                let id = st.next;
+                st.next = st.next.wrapping_add(1).max(1);
+                st.live.insert(id, (BrushStream::new(size), 0));
+                id
+            }
+        };
+        let Some((stream, sent)) = st.live.get_mut(&id) else {
+            return error_response(format!("stream_push: no stream {id}"));
+        };
+        for p in points {
+            stream.push(*p);
+        }
+        let frozen = &stream.frozen()[*sent..];
+        let out = serde_json::to_string(&StreamResponse { id, frozen, tail: stream.tail() })
+            .unwrap_or_else(|_| error_response("stream_push: serialize failed"));
+        *sent = stream.frozen().len();
+        out
+    })
 }
 
 #[derive(Serialize)]
@@ -531,6 +461,19 @@ pub fn handle_request_json(bytes: &[u8]) -> String {
             }
             serde_json::to_string(&PointsResponse { points: brush_centerline(&points, size) })
                 .unwrap_or_else(|_| error_response("centerline: serialize failed"))
+        }
+        Request::StreamPush { id, size, points } => {
+            if !all_finite(&points) {
+                return error_response("stream_push: points must all be finite");
+            }
+            if !(size.is_finite() && size > 0.0) {
+                return error_response(format!("stream_push: size must be finite and > 0, got {size}"));
+            }
+            stream_push(id, size, &points)
+        }
+        Request::StreamEnd { id } => {
+            STREAMS.with(|cell| cell.borrow_mut().live.remove(&id));
+            "{}".to_string()
         }
         // Deliberately the crate version, not a git hash: the engine cannot know its own commit,
         // and a wrong claim is worse than a coarse one. Callers hash the ARTIFACT for exactness.
@@ -815,8 +758,9 @@ mod tests {
 
     /// t158: a sparsely sampled curve (60 Hz Pencil: points ~22 px apart on a 16 px brush) must
     /// give a SMOOTH edge, not one bump per input point. Points on a circle of radius 100 → the
-    /// outer edge must stay at 100 + r everywhere (the old ribbon ∪ per-point-disk outline
-    /// scalloped between points).
+    /// outer edge must stay at one distance from the centre (the old ribbon ∪ per-point-disk
+    /// outline scalloped between points), within a pixel of 100 + r (the B-spline runs between
+    /// chord midpoints, so it sits a uniform ~0.6 px inside the sampled circle).
     #[test]
     fn outline_brush_sparse_arc_has_smooth_edge_no_scallops() {
         let (cx, cy, big_r, size) = (0.0, 0.0, 100.0, 16.0);
@@ -832,20 +776,18 @@ mod tests {
         let r = size / 2.0;
         // Only judge the outer edge away from the caps: angles strictly inside the sampled span.
         let (a_lo, a_hi) = (step, 10.0 * step);
-        let mut judged = 0;
-        for v in &rings[0] {
-            let d = ((v[0] - cx).powi(2) + (v[1] - cy).powi(2)).sqrt();
-            let a = (v[1] - cy).atan2(v[0] - cx);
-            if d > big_r && a > a_lo && a < a_hi {
-                judged += 1;
-                assert!(
-                    (d - (big_r + r)).abs() < 0.3,
-                    "outer edge at angle {a:.3} is {d:.3} from centre, want {:.1} ± 0.3 (scallop)",
-                    big_r + r
-                );
-            }
-        }
-        assert!(judged >= 10, "too few outer-edge vertices judged ({judged})");
+        let edge: Vec<f64> = rings[0]
+            .iter()
+            .filter(|v| {
+                let a = (v[1] - cy).atan2(v[0] - cx);
+                ((v[0] - cx).powi(2) + (v[1] - cy).powi(2)).sqrt() > big_r && a > a_lo && a < a_hi
+            })
+            .map(|v| ((v[0] - cx).powi(2) + (v[1] - cy).powi(2)).sqrt())
+            .collect();
+        assert!(edge.len() >= 10, "too few outer-edge vertices judged ({})", edge.len());
+        let (lo, hi) = edge.iter().fold((f64::INFINITY, 0.0f64), |(l, h), d| (l.min(*d), h.max(*d)));
+        assert!(hi - lo < 0.3, "outer edge varies {lo:.3}..{hi:.3} from centre (scallop)");
+        assert!((lo - (big_r + r)).abs() < 1.0 && (hi - (big_r + r)).abs() < 1.0, "edge {lo:.3}..{hi:.3}");
     }
 
     /// t158: the outline follows the drawn path — around a sparse right-angle corner no part of the
@@ -912,23 +854,6 @@ mod tests {
             last_sign = dy.signum();
         }
         assert!(reversals <= 8, "top edge reverses direction {reversals} times (bumpy)");
-    }
-
-    /// t158: thinning never loses the drawn shape — every raw point stays within tol of the thinned
-    /// path, including a sharp hook drawn slowly; first and last points are always kept.
-    #[test]
-    fn thin_points_keeps_shape_within_tolerance() {
-        let mut pts: Vec<[f64; 2]> = (0..60).map(|i| [i as f64 * 1.5, 0.0]).collect();
-        pts.extend((1..12).map(|i| [88.5 - i as f64 * 1.2, i as f64 * 1.2])); // a sharp hook back
-        let (step, tol) = (16.0, 2.0);
-        let t = thin_points(&pts, step, tol);
-        assert_eq!(t.first(), pts.first());
-        assert_eq!(t.last(), pts.last());
-        assert!(t.len() < pts.len() / 3, "expected real thinning, kept {} of {}", t.len(), pts.len());
-        for p in &pts {
-            let d = t.windows(2).map(|w| seg_dist(*p, w[0], w[1])).fold(f64::INFINITY, f64::min);
-            assert!(d <= tol + 1e-9, "raw point {p:?} is {d:.3} from the thinned path (> tol)");
-        }
     }
 
     /// t158: the `centerline` op returns the same curve the brush outline is built from.
