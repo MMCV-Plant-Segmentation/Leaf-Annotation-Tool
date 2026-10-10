@@ -1,6 +1,6 @@
 [package]
 name = "geo-engine"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Shared stroke-geometry engine (outline + fusion) — one .wasm called by the leaf FE and BE (t96/t103)."
 license = "MIT"
