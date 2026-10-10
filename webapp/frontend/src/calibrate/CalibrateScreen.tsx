@@ -47,7 +47,9 @@ const CalibrateScreen: Component = () => {
   let canvas!: HTMLCanvasElement;
   const refresh = createRefreshMeter();
   const [summary, setSummary] = createSignal<CalSummary | null>(null);
-  const [strokes, setStrokes] = createSignal(0);
+  // Every finished stroke, frozen at pointer-up (refresh rate captured then) — the report only
+  // changes when a stroke ends, so selecting/copying it is never reset by a live readout.
+  const [log, setLog] = createSignal<(CalSummary & { refreshHz: number })[]>([]);
   let cur: CalStroke | null = null;
   const api = {
     coalesced: typeof PointerEvent !== 'undefined' && 'getCoalescedEvents' in PointerEvent.prototype,
@@ -98,7 +100,8 @@ const CalibrateScreen: Component = () => {
   const onUp = (e: PointerEvent) => {
     if (!cur) return;
     record('up', e);
-    setSummary(summarize(cur)); setStrokes((n) => n + 1); cur = null;
+    const s = summarize(cur); cur = null;
+    setSummary(s); setLog((l) => [...l, { ...s, refreshHz: refresh.hz() }]);
   };
 
   const clear = () => {
@@ -117,7 +120,7 @@ const CalibrateScreen: Component = () => {
   });
   onCleanup(() => refresh.stop());
 
-  const report = () => JSON.stringify({ ua: navigator.userAgent, api, refreshHz: refresh.hz(), ...summary() });
+  const report = () => JSON.stringify({ ua: navigator.userAgent, api, strokes: log() });
 
   return (
     <div class={styles.wrap} data-screen="project" data-testid="calibrate-screen">
@@ -140,7 +143,7 @@ const CalibrateScreen: Component = () => {
                 {([k, v]) => (<><dt class={styles.key}>{t(k)}</dt><dd class={styles.val}>{v}</dd></>)}
               </For>
             </dl>
-            <p class={styles.hint}>{t('calibrate.reportHint', { n: String(strokes()) })}</p>
+            <p class={styles.hint}>{t('calibrate.reportHint', { n: String(log().length) })}</p>
             <textarea class={styles.report} readOnly value={report()} data-testid="calibrate-report" />
           </>
         )}
