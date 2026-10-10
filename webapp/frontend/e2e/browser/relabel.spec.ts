@@ -13,6 +13,7 @@
  * class picker, so relabelling can only be exercised as a genuine annotator).
  */
 import { test, expect, type Page, type Browser, type Locator } from '@playwright/test';
+import { loginAsFreshUser } from './freshUser';
 
 const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
 const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
@@ -38,23 +39,6 @@ async function confirmTiling(page: Page, pid: string) {
   await expect(page.getByRole('button', { name: /save.*default/i })).toBeEnabled({ timeout: 5000 });
 }
 
-async function loginAsFreshUser(browser: Browser, username: string, invite: string): Promise<Page> {
-  const pw = 'TestPass99!';
-  const anonCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
-  const anonPage = await anonCtx.newPage();
-  const acceptResp = await anonPage.request.post(`/api/invite/${invite}`, { data: { password: pw, confirm: pw } });
-  expect(acceptResp.ok()).toBeTruthy();
-  await anonCtx.close();
-
-  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
-  const p = await ctx.newPage();
-  await p.goto('/login');
-  await p.fill('#login-username', username);
-  await p.fill('#login-password', pw);
-  await p.click('button[type=submit]');
-  await expect(p.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
-  return p;
-}
 
 /** Admin sets up a project with two compounds ('ok', 'danger') + a real annotator
  * roster member, then hands off to that annotator's own logged-in page for the
