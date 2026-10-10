@@ -14,8 +14,8 @@ The standing workflow for the Opus↔Sonnet implementer loop. (Mechanics of the 
 
 ## Cadence
 1. Opus writes a task doc in `docs/` (TDD where possible) and briefs Sonnet.
-2. Sonnet implements the **full plan or the agreed range** autonomously, runs **`uv run python scripts/gate.py`**
-   as the final step, and reports the digest. Opus does **not** interrupt mid-plan.
+2. Sonnet implements the **full plan or the agreed range** autonomously, self-gates with the
+   harness's managed **`gate`** tool as the final step, and reports the digest. Opus does **not** interrupt mid-plan.
 3. Opus **gates token-cheaply** — see *Gating* below. On green, Opus **commits** the phase.
 
 ## Gating (token-cheap)
@@ -23,12 +23,10 @@ The gate is automated in **`scripts/gate.py`** (run it with `uv run python scrip
 suites (auto-discovered from `webapp/tests/test_*.py`) + tsc + lint + build + full Playwright (against a
 managed non-forking server), with verbose output in log files and only a compact digest on stdout — the
 default digest includes per-stage PASS/FAIL, **test counts**, and the **names of any failures**. `-v`
-tails each stage's log; `-q` prints only the summary. **Opus runs the gate, NOT Sonnet**
-(changed 2026-07-02): Sonnet reliably backgrounds `scripts/gate.py` and stalls waiting for a completion
-signal that never reaches it, and each warm resume re-bills Sonnet's whole context (50–130k tokens — the
-single biggest token drain we've seen). Sonnet instead runs only its OWN targeted tests (`uv run python3
-webapp/tests/<the-file-it-wrote>.py`, foreground) to self-check, then reports what it changed; Opus runs
-the one authoritative `uv run python scripts/gate.py` in the worktree.
+tails each stage's log; `-q` prints only the summary. **Sonnet never runs `scripts/gate.py` directly**
+(it used to background it and stall, re-billing its whole context on every resume). It self-gates through
+the harness's managed `gate`/`check` tools (synchronous, managed lifecycle, digest only), and **Opus runs
+the one authoritative gate** — see *Where the authoritative gate runs* below.
 
 **The gate is concurrency-safe** — it uses an **ephemeral port** (bind `:0`) and a **per-run temp dir**
 (its own `HT_DATA_DIR` / Playwright fixture dir / `storageState`), so two gates can run at the same time
@@ -81,10 +79,10 @@ wander and read files it doesn't need.
 - **State the conventions every time** (the standing preamble): `uv run …` always (never bare
   `python3`); frontend is SolidJS + TypeScript + Vanilla Extract `.css.ts` with **no string class
   literals**; backend tests are **standalone scripts** (`uv run python3 webapp/tests/<name>.py`), not
-  pytest; **do NOT run `scripts/gate.py`** — you reliably background it and stall (Opus runs the gate).
+  pytest; **do NOT run `scripts/gate.py` yourself** — self-gate with the managed `gate`/`check` tools.
   Run only the specific `webapp/tests/<file>.py` you touched (foreground) to self-check, then report
-  exactly what you changed; **don't commit** (Opus runs the gate, commits, and merges); keep
-  `docs/SONNET_WORKLOG.md` updated; **never** read `reference/NautilusWebPortal`.
+  exactly what you changed; **don't commit** (Opus runs the gate, commits, and merges); **never** read
+  `reference/NautilusWebPortal`.
 - **Structure:** `Fix N` / step sections, an explicit **Out of scope**, and a **Done =** line (gate
   ALL GREEN + the manual checks that prove it).
 - **Pair every dispatch with a scope file** — see *Guard rails* below. Be **generous**: directory
@@ -96,51 +94,28 @@ ballooned to ~289k tokens). Standing rules:
 - **Fresh agent per independent task.** Spin up a new Sonnet scoped to one task rather than warm-resuming
   one agent across many. **Warm-resume only for revisions on the *same* task** (cache is still warm).
 - **Front-load everything** in the task doc so the agent doesn't burn tokens searching — see above.
-- **Opus runs the gate, not Sonnet** (see *Gating*). Sonnet backgrounding `scripts/gate.py` + stalling,
-  then a warm resume re-billing its whole context, was the single biggest token drain — removed by taking
-  the full gate off Sonnet entirely.
+- **Sonnet never runs `scripts/gate.py` directly** (see *Gating*). Backgrounding it + stalling, then a warm
+  resume re-billing its whole context, was the single biggest token drain — the managed `gate`/`check`
+  tools are synchronous and return only a digest.
 - **Opus does tiny fixes directly.** Dispatch overhead dwarfs a few-line change; don't spawn for those.
 - **Never read raw agent transcripts / giant JSON in full** — use `grep`/`jq`/scoped reads.
 
-## Guard rails — the PreToolUse hook
-A `PreToolUse` hook (`.claude/hooks/guard.py`, local/gitignored, stdlib-only, **fail-open**) backs the
-two rules above so they aren't just honour-system:
-- **Frugal reads (all agents, incl. Opus):** a whole-file `Read` of a text file longer than
-  `HT_READ_MAX_LINES` (default 400) with no `offset`/`limit` is **denied** — read a slice or `Grep`
-  first. Binary/image reads and reads that already pass `limit` are unaffected.
-- **Subagent file scope (Sonnet only):** the hook fires inside a subagent (detected by the `agent_id`
-  field, which main-agent calls lack), and **only when `.claude/agent_scope.json` exists**. It confines
-  the subagent's Edit/Write to `write_allow` globs and keeps its Reads out of `read_deny` (the Nautilus
-  reference, secrets). Main-agent (Opus) calls are never restricted; absent a scope file, nothing is.
-- **Workflow:** Opus copies `agent_scope.example.json` → `agent_scope.json` (generous directory globs)
-  right before dispatching, and removes it once the run is accepted. The deny message tells Sonnet to
-  **ask Opus to widen scope rather than work around it** — deliberate, since Sonnet invents hacky
-  workarounds under unreasonable constraints.
-- **Caveat (single global scope):** `agent_scope.json` describes ONE scope, so it's clean for
-  sequential dispatch but a shared union for parallel agents in separate worktrees. Fail-closed +
-  per-agent scoping is filed in `RAINYDAY.md`. **This is easy to forget** (it was skipped for the whole
-  2026-07-02 fix batch) — hence the checklist below.
+## Implementer confinement + dispatch (the glm-harness)
+Implementers run **inside the glm-harness jail** (a hardened, offline Docker container over a
+throwaway clone), not on the host. The harness owns the mechanics: per-lane token-login dispatch,
+Edit/Write confinement to the clone, the managed `gate`/`check` tools an implementer self-gates with
+(declared in this repo's `glm-harness.toml`), and extracting the result as a bundle for Opus to review.
+See the harness's own `README.md`/`SPEC.md`. (The earlier `.claude/agent_scope.json` + `guard.py`
+scheme described in older notes is retired.)
 
-## Orchestration scripts (Opus's tools — `~/projects/human_trainer/scripts/`)
-- **`status.sh`** — run it first each session (a fresh Opus resumes from it): derives "where things
-  stand" from git + docker (current branches, unmerged/in-flight branches, commits ahead of origin,
-  dirty trees, recent TASK_METRICS outcomes, live jail containers, whether a scope file is staged). No
-  hand-maintained state file to rot.
-- **`dispatch.sh`** — automates the dispatch checklist prep below (writes the scope file + appends the
-  metrics stub) and **guards the single-global-scope collision** (refuses a second concurrent
-  dispatch). `--clear` tears the scope file down after a run is accepted.
+A standing `frugal_reads` hook still applies to every agent, Opus included: a whole-file `Read` of a
+long text file is denied — read a slice or grep first.
 
-## Dispatch checklist (do EVERY spawn — don't skip)
-At the moment Opus fires a subagent, before the Agent call (mostly automated by `dispatch.sh`):
-1. **Write `.claude/agent_scope.json`** (generous directory globs for `write_allow`; `sandbox:true`
-   for a jailed run) so the guard confines the agent. Remove it once the run is merged/accepted
-   (`dispatch.sh --clear`).
-2. **Append a stub row to `docs/TASK_METRICS.md`** — date / task / branch / model, tokens+tools blank.
-   Opus writes this at dispatch (dispatch is serial → no concurrency), NOT the subagent, which can't
-   read its own counters.
-3. Dispatch a **fresh** subagent (one task; see Frugality). Pick the agent by role: `implementer`
-   (untrusted project work — leaf; jailed via guard Rule C once at parity, host + Rule B until then)
-   or `harness-maintainer` (trusted work ON the harness; host, real Docker — the one jail exception).
+## Where the authoritative gate runs
+`scripts/gate.py` is the gate everywhere. Opus runs it either natively (a host with the toolchains)
+or **containerized** via the harness (`glm_agent.py --gate-only`: the same jail, over a fresh clone of
+a committed ref, no agent attached). Both run every stage including the wasm byte-diff —
+`geo-engine/build-wasm.sh` makes the artifact byte-identical across host and jail builds.
 
-On completion: **fill the stub's tokens/tool-uses from the notification `<usage>` block** (the only
-reliable source), and record the merge SHA + gate digest.
+On completion of a dispatched task: record tokens/tool-uses from the notification `<usage>` block in
+`docs/TASK_METRICS.md`, plus the merge SHA + gate digest.
