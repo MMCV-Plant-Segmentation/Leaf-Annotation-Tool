@@ -34,9 +34,17 @@ COPY container_entry.py deploy_lib.py ./
 COPY alembic.ini ./
 COPY alembic/ alembic/
 
+# The committed geo-engine wasm — the server computes ALL stroke geometry through it
+# (webapp/geo_engine.py loads <repo>/geo-engine/geo_engine.wasm). Only the artifact, never the
+# Rust source: the image runs it via wasmtime, it never builds it.
+COPY geo-engine/geo_engine.wasm geo-engine/geo_engine.wasm
+
 # Bundle from frontend build (populated via bake context; overrides any static/dist
 # that might have slipped through)
 COPY --from=frontend-build /app/webapp/static/dist ./webapp/static/dist
+# ...and the browser's copy of the engine, which the frontend build's copy-wasm step places in
+# static/ (gitignored, so a clean checkout's COPY webapp/static/ above never carries it).
+COPY --from=frontend-build /app/webapp/static/geo_engine.wasm ./webapp/static/geo_engine.wasm
 
 # Install the project itself
 RUN uv sync --frozen --no-dev
