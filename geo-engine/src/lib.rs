@@ -3,8 +3,8 @@
 //! Two operations, both driven through a single JSON-over-linear-memory WASM ABI so the leaf FE
 //! (browser `WebAssembly`) and BE (`wasmtime-py`) call the exact same code:
 //!
-//! - `outline`: turn a raw stroke (polyline w/ per-vertex radius, or freehand brush points) into
-//!   filled ring(s).
+//! - `outline`: turn a raw stroke (polyline w/ per-vertex radius, or freehand brush points — the
+//!   brush is a round brush dragged along a smooth curve through its points) into filled ring(s).
 //! - `fuse`: union a set of polygons, repairing self-intersections and dropping interior holes,
 //!   on `i_overlay`'s **integer** boolean core (quantized to a fixed grid finer than 1/100 px so
 //!   the core is exact).
@@ -111,7 +111,7 @@ pub fn fuse_polygons(polygons: &[Vec<[f64; 2]>]) -> Vec<Vec<[f64; 2]>> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// outline: polyline (round joins/caps, per-vertex radius) and brush (freedraw).
+// outline: polyline (round joins/caps, per-vertex radius) and brush (smooth curve + capsules).
 // ---------------------------------------------------------------------------------------------
 
 /// Build a regular polygon approximating a circle of radius `r` centered at `c`.
@@ -124,12 +124,34 @@ fn circle_polygon(c: [f64; 2], r: f64) -> Vec<[f64; 2]> {
     points
 }
 
-/// The convex quad connecting the external tangent lines of two circles (c0, r0) and (c1, r1).
-/// This is the "cone frustum" silhouette of a segment whose two ends have different radii; when
-/// `r0 == r1` it degenerates to a rectangle. Returns `None` when the circles coincide or one
-/// fully contains the other (no external tangent line exists) — in that case the circle disks
-/// already added separately provide adequate coverage.
-fn tangent_quad(c0: [f64; 2], r0: f64, c1: [f64; 2], r1: f64) -> Option<Vec<[f64; 2]>> {
+/// Signed (shoelace) area — positive for CCW.
+fn signed_area(ring: &[[f64; 2]]) -> f64 {
+    let n = ring.len();
+    let mut sum = 0.0;
+    for i in 0..n {
+        let (x0, y0) = (ring[i][0], ring[i][1]);
+        let (x1, y1) = (ring[(i + 1) % n][0], ring[(i + 1) % n][1]);
+        sum += x0 * y1 - x1 * y0;
+    }
+    sum / 2.0
+}
+
+/// Wind a polygon CCW. `circle_polygon` winds CCW (standard math orientation); every piece must
+/// match so the union fills consistently under `FillRule::NonZero` — mismatched winding cancels
+/// the overlap instead of merging it, fragmenting the outline into multiple rings.
+fn ccw(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if signed_area(&ring) < 0.0 {
+        ring.reverse();
+    }
+    ring
+}
+
+/// The external tangent points of two circles (c0, r0) and (c1, r1), as `[t0a, t1a, t1b, t0b]`
+/// (side a: t0a→t1a, side b: t0b→t1b). Joined in that order they are the convex quad — the "cone
+/// frustum" silhouette of a segment whose two ends have different radii (a rectangle when
+/// `r0 == r1`). `None` when the circles coincide or one contains the other (no external tangent
+/// line) — the circle disks added separately then provide adequate coverage.
+fn tangent_points(c0: [f64; 2], r0: f64, c1: [f64; 2], r1: f64) -> Option<[[f64; 2]; 4]> {
     let dx = c1[0] - c0[0];
     let dy = c1[1] - c0[1];
     let dist = (dx * dx + dy * dy).sqrt();
@@ -141,33 +163,12 @@ fn tangent_quad(c0: [f64; 2], r0: f64, c1: [f64; 2], r1: f64) -> Option<Vec<[f64
     let angle = dy.atan2(dx);
     let a1 = angle + gamma;
     let a2 = angle - gamma;
-
-    let t0a = [c0[0] + r0 * a1.cos(), c0[1] + r0 * a1.sin()];
-    let t1a = [c1[0] + r1 * a1.cos(), c1[1] + r1 * a1.sin()];
-    let t1b = [c1[0] + r1 * a2.cos(), c1[1] + r1 * a2.sin()];
-    let t0b = [c0[0] + r0 * a2.cos(), c0[1] + r0 * a2.sin()];
-
-    // `circle_polygon` winds CCW (standard math orientation); this quad must match so the union
-    // fills consistently under `FillRule::NonZero` — mismatched winding cancels the overlap
-    // instead of merging it, fragmenting the outline into multiple rings.
-    let quad = vec![t0a, t1a, t1b, t0b];
-    let signed_area: f64 = {
-        let n = quad.len();
-        let mut sum = 0.0;
-        for i in 0..n {
-            let (x0, y0) = (quad[i][0], quad[i][1]);
-            let (x1, y1) = (quad[(i + 1) % n][0], quad[(i + 1) % n][1]);
-            sum += x0 * y1 - x1 * y0;
-        }
-        sum
-    };
-    let quad = if signed_area < 0.0 {
-        quad.into_iter().rev().collect()
-    } else {
-        quad
-    };
-
-    Some(quad)
+    Some([
+        [c0[0] + r0 * a1.cos(), c0[1] + r0 * a1.sin()],
+        [c1[0] + r1 * a1.cos(), c1[1] + r1 * a1.sin()],
+        [c1[0] + r1 * a2.cos(), c1[1] + r1 * a2.sin()],
+        [c0[0] + r0 * a2.cos(), c0[1] + r0 * a2.sin()],
+    ])
 }
 
 /// Outline a polyline stroke with per-vertex half-width (radius). Produces round joins (the
@@ -184,33 +185,37 @@ pub fn outline_polyline(points: &[[f64; 2]], radii: &[f64]) -> Vec<Vec<[f64; 2]>
 
     let n = points.len();
     let mut pieces: Vec<Vec<[f64; 2]>> = Vec::with_capacity(n * 2);
+    let quads: Vec<Option<[[f64; 2]; 4]>> = (0..n - 1)
+        .map(|i| tangent_points(points[i], radii[i].max(0.0), points[i + 1], radii[i + 1].max(0.0)))
+        .collect();
     // Round-join / cap disks ONLY at the endpoints and at real corners — a straight run's interior
     // disks are already covered by the tangent quads, so stamping one at every vertex is the t140
     // cost. Same shape (the quads carry the straight parts; disks round the actual turns).
     for i in 0..n {
         if i == 0 || i == n - 1 || significant_turn(points[i - 1], points[i], points[i + 1]) {
             pieces.push(circle_polygon(points[i], radii[i].max(0.0)));
+        } else if let (Some(a), Some(b)) = (quads[i - 1], quads[i]) {
+            // t158: a skipped (near-straight) join still leaves a thin wedge between the two quads'
+            // end edges on the OUTER side of the bend, reaching in to the centreline — a hairline
+            // crack in the outline. Cover the join with the thin parallelogram spanned by the two
+            // quads' join-side corners (it contains the vertex, so both wedges). Built ONLY from
+            // the quads' own corner points, it OVERLAPS them instead of abutting an edge that
+            // passes through the vertex only to rounding — abutting left zero-width spikes after
+            // quantization. Far cheaper than the disk it replaces.
+            let join = vec![b[3], a[2], b[0], a[1]];
+            if signed_area(&join).abs() > 1e-12 {
+                pieces.push(ccw(join));
+            }
         }
     }
-    for i in 0..n - 1 {
-        if let Some(quad) = tangent_quad(points[i], radii[i].max(0.0), points[i + 1], radii[i + 1].max(0.0)) {
-            pieces.push(quad);
-        }
-    }
+    pieces.extend(quads.into_iter().flatten().map(|q| ccw(q.to_vec())));
 
     fuse_polygons(&pieces)
 }
 
 /// Shoelace polygon area (unsigned).
 fn ring_area(ring: &[[f64; 2]]) -> f64 {
-    let n = ring.len();
-    let mut sum = 0.0;
-    for i in 0..n {
-        let (x0, y0) = (ring[i][0], ring[i][1]);
-        let (x1, y1) = (ring[(i + 1) % n][0], ring[(i + 1) % n][1]);
-        sum += x0 * y1 - x1 * y0;
-    }
-    (sum / 2.0).abs()
+    signed_area(ring).abs()
 }
 
 /// Keep only the largest-by-area ring, discarding negligible artifact rings — used where the
@@ -225,60 +230,90 @@ fn largest_ring_by_area(rings: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
     }
 }
 
-/// Outline a freehand brush stroke via `freedraw` (a Rust port of perfect-freehand).
+/// Brush centerline sampling: one spline sample per this many brush radii of chord length.
+/// Fine enough that each sample-to-sample turn on a curve is a few degrees (a smooth edge), coarse
+/// enough to keep the union small.
+const BRUSH_SPLINE_STEP_RADII: f64 = 0.5;
+
+/// Cap on spline samples per input span — bounds the cost of a long straight jump.
+const BRUSH_SPLINE_MAX_SUBDIV: usize = 32;
+
+/// Drop consecutive (near-)coincident points — repeats carry no shape, and a zero-length span has
+/// no direction (Safari doubles every Pencil move; strokes stored before t157 contain the repeats).
+fn dedupe_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(points.len());
+    for p in points {
+        match out.last() {
+            Some(q) if (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9 => {}
+            _ => out.push(*p),
+        }
+    }
+    out
+}
+
+/// One point of the CENTRIPETAL Catmull-Rom segment p1→p2 at parameter u∈[0,1] (Barry–Goldman
+/// form, knot spacing |Δp|^½). Centripetal parameterization never cusps or self-intersects within
+/// a segment, even at sharp corners or very uneven spacing.
+fn catmull_rom_point(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], u: f64) -> [f64; 2] {
+    let knot = |a: [f64; 2], b: [f64; 2]| ((b[0] - a[0]).hypot(b[1] - a[1])).sqrt().max(1e-9);
+    let t0 = 0.0;
+    let t1 = t0 + knot(p0, p1);
+    let t2 = t1 + knot(p1, p2);
+    let t3 = t2 + knot(p2, p3);
+    let t = t1 + u * (t2 - t1);
+    let lerp = |a: [f64; 2], b: [f64; 2], ta: f64, tb: f64| {
+        let (wa, wb) = ((tb - t) / (tb - ta), (t - ta) / (tb - ta));
+        [wa * a[0] + wb * b[0], wa * a[1] + wb * b[1]]
+    };
+    let a1 = lerp(p0, p1, t0, t1);
+    let a2 = lerp(p1, p2, t1, t2);
+    let a3 = lerp(p2, p3, t2, t3);
+    let b1 = lerp(a1, a2, t0, t2);
+    let b2 = lerp(a2, a3, t1, t3);
+    lerp(b1, b2, t1, t2)
+}
+
+/// Resample a (deduped) polyline as a smooth curve THROUGH every input point: a centripetal
+/// Catmull-Rom spline, each span subdivided at ≤ `step` chord length. The ends use reflected
+/// phantom points so the curve leaves/arrives along the first/last span.
+fn smooth_centerline(points: &[[f64; 2]], step: f64) -> Vec<[f64; 2]> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    let reflect = |a: [f64; 2], b: [f64; 2]| [2.0 * a[0] - b[0], 2.0 * a[1] - b[1]];
+    let mut out = Vec::with_capacity(n * 4);
+    out.push(points[0]);
+    for i in 0..n - 1 {
+        let p0 = if i == 0 { reflect(points[0], points[1]) } else { points[i - 1] };
+        let (p1, p2) = (points[i], points[i + 1]);
+        let p3 = if i + 2 < n { points[i + 2] } else { reflect(points[n - 1], points[n - 2]) };
+        let len = (p2[0] - p1[0]).hypot(p2[1] - p1[1]);
+        let k = ((len / step).ceil() as usize).clamp(1, BRUSH_SPLINE_MAX_SUBDIV);
+        for j in 1..k {
+            out.push(catmull_rom_point(p0, p1, p2, p3, j as f64 / k as f64));
+        }
+        out.push(p2); // land exactly on every input point
+    }
+    out
+}
+
+/// Outline a freehand brush stroke (t158): a round brush of diameter `size` dragged along a smooth
+/// curve through the input points — the curve resampled finely, then outlined by the same
+/// capsule union as `outline_polyline` (constant radius). The edge is exactly `size/2` from the
+/// curve everywhere, so it is smooth and contains every input point by construction (no
+/// containment patches). Replaces the perfect-freehand ribbon ∪ per-point disks, whose smoothed
+/// ribbon cut inside curves and let the raw-point disks poke out as one bump per point.
 pub fn outline_brush(points: &[[f64; 2]], size: f64) -> Vec<Vec<[f64; 2]>> {
-    if points.is_empty() {
+    let pts = dedupe_points(points);
+    if pts.is_empty() {
         return Vec::new();
     }
-
-    let input: Vec<freedraw::InputPoint> = points
-        .iter()
-        .map(|p| freedraw::InputPoint::Array([p[0], p[1]], None))
-        .collect();
-
-    let options = freedraw::StrokeOptions {
-        size: Some(size.max(0.0)),
-        thinning: Some(0.0),
-        smoothing: Some(0.5),
-        simulate_pressure: Some(false),
-        ..Default::default()
-    };
-
-    let outline = freedraw::get_stroke(&input, &options);
-
-    // `freedraw`'s ported stroke-outline algorithm can round sharp corners and cap orientation
-    // tightly enough that it doesn't strictly contain every input sample (most visible at the
-    // caps and at sharp direction changes) — fuse in a disk of the stroke's half-width at every
-    // input point so the outline always contains the whole input path, using the same
-    // integer-core union as `fuse_polygons`/`outline_polyline`.
     let radius = size.max(0.0) / 2.0;
-    let mut pieces: Vec<Vec<[f64; 2]>> = Vec::with_capacity(points.len() + 1);
-    if outline.len() >= 3 {
-        pieces.push(outline);
-    }
-    // Coverage disks: freedraw's ribbon covers dense input but can short-ribbon on long/straight runs.
-    // Instead of a full disk at EVERY sample (the t140 cost), add one every ~radius of arc length (+
-    // both endpoints). Spacing ≤ radius keeps consecutive disks overlapping, so a far disk can never
-    // disconnect and get dropped by `largest_ring_by_area` (the sparse/collinear coverage bug). Same
-    // shape — freedraw's outline is unchanged; these only guarantee containment.
-    let step = (radius * 0.34).max(1.0);
-    let last = points.len() - 1;
-    let mut acc = step; // force a disk at the first point
-    for (i, p) in points.iter().enumerate() {
-        if i > 0 {
-            let (dx, dy) = (p[0] - points[i - 1][0], p[1] - points[i - 1][1]);
-            acc += (dx * dx + dy * dy).sqrt();
-        }
-        if i == 0 || i == last || acc >= step {
-            pieces.push(circle_polygon(*p, radius));
-            acc = 0.0;
-        }
-    }
-
-    // `freedraw`'s ported outline can leave a tiny self-intersection sliver (a near-zero-area
-    // artifact ring) near sharp direction changes; a brush stroke is conceptually one contiguous
-    // shape, so keep only the largest ring by area and drop any negligible artifacts.
-    largest_ring_by_area(fuse_polygons(&pieces))
+    let path = smooth_centerline(&pts, (radius * BRUSH_SPLINE_STEP_RADII).max(0.5));
+    let radii = vec![radius; path.len()];
+    // A brush stroke is one contiguous shape; drop any negligible artifact ring from the union.
+    largest_ring_by_area(outline_polyline(&path, &radii))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -626,6 +661,25 @@ mod tests {
         );
     }
 
+    /// t158: near-straight interior joins skip their disk (t140) — the outline must still have no
+    /// crack there. A finely sampled arc (every turn < 2.5°) must keep its outer edge at R + r.
+    #[test]
+    fn outline_polyline_gentle_curve_has_no_join_cracks() {
+        let (big_r, r) = (100.0, 8.0);
+        let points: Vec<[f64; 2]> = (0..40).map(|i| {
+            let a = i as f64 * 0.03; // ≈ 1.7° per vertex: every join skipped
+            [big_r * a.cos(), big_r * a.sin()]
+        }).collect();
+        let rings = outline_polyline(&points, &vec![r; points.len()]);
+        assert_eq!(rings.len(), 1);
+        for v in &rings[0] {
+            let (d, a) = (v[0].hypot(v[1]), v[1].atan2(v[0]));
+            if a > 0.05 && a < 1.1 && d > big_r - 1.0 && d < big_r + 2.0 * r {
+                assert!(d > big_r + r - 0.1, "crack: outer-edge vertex at angle {a:.3} is {d:.3} from centre");
+            }
+        }
+    }
+
     // --- outline: brush -------------------------------------------------------------------------
 
     #[test]
@@ -639,6 +693,76 @@ mod tests {
         for p in &points {
             assert!(contains_point(ring, *p), "brush outline should contain input point {p:?}");
         }
+    }
+
+    /// t158: a sparsely sampled curve (60 Hz Pencil: points ~22 px apart on a 16 px brush) must
+    /// give a SMOOTH edge, not one bump per input point. Points on a circle of radius 100 → the
+    /// outer edge must stay at 100 + r everywhere (the old ribbon ∪ per-point-disk outline
+    /// scalloped between points).
+    #[test]
+    fn outline_brush_sparse_arc_has_smooth_edge_no_scallops() {
+        let (cx, cy, big_r, size) = (0.0, 0.0, 100.0, 16.0);
+        let step = 0.22; // radians ≈ 22 px of arc
+        let points: Vec<[f64; 2]> = (0..12)
+            .map(|i| {
+                let a = i as f64 * step;
+                [cx + big_r * a.cos(), cy + big_r * a.sin()]
+            })
+            .collect();
+        let rings = outline_brush(&points, size);
+        assert_eq!(rings.len(), 1);
+        let r = size / 2.0;
+        // Only judge the outer edge away from the caps: angles strictly inside the sampled span.
+        let (a_lo, a_hi) = (step, 10.0 * step);
+        let mut judged = 0;
+        for v in &rings[0] {
+            let d = ((v[0] - cx).powi(2) + (v[1] - cy).powi(2)).sqrt();
+            let a = (v[1] - cy).atan2(v[0] - cx);
+            if d > big_r && a > a_lo && a < a_hi {
+                judged += 1;
+                assert!(
+                    (d - (big_r + r)).abs() < 0.3,
+                    "outer edge at angle {a:.3} is {d:.3} from centre, want {:.1} ± 0.3 (scallop)",
+                    big_r + r
+                );
+            }
+        }
+        assert!(judged >= 10, "too few outer-edge vertices judged ({judged})");
+    }
+
+    /// t158: the outline follows the drawn path — around a sparse right-angle corner no part of the
+    /// edge strays more than the brush radius from the input polyline, plus the small overshoot any
+    /// curve that passes THROUGH the points makes approaching a corner (centripetal Catmull-Rom at a
+    /// right angle: 1.63 px on these 22 px spans, ≈ 7%; bound 1.8 px).
+    #[test]
+    fn outline_brush_corner_stays_within_radius_of_path() {
+        let points = vec![[0.0, 0.0], [22.0, 0.0], [44.0, 0.0], [44.0, 22.0], [44.0, 44.0]];
+        let size = 16.0;
+        let rings = outline_brush(&points, size);
+        assert_eq!(rings.len(), 1);
+        for p in &points {
+            assert!(contains_point(&rings[0], *p), "outline must contain input point {p:?}");
+        }
+        let seg_dist = |p: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let t = (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            ((p[0] - a[0] - t * dx).powi(2) + (p[1] - a[1] - t * dy).powi(2)).sqrt()
+        };
+        for v in &rings[0] {
+            let d = points.windows(2).map(|w| seg_dist(*v, w[0], w[1])).fold(f64::INFINITY, f64::min);
+            assert!(d <= size / 2.0 + 1.8, "edge vertex {v:?} is {d:.3} from the path (> radius + overshoot)");
+        }
+    }
+
+    /// t158: exact repeated input points (Safari's doubled Pencil moves, already in stored strokes)
+    /// don't change the outline.
+    #[test]
+    fn outline_brush_ignores_repeated_points() {
+        let pts = vec![[0.0, 0.0], [20.0, 5.0], [40.0, 0.0], [60.0, 10.0]];
+        let doubled: Vec<[f64; 2]> = pts.iter().flat_map(|p| [*p, *p]).collect();
+        let a = polygon_area(&outline_brush(&pts, 10.0)[0]);
+        let b = polygon_area(&outline_brush(&doubled, 10.0)[0]);
+        assert!((a - b).abs() < 1e-6 * a.max(1.0), "area {a} vs doubled {b}");
     }
 
     // --- ABI round-trip --------------------------------------------------------------------------

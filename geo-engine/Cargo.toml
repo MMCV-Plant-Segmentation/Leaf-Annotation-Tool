@@ -12,8 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Boolean/fusion on an integer core (spike-verified major; pure Rust, wasm-clean).
 i_overlay = "6"
-# perfect-freehand Rust port for the brush outline (MIT, pure Rust, wasm-clean).
-freedraw = "1"
 # JSON message ABI (points+sizes+ops in -> rings out), driven from wasmtime-py + browser WebAssembly.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

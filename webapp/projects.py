@@ -13,7 +13,6 @@ webapp/imaging.py. This module is DB + HTTP glue only.
 from __future__ import annotations
 
 import json
-import math
 import random
 import threading
 import uuid
@@ -183,51 +182,15 @@ def _stroke_polygon(points, stroke_width, outline=None):
         return None
 
 
-def _densify(pts: list, size: float, max_points: int = 2000) -> list:
-    """Linearly interpolate extra samples into any segment of `pts` (`[(x,y),...]`) that's
-    long relative to the brush `size`, so a straight run between just a couple of
-    far-apart points isn't under-sampled.
-
-    A real freehand brush drag naturally emits many close-together mousemove samples; a
-    programmatic / test-authored 2-point straight line does not. The engine's
-    `outline_brush` op (a Rust port of perfect-freehand, fused with a same-radius circle
-    at every INPUT point so the outline always covers each one) can still under-cover the
-    straight run BETWEEN two sparse, far-apart points — the freedraw curve and the two
-    endpoint circles can end up disjoint, and only the largest piece survives. Segments no
-    longer than `size` are left untouched (already dense enough relative to the brush
-    radius — this is also what keeps an ordinary, already-densely-sampled brush stroke
-    input bit-identical to a raw engine call). Longer segments get intermediate points
-    every ~`size/2`, capped so total point count stays bounded by `max_points`.
-    """
-    if len(pts) < 2 or size <= 0:
-        return pts
-    step = max(size / 2, 1e-6)
-    total = sum(math.dist(pts[i - 1], pts[i]) for i in range(1, len(pts)))
-    if total <= 0:
-        return pts
-    step = max(step, total / max_points)
-    out = [pts[0]]
-    for i in range(1, len(pts)):
-        x0, y0 = pts[i - 1]
-        x1, y1 = pts[i]
-        d = math.dist((x0, y0), (x1, y1))
-        if d <= size:
-            out.append((x1, y1))
-            continue
-        n = max(1, int(d // step))
-        for k in range(1, n + 1):
-            t = k / n
-            out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
-    return out
-
-
 def _compute_stroke_outline(points, stroke_width, tool='brush'):
     """t103 Phase D — compute a stroke's outline SERVER-SIDE via the geo-engine wasm
     module; the SINGLE source of stroke geometry (any wire `outline` is ignored — this
     replaces it).
 
-    Tool-aware: `brush` strokes use the engine's BRUSH op (perfect-freehand-equivalent)
-    at the stroke width; everything else (`polyline`) uses the PER-VERTEX-radius
+    Tool-aware: `brush` strokes use the engine's BRUSH op (a round brush of the stroke
+    width dragged along a smooth curve through the points — t158; it covers every point by
+    construction, so sparse input needs no densifying and the FE preview, which calls the
+    same op on the same points, matches the stored outline exactly); everything else (`polyline`) uses the PER-VERTEX-radius
     polyline op — a polyline point may be `[x, y, size]`, radius = size/2, falling back
     to `stroke_width/2` for a legacy 2-tuple point (t62 taper, reproduced server-side).
 
@@ -251,7 +214,7 @@ def _compute_stroke_outline(points, stroke_width, tool='brush'):
                 radii.append(r if r is not None else width / 2)
             rings = geo_engine.outline_polyline(pts, radii)
         else:
-            rings = geo_engine.outline_brush(_densify(pts, width), width)
+            rings = geo_engine.outline_brush(pts, width)
     except geo_engine.GeoEngineError:
         return None
     if not rings:

@@ -12,10 +12,10 @@ pre-optimization on REALISTIC strokes — dense drags for brush, sparse clicked 
 Green now (current == golden) and MUST STAY green through the optimization; perf itself is measured
 out-of-band (a hard time budget in a test flakes across machines).
 
-NB the RAW `outline_brush` drops a far disk for SPARSE/collinear input (short freedraw ribbon →
-disconnected disk → `largest_ring_by_area` discards it); that's why D1 densifies before calling it and
-why brush fixtures here are realistic DENSE drags. Any disk-subsampling in Phase 1 must not reintroduce
-that gap — the COVERAGE check guards it.
+NB brush fixtures here are realistic DENSE drags. Since t158 the brush op is a round brush dragged
+along a smooth curve through the points (no longer perfect-freehand ∪ disks), so SPARSE input is
+covered by construction and no longer densified first; on these dense drags it stays within PARITY_TOL
+of the pre-t158 golden. Sparse/curved behaviour is pinned by the geo-engine crate's own tests.
 
 Run: uv run python webapp/tests/test_outline_parity.py
 """

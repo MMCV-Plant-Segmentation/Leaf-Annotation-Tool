@@ -3,16 +3,9 @@
 version = 4
 
 [[package]]
-name = "freedraw"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4670cd0ba2bee070cd4931b9baa8a4e6825b074ee5eb9fa3b2f1e7a8f6437a03"
-
-[[package]]
 name = "geo-engine"
 version = "0.1.0"
 dependencies = [
- "freedraw",
  "i_overlay",
  "serde",
  "serde_json",

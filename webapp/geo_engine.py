@@ -95,8 +95,8 @@ def outline_polyline(points: list, radii: list) -> list[list[list[float]]]:
 
 
 def outline_brush(points: list, size: float) -> list[list[list[float]]]:
-    """Outline a freehand brush stroke (perfect-freehand-equivalent) of constant `size`
-    (diameter). Returns a list of rings."""
+    """Outline a freehand brush stroke of constant `size` (diameter): a round brush dragged
+    along a smooth curve through the points (t158). Returns a list of rings."""
     return _rings(_call({'op': 'outline', 'kind': 'brush',
                           'points': [[float(p[0]), float(p[1])] for p in points],
                           'size': float(size)}))
