@@ -120,6 +120,17 @@ const CalibrateScreen: Component = () => {
   });
   onCleanup(() => refresh.stop());
 
+  // Plain-http origins (the iPad hits http://dev-host) have no async Clipboard API, so fall back
+  // to selecting the textarea + the legacy copy command, which still works there.
+  let reportEl!: HTMLTextAreaElement;
+  const [copied, setCopied] = createSignal(false);
+  const copyReport = async () => {
+    try { await navigator.clipboard.writeText(report()); } catch {
+      reportEl.focus(); reportEl.select(); reportEl.setSelectionRange(0, reportEl.value.length);
+      document.execCommand('copy');
+    }
+    setCopied(true); setTimeout(() => setCopied(false), 1500);
+  };
   const report = () => JSON.stringify({ ua: navigator.userAgent, api, strokes: log() });
 
   return (
@@ -144,7 +155,10 @@ const CalibrateScreen: Component = () => {
               </For>
             </dl>
             <p class={styles.hint}>{t('calibrate.reportHint', { n: String(log().length) })}</p>
-            <textarea class={styles.report} readOnly value={report()} data-testid="calibrate-report" />
+            <button class={styles.button} onClick={copyReport} data-testid="calibrate-copy">
+              {copied() ? t('calibrate.copied') : t('calibrate.copy')}
+            </button>
+            <textarea ref={reportEl} class={styles.report} readOnly value={report()} data-testid="calibrate-report" />
           </>
         )}
       </Show>

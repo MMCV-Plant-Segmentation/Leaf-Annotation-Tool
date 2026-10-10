@@ -365,5 +365,7 @@
   "calibrate.altitude": "Altitude angle reported",
   "calibrate.yes": "yes",
   "calibrate.no": "no",
-  "calibrate.reportHint": "{n} stroke(s) recorded. Report covers all of them (select all and copy):"
+  "calibrate.reportHint": "{n} stroke(s) recorded. Report covers all of them (select all and copy):",
+  "calibrate.copy": "Copy report",
+  "calibrate.copied": "Copied"
 }

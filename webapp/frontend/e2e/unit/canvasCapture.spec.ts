@@ -9,6 +9,8 @@
  *  CC2  getCoalescedEvents() is expanded — a single pointermove carrying 3 coalesced
  *       sub-samples contributes 3 samples (the max-rate capture, not one-per-frame).
  *  CC3  samples ride ONLY with a persisted brush stroke — an eraser gesture commits none.
+ *  CC4  t157: an exact repeat of the previous pointermove (iPad Safari doubles every Pencil move)
+ *       adds neither a draft point nor a sample; a same-time move at a NEW position still counts.
  */
 
 import { test, expect } from '@playwright/test';
@@ -119,5 +121,20 @@ test.describe('t141 P1b — brush max-rate capture', () => {
     expect(committed).toHaveLength(1);
     expect(committed[0].kind).toBe('erase');
     expect(committed[0].samples).toBeUndefined();
+  });
+
+  test('CC4 — exact repeated pointermoves are dropped (Safari Pencil double delivery)', async () => {
+    const { cx, committed } = await makeInteraction('brush');
+    cx.onPointerDown(ptrEvent(100, 200, 1, { t: 1000 }));
+    cx.onPointerMove(ptrEvent(120, 210, 1, { t: 1016, pressure: 0.4 }));
+    cx.onPointerMove(ptrEvent(120, 210, 1, { t: 1016, pressure: 0.4 }));  // the double
+    cx.onPointerMove(ptrEvent(130, 212, 1, { t: 1016, pressure: 0.4 }));  // same t, new place: kept
+    cx.onPointerMove(ptrEvent(140, 215, 1, { t: 1033, pressure: 0.4 }));
+    cx.onPointerMove(ptrEvent(140, 215, 1, { t: 1033, pressure: 0.4 }));  // the double
+    cx.onPointerUp(ptrEvent(150, 216, 1, { t: 1040 }));
+
+    const s = committed[0].samples!;
+    expect(s).toHaveLength(5);  // down + 3 distinct moves + up
+    expect(s.map((p) => p.x)).toEqual([100, 120, 130, 140, 150]);
   });
 });

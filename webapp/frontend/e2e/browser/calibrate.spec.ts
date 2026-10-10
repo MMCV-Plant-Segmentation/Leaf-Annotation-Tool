@@ -44,6 +44,9 @@ test('calibrate — the report accumulates strokes and stays still between them'
   expect(JSON.parse(before).strokes).toHaveLength(2);
   await page.waitForTimeout(2500);  // the live refresh meter ticks meanwhile; the report must not
   expect(await report.inputValue()).toBe(before);
+  const copy = page.getByTestId('calibrate-copy');
+  await copy.click();
+  await expect(copy).toHaveText(/copied/i);
 });
 
 test('calibrate — Back returns to the previous page', async ({ page }) => {

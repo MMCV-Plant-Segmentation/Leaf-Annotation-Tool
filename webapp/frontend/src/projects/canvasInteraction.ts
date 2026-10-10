@@ -2,7 +2,7 @@ import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
 import { firePolylineClick } from './canvasPolyline';
 import type { VertexIndex } from './canvasSnap';
-import { createSampleCapture, type PointerSample } from './canvasCapture';
+import { createSampleCapture, createRepeatFilter, type PointerSample } from './canvasCapture';
 
 export interface CanvasInteractionOpts {
   getSvg: () => SVGSVGElement | undefined; vb: Accessor<ViewBox>; setVb: Setter<ViewBox>; tool: Accessor<Tool>;
@@ -55,7 +55,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     if (!ctm) return [clientX, clientY];
     return [(clientX - ctm.e) / ctm.a, (clientY - ctm.f) / ctm.d];
   };
-  const capture = createSampleCapture(toImage);  // t141: max-rate rich brush capture
+  const capture = createSampleCapture(toImage), isRepeat = createRepeatFilter();  // t141 capture; t157 drop Safari's doubled Pencil moves
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
 
@@ -129,7 +129,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const onPointerLeave = () => { setHoverImg(null); };
   const onPointerMove = (e: PointerEvent) => {
-    setHoverImg(toImage(e.clientX, e.clientY));
+    if (isRepeat(e)) return; setHoverImg(toImage(e.clientX, e.clientY));
     if (touches.has(e.pointerId)) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
       touches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY, imgX: ix, imgY: iy });

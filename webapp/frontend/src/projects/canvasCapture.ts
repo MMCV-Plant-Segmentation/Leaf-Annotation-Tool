@@ -31,3 +31,17 @@ export function createSampleCapture(toImage: (clientX: number, clientY: number) 
     take: () => samples,
   };
 }
+
+/** t157: iPad Safari delivers every Apple Pencil pointermove TWICE (identical timestamp, position
+ * and pressure — measured on the calibration page; touch/mouse don't). Returns a predicate that is
+ * true for such an exact repeat of the same pointer's previous move, so the caller drops it before
+ * it doubles the draft points and the captured samples. */
+export function createRepeatFilter() {
+  const last = new Map<number, string>();
+  return (e: PointerEvent): boolean => {
+    const key = `${e.timeStamp}|${e.clientX}|${e.clientY}|${e.pressure}`;
+    if (last.get(e.pointerId) === key) return true;
+    last.set(e.pointerId, key);
+    return false;
+  };
+}
