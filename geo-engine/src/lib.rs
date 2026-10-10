@@ -86,7 +86,8 @@ fn dequantize_contour(points: &[IntPoint]) -> Vec<[f64; 2]> {
 
 /// Union `polygons` (each an outer contour, no holes expected on input — but self-intersecting
 /// input, e.g. a bowtie, is repaired), drop any interior holes produced by the union, and return
-/// the resulting outer ring(s). Disjoint input polygons produce multiple output rings.
+/// the resulting outer ring(s). Disjoint input polygons produce multiple output rings. Input
+/// winding direction does not matter.
 pub fn fuse_polygons(polygons: &[Vec<[f64; 2]>]) -> Vec<Vec<[f64; 2]>> {
     let total_points: usize = polygons.iter().map(|p| p.len()).sum();
     let mut overlay = Overlay::new(total_points);
@@ -94,7 +95,11 @@ pub fn fuse_polygons(polygons: &[Vec<[f64; 2]>]) -> Vec<Vec<[f64; 2]>> {
         if polygon.len() < 3 {
             continue;
         }
-        let contour = quantize_contour(polygon);
+        // t158: union semantics must not depend on each input's winding. Under NonZero a CW
+        // contour overlapping a CCW one CANCELS the overlap (winding 0) instead of merging —
+        // so wind every input CCW first. (Callers pass rings from many sources — engine output,
+        // stored geometry, shapely-repaired rings — whose orientation is not guaranteed.)
+        let contour = quantize_contour(&ccw(polygon.clone()));
         overlay.add_contour(&contour, ShapeType::Subject);
     }
 
@@ -595,6 +600,20 @@ mod tests {
         let area = polygon_area(&rings[0]);
         assert!((area - outer_area).abs() < 1.0, "hole-dropped area {area} should equal outer area {outer_area}");
         let _ = outer;
+    }
+
+    /// t158: fuse is a UNION — the winding direction of each input must not matter. A CW and a
+    /// CCW square that overlap must merge into ONE ring of the union's area. (Mixed winding under
+    /// NonZero used to cancel the overlap: the merge split in two and the server kept only the
+    /// larger piece — a whole stroke vanished, leaving a cut-out.)
+    #[test]
+    fn fuse_mixed_winding_overlapping_squares_merge_into_one_ring() {
+        let ccw_sq = square(0.0, 0.0, 10.0, 10.0);
+        let mut cw_sq = square(5.0, 0.0, 15.0, 10.0);
+        cw_sq.reverse();
+        let rings = fuse_polygons(&[ccw_sq, cw_sq]);
+        assert_eq!(rings.len(), 1, "mixed-winding overlap must union to one ring, got {}", rings.len());
+        assert!((polygon_area(&rings[0]) - 150.0).abs() < 1e-6, "area {}", polygon_area(&rings[0]));
     }
 
     #[test]

@@ -236,7 +236,18 @@ def _poly_rings(poly) -> list:
         # CTM, so snapping to whole pixels loses accuracy and collapses a <1px-wide (thin/
         # vertical) stroke's two edges onto one column → a zero-area path that vanishes.
         return [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in ring.coords]
-    return [coords(poly.exterior)]
+
+    def full(ring):
+        return [[float(pt[0]), float(pt[1])] for pt in ring.coords]
+
+    # t158: 0.01 px rounding can make a thin, densely-vertexed ring SELF-INTERSECT (vertices
+    # closer than the rounding step cross over). A stored invalid ring is later "repaired" on
+    # read with a winding flip that made merges drop whole strokes — so never store one: fall
+    # back to full precision (the engine's own grid, always valid) when rounding breaks it.
+    rounded = coords(poly.exterior)
+    if poly.is_valid and not ShapelyPolygon(rounded).is_valid:
+        return [full(poly.exterior)]
+    return [rounded]
 
 
 def _exterior_only(geom):
