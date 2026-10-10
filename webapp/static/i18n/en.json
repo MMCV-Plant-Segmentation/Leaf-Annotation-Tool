@@ -346,6 +346,7 @@
   "calibrate.hint": "Draw on the pad with your pen, finger or mouse. Blue dots = every sample the browser delivered; orange = one per event.",
   "calibrate.api": "getCoalescedEvents: {coalesced} · getPredictedEvents: {predicted} · pointerrawupdate: {raw}",
   "calibrate.refresh": "Display refresh",
+  "calibrate.refreshLive": "Display refresh: {hz} Hz",
   "calibrate.pointerType": "Device",
   "calibrate.duration": "Stroke duration",
   "calibrate.moveEvents": "Move events (direct)",

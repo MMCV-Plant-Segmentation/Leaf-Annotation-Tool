@@ -35,7 +35,7 @@ test('CS2 — rates use distinct timestamps', () => {
 test('CS3 — coalesced, raw-update and field ranges', () => {
   const events = [
     ev('down', 0, 0, 0, { pressure: 0.1 }), ev('raw', 4, 1), ev('move', 8, 2, 3, { pressure: 0.4, tiltX: 40 }),
-    ev('move', 16, 3, 1, { altitude: 1.2 }), ev('up', 20, 4, 0, { pressure: 0 }),
+    ev('move', 16, 3, 1, { pressure: 0.2, altitude: 1.2 }), ev('up', 20, 4, 0, { pressure: 0 }),
   ];
   const s = summarize({ events, samples: [], delegatedMoves: 2 });
   expect(s.coalescedTotal).toBe(4);

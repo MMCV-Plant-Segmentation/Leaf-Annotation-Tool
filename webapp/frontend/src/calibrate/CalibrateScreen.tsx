@@ -132,7 +132,7 @@ const CalibrateScreen: Component = () => {
       <p class={styles.hint}>
         {t('calibrate.api', { coalesced: String(api.coalesced), predicted: String(api.predicted), raw: String(api.rawupdate) })}
       </p>
-      <Show when={summary()} fallback={<p class={styles.hint}>{t('calibrate.refresh')}: {refresh.hz()} Hz</p>}>
+      <Show when={summary()} fallback={<p class={styles.hint}>{t('calibrate.refreshLive', { hz: String(refresh.hz()) })}</p>}>
         {(s) => (
           <>
             <dl class={styles.stats} data-testid="calibrate-stats">
