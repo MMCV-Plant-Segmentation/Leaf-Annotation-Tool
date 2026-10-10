@@ -139,24 +139,19 @@ def rust_stages(log_dir: Path, skip_wasm_diff: bool = False) -> list[Stage]:
     it byte-for-byte against the committed `geo-engine/geo_engine.wasm` — the pinned toolchain
     (`geo-engine/rust-toolchain.toml`) makes the build reproducible WITHIN a build environment.
 
-    `skip_wasm_diff` (t137): the committed wasm is byte-reproducible within one environment, but NOT
-    yet across environments — the jail and the host embed different absolute paths (crate/registry/
-    sysroot) into the artifact, so a jail rebuild != the host-built committed bytes. Until that's
-    fixed (--remap-path-prefix, t137), the byte-diff freshness check is the AUTHORITATIVE (host) gate's
-    job — the managed in-jail `gate`/`check` pass this flag to SKIP the diff (still running `cargo test`
-    for correctness), and Opus's host gate runs it in full. This mirrors the existing division of labour
-    (Opus runs the one authoritative gate).
+    `skip_wasm_diff`: an escape hatch to skip the byte-diff (still running `cargo test`). Since t137
+    (`build-wasm.sh` remaps embedded paths) the build is byte-reproducible ACROSS environments, so no
+    standard gate passes it — the containerized authoritative gate runs the diff in full.
     """
     stages: list[Stage] = []
 
-    # The environment's global CARGO_TARGET_DIR (=/build) isn't a writable/exec-capable mount in
-    # every jail this gate runs in, and a system tmpdir (e.g. `/tmp`) can be noexec for build
-    # scripts under the runner's sandbox — so build into a target dir colocated with the crate
-    # (gitignored: see `.gitignore`'s "geo-engine/target/" entry), which every jail variant we've
-    # seen has writable+exec. The wasm's byte content doesn't depend on the target dir's location
-    # (verified: building the same source into two different target dirs is byte-identical), so
+    # Honour the environment's CARGO_TARGET_DIR when set: the glm-harness jail mounts /work NOEXEC,
+    # so a build script compiled under the crate could never run there — the jail hands the gate's
+    # runner its own exec-capable target dir via this var. Otherwise (host / dev container) build
+    # into a target dir colocated with the crate (gitignored: "geo-engine/target/"). The wasm's
+    # bytes don't depend on the target dir's location (verified byte-identical across dirs), so
     # this doesn't affect the reproducibility check below.
-    target_dir = str(GE / 'target')
+    target_dir = os.environ.get('CARGO_TARGET_DIR') or str(GE / 'target')
     cargo_env = {'CARGO_TARGET_DIR': target_dir}
 
     test_log = log_dir / 'rust-test.log'
@@ -171,7 +166,7 @@ def rust_stages(log_dir: Path, skip_wasm_diff: bool = False) -> list[Stage]:
     # so the embedded source paths (and therefore the bytes) don't depend on WHERE it was built.
     # A raw `cargo build` here would reintroduce the host-vs-jail byte drift this check trips on.
     build_ok = run(
-        [str(GE / 'build-wasm.sh')],
+        ['bash', str(GE / 'build-wasm.sh')],  # via bash: /work may be noexec (jail)
         build_log, env=cargo_env, cwd=GE,
     )
     built_wasm = Path(target_dir) / 'wasm32-unknown-unknown' / 'release' / 'geo_engine.wasm'
