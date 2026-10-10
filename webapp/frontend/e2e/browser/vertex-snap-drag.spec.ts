@@ -82,6 +82,7 @@ async function setup(page: Page, browser: Browser) {
   await p.goto('/login');
   await p.fill('#login-username', username); await p.fill('#login-password', pw);
   await p.click('button[type=submit]');
+  await p.waitForURL((url) => url.pathname === '/', { timeout: 8000 }); // land the post-login redirect before any goto
   await expect(p.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
   return { p, batchId, username, canvasUrl, tiles };
 }

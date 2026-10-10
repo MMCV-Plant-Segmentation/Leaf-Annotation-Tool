@@ -113,6 +113,7 @@ test('non-admin navigating to /admin is redirected to home', async ({ page, brow
   await p2.fill('#login-username', username);
   await p2.fill('#login-password', pw);
   await p2.click('button[type=submit]');
+  await p2.waitForURL((url) => url.pathname === '/', { timeout: 8000 }); // land the post-login redirect before any goto
   await expect(p2.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
 
   // Navigate directly to /admin — should be bounced to home.

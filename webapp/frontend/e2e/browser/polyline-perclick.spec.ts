@@ -87,6 +87,7 @@ async function setupCanvasAsAnnotator(page: Page, browser: Browser): Promise<{ p
   await p2.fill('#login-username', username);
   await p2.fill('#login-password', pw);
   await p2.click('button[type=submit]');
+  await p2.waitForURL((url) => url.pathname === '/', { timeout: 8000 }); // land the post-login redirect before any goto
   await expect(p2.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
   await p2.goto(canvasUrl);
   await expect(p2.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
