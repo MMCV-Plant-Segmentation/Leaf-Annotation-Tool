@@ -3947,7 +3947,12 @@ def image_overview(image_id: str):
         img = imaging.get_image(im['image_hash'], im['image_ext'])
     except FileNotFoundError:
         return jsonify({'error': 'image file not found'}), 404
-    return send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
+    resp = send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
+    # t162: an image id's pixels never change, so let the browser keep it. The canvas preloads +
+    # decodes the overview, then mounts its <image>; that must be a cache hit, not a second async
+    # load (iPad WebKit left the image unpainted until the next pan/zoom).
+    resp.headers['Cache-Control'] = 'private, max-age=86400, immutable'
+    return resp
 
 
 @projects_bp.get('/api/projects/images/<image_id>/crop')

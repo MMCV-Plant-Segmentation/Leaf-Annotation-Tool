@@ -165,6 +165,11 @@ assert ov.mimetype == 'image/png', f'overview mimetype {ov.mimetype}'
 oimg = Image.open(io.BytesIO(ov.get_data()))
 assert oimg.size == (W, H), f'overview size {oimg.size} (<=2000 long side, unscaled here)'
 print('  ✓  overview serves a valid PNG')
+# t162: the canvas preloads the overview, then mounts its <image> — that second request must be a
+# CACHE HIT (an image id's pixels never change), else WebKit loads it async and may not paint it.
+cc = ov.headers.get('Cache-Control', '')
+assert 'private' in cc and 'max-age=' in cc and 'no-cache' not in cc, f'overview not cacheable: {cc!r}'
+print('  ✓  overview is privately cacheable')
 
 
 print('\n\nALL PNG-KANJI-INGEST TESTS PASSED ✓  (data dir:', TMP, ')')

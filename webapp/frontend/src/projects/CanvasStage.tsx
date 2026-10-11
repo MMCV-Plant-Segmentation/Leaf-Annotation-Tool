@@ -67,8 +67,13 @@ export const CanvasStage: Component<Props> = (props) => (
             [styles.erasing]: props.tool() === 'eraser',
           }}
         >
-          <image href={imageUrls.overview(im().imageId)} x="0" y="0"
-            width={im().width} height={im().height} />
+          {/* t162: mount the <image> only once the decode gate has the bitmap (a cache hit by
+              then). Mounted early, iPad WebKit finished the async load without painting it —
+              blank until the next pan/zoom. */}
+          <Show when={props.imgLoaded()}>
+            <image href={imageUrls.overview(im().imageId)} x="0" y="0"
+              width={im().width} height={im().height} />
+          </Show>
           {/* Annotations render BELOW the tile UI (t58) so a painted stroke can't cover the
               tile-complete checkmark and swallow its clicks. CanvasTiles' grid rect is
               fill=none (doesn't block painting); its checkmark stops propagation. */}
