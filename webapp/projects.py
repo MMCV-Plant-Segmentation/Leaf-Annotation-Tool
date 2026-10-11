@@ -20,17 +20,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_file, session, stream_with_context
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString, MultiPolygon, Point
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
 from . import db as _db
-from . import imaging, tiling
+from . import geo_engine
+from . import imaging, tile_cache, tiling
 from .auth import admin_required, login_required
 from . import taxonomy
 
 projects_bp = Blueprint('projects', __name__)
+
+# Sentinel default for `_annotation_out(raw_taxonomy=...)`: distinguishes "caller has no
+# taxonomy handy" (fall back to the frozen label_snapshot, pre-t64 behaviour) from
+# "caller passed an explicit None/'' taxonomy value" (still resolved, yields no match).
+_UNSET = object()
 
 IMAGE_EXTS = {'.tif', '.tiff', '.png', '.jpg', '.jpeg'}
 
@@ -60,14 +66,21 @@ def _project(con, project_id: str) -> dict | None:
 
 
 def _project_out(row: dict) -> dict:
-    """Shape a project row for JSON (parse + upgrade classes_json, normalise tiling_confirmed).
+    """Shape a project row for JSON (taxonomy v2: groups + compounds + flat classes).
 
-    `classes_json` is upgraded from the legacy string-array form to the canonical object
-    list (see webapp.taxonomy). The upgraded form is NOT persisted here — the next
-    project write that touches `classes` re-serialises it; reads stay lenient/lossless.
+    `classes_json` is upgraded from any legacy form (string-array / object-array) to the
+    canonical taxonomy-v2 shape (see webapp.taxonomy): `groups`, `compounds` (the valid
+    paintable palette), and `classes` (the compounds projected to the legacy flat
+    `{id,name,color,order}` list, kept so every existing call site keeps working). The
+    upgraded form is NOT persisted here — the next project write that touches the taxonomy
+    re-serialises it; reads stay lenient/lossless.
     """
     out = dict(row)
-    out['classes'] = taxonomy.normalise_classes(row.get('classes_json'))
+    tax = taxonomy.taxonomy_out(row.get('classes_json'))
+    out['classes'] = tax['classes']
+    out['groups'] = tax['groups']
+    out['compounds'] = tax['compounds']
+    out['brokenCompounds'] = tax['broken']
     out.pop('classes_json', None)
     out['tiling_confirmed'] = bool(out.get('tiling_confirmed', 0))
     return out
@@ -94,32 +107,119 @@ def _shape_geom(kind: str, points: list):
     return LineString(pts) if len(pts) >= 2 else Point(pts[0])
 
 
+def _rings_to_geom(rings: list):
+    """Build a shapely Polygon (or MultiPolygon, for disjoint pieces) from geo-engine
+    `rings` (`[[[x,y],...],...]`, exterior-only — the engine never emits holes). Returns
+    None for empty/degenerate input."""
+    polys = []
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        try:
+            poly = ShapelyPolygon(ring)
+        except Exception:
+            continue
+        if poly.is_valid and not poly.is_empty:
+            polys.append(poly)
+    if not polys:
+        return None
+    return polys[0] if len(polys) == 1 else MultiPolygon(polys)
+
+
+def _geom_exterior_rings(geom) -> list:
+    """Flatten a shapely Polygon/MultiPolygon's exterior ring(s) into geo-engine's
+    `[[[x,y],...],...]` request shape (holes dropped — masks never persist holes)."""
+    if geom is None or geom.is_empty:
+        return []
+    parts = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
+    return [[[float(x), float(y)] for x, y in p.exterior.coords]
+            for p in parts if p.geom_type == 'Polygon' and p.exterior]
+
+
+def _engine_fuse(geoms) -> object:
+    """Union shapely Polygon/MultiPolygon geoms (None entries skipped) via the geo-engine
+    wasm `fuse` op (repairs self-intersections, drops interior holes) — the t103 Phase C
+    replacement for `shapely.ops.unary_union` on STROKE geometry. Returns None when there's
+    nothing to fuse."""
+    polygons = []
+    for g in geoms:
+        polygons.extend(_geom_exterior_rings(g))
+    if not polygons:
+        return None
+    return _rings_to_geom(geo_engine.fuse(polygons))
+
+
 def _stroke_polygon(points, stroke_width, outline=None):
-    """Build a shapely geometry for a brush stroke's footprint.
+    """Build a shapely geometry for a brush stroke's footprint, via the geo-engine wasm
+    module (t103 Phase C).
 
-    When `outline` (≥3 pts, a perfect-freehand outline polygon) is provided, use
-    ShapelyPolygon(outline).buffer(0) — buffer(0) repairs self-intersecting contours
-    (e.g. figure-eight loops) into valid (multi)polygon geometry. Falls back to the
-    centerline buffer for legacy rows without an outline.
+    When `outline` (≥3 pts, a perfect-freehand outline polygon) is provided, run it through
+    the engine's `fuse` op (a single-polygon fuse repairs self-intersecting contours, e.g.
+    figure-eight loops, into valid (multi)polygon geometry — same repair `buffer(0)` used to
+    do). Falls back to the engine's `outline_polyline` (round joins/caps, per-vertex radius
+    == strokeWidth/2) for legacy rows without an outline.
 
-    Returns None for degenerate input. May return a MultiPolygon when buffer(0) splits
-    a self-intersecting outline into disconnected regions.
+    Returns None for degenerate input. May return a MultiPolygon when the fuse splits a
+    self-intersecting outline into disconnected regions.
     """
     outline_pts = [(float(p[0]), float(p[1])) for p in (outline or []) if len(p) >= 2]
     if len(outline_pts) >= 3:
         try:
-            return ShapelyPolygon(outline_pts).buffer(0)
-        except Exception:
-            pass  # fall through to centerline buffer
+            geom = _rings_to_geom(geo_engine.fuse([outline_pts]))
+            if geom is not None:
+                return geom
+        except geo_engine.GeoEngineError:
+            pass  # fall through to centerline outline
 
-    # Legacy / no-outline fallback: centerline buffer
+    # Legacy / no-outline fallback: centerline outline (uniform half-width per vertex).
     width = max(float(stroke_width or 0) or 1, 1)
     pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
     if not pts:
         return None
-    if len(pts) == 1:
-        return Point(pts[0]).buffer(width / 2)
-    return LineString(pts).buffer(width / 2, cap_style='round', join_style='round')
+    try:
+        return _rings_to_geom(geo_engine.outline_polyline(pts, [width / 2] * len(pts)))
+    except geo_engine.GeoEngineError:
+        return None
+
+
+def _compute_stroke_outline(points, stroke_width, tool='brush'):
+    """t103 Phase D — compute a stroke's outline SERVER-SIDE via the geo-engine wasm
+    module; the SINGLE source of stroke geometry (any wire `outline` is ignored — this
+    replaces it).
+
+    Tool-aware: `brush` strokes use the engine's BRUSH op (a round brush of the stroke
+    width dragged along a smooth curve through the points — t158; it covers every point by
+    construction, so sparse input needs no densifying and the FE preview, which calls the
+    same op on the same points, matches the stored outline exactly); everything else (`polyline`) uses the PER-VERTEX-radius
+    polyline op — a polyline point may be `[x, y, size]`, radius = size/2, falling back
+    to `stroke_width/2` for a legacy 2-tuple point (t62 taper, reproduced server-side).
+
+    Returns a flat outline point list `[[x,y],...]` (the ring with the most points, i.e.
+    the main contour) or None for degenerate/empty input.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in (points or []) if len(p) >= 2]
+    if len(pts) < 2:
+        return None
+    width = max(float(stroke_width or 0) or 1, 1)
+    try:
+        if tool == 'polyline':
+            radii = []
+            for p in (points or []):
+                r = None
+                if len(p) >= 3 and p[2] is not None:
+                    try:
+                        r = max(float(p[2]) / 2, 0.5)
+                    except (TypeError, ValueError):
+                        r = None
+                radii.append(r if r is not None else width / 2)
+            rings = geo_engine.outline_polyline(pts, radii)
+        else:
+            rings = geo_engine.outline_brush(pts, width)
+    except geo_engine.GeoEngineError:
+        return None
+    if not rings:
+        return None
+    return max(rings, key=len)
 
 
 def _poly_rings(poly) -> list:
@@ -132,8 +232,22 @@ def _poly_rings(poly) -> list:
     if poly is None or poly.is_empty or poly.geom_type != 'Polygon':
         return []
     def coords(ring):
-        return [[round(float(pt[0])), round(float(pt[1]))] for pt in ring.coords]
-    return [coords(poly.exterior)]
+        # Keep sub-pixel precision (BUGS #37): the FE maps client→image px as floats via the
+        # CTM, so snapping to whole pixels loses accuracy and collapses a <1px-wide (thin/
+        # vertical) stroke's two edges onto one column → a zero-area path that vanishes.
+        return [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in ring.coords]
+
+    def full(ring):
+        return [[float(pt[0]), float(pt[1])] for pt in ring.coords]
+
+    # t158: 0.01 px rounding can make a thin, densely-vertexed ring SELF-INTERSECT (vertices
+    # closer than the rounding step cross over). A stored invalid ring is later "repaired" on
+    # read with a winding flip that made merges drop whole strokes — so never store one: fall
+    # back to full precision (the engine's own grid, always valid) when rounding breaks it.
+    rounded = coords(poly.exterior)
+    if poly.is_valid and not ShapelyPolygon(rounded).is_valid:
+        return [full(poly.exterior)]
+    return [rounded]
 
 
 def _exterior_only(geom):
@@ -194,8 +308,8 @@ def _stroke_components(rows: list[dict]) -> list[dict]:
     if not valid:
         return components
 
-    union = unary_union([p for _, p in valid])
-    if union.is_empty:
+    union = _engine_fuse([p for _, p in valid])
+    if union is None or union.is_empty:
         return components + [{'member_ids': [rid], 'geometry': None} for rid, _ in valid]
 
     pieces = list(union.geoms) if union.geom_type == 'MultiPolygon' else [union]
@@ -235,15 +349,79 @@ def _annotation_geom(row: dict):
     return _shape_geom(row['kind'], pts)
 
 
+# ── t68: consolidated annotation bbox spatial index ──────────────────────────────────────
+# A persisted axis-aligned bbox per annotation (min_x/min_y/max_x/max_y) + the per-image
+# composite index `idx_annotation_bbox` let the polygon-overlap scans (create-fuse, eraser)
+# bbox-prune in SQL, then exact-test only candidates — tile-size-independent, strong expected
+# perf. Maintained ONLY at geometry writes (insert/geometry-update); soft-deletes drop out via
+# `deleted_at IS NULL`, so delete/undelete need no index upkeep (see migration 0011).
+
+def _bbox_bounds(geom):
+    """(min_x, min_y, max_x, max_y) of a shapely geom, or (None,)*4 when empty/None."""
+    if geom is None or geom.is_empty:
+        return (None, None, None, None)
+    return geom.bounds
+
+
+def _set_bbox(con, aid: str, geom) -> None:
+    """Store annotation `aid`'s bbox from an already-built shapely geom (t68 index)."""
+    con.execute('UPDATE annotation SET min_x=?, min_y=?, max_x=?, max_y=? WHERE id=?',
+               (*_bbox_bounds(geom), aid))
+
+
+def _reindex_bbox(con, aid: str) -> None:
+    """Refresh annotation `aid`'s bbox from its AUTHORITATIVE geometry (`_annotation_geom` —
+    the fused ring for stroke masks, points for others). Use where no shapely geom is handy
+    (the non-stroke create + the generic points PATCH)."""
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone()
+    _set_bbox(con, aid, _annotation_geom(row) if row else None)
+
+
+def _annotations_overlapping(con, project_image_id: str, geom, *, annotator: str | None = None,
+                             kind: str | None = 'stroke', label=_UNSET):
+    """Live annotations on this image whose stored BBOX overlaps `geom`'s bbox (the t68 index
+    prune) that ALSO pass an exact shapely `intersects` — returns [(row, geom), …]. Optional
+    annotator/kind/label scoping mirrors the callers. Excludes NULL-bbox rows: those are
+    null-geometry annotations with no footprint to overlap (correct to skip)."""
+    if geom is None or geom.is_empty:
+        return []
+    minx, miny, maxx, maxy = geom.bounds
+    clauses = ['project_image_id = ?', 'deleted_at IS NULL', 'min_x IS NOT NULL',
+               'min_x <= ?', 'max_x >= ?', 'min_y <= ?', 'max_y >= ?']
+    args: list = [project_image_id, maxx, minx, maxy, miny]
+    if annotator is not None:
+        clauses.append('annotator = ?'); args.append(annotator)
+    if kind is not None:
+        clauses.append('kind = ?'); args.append(kind)
+    if label is not _UNSET:
+        clauses.append('label IS ?'); args.append(label)
+    rows = con.execute(f'SELECT * FROM annotation WHERE {" AND ".join(clauses)}', args).fetchall()
+    out = []
+    for r in rows:
+        g = _annotation_geom(r)
+        if g is not None and not g.is_empty and g.intersects(geom):
+            out.append((r, g))
+    return out
+
+
 def _tiles_for_geom(con, project_image_id: str, geom) -> list[str]:
     """Return ids of existing tiles (on this image) that `geom` intersects. Shared tail of
     _tiles_intersecting (fresh shape) and the merge/undo paths (an already-built mask
     geometry) — one geometry-vs-tiles test, so both stay in lockstep."""
     if geom is None or geom.is_empty:
         return []
+    # t68-i2: AABB pre-filter in SQL (from geom.bounds) so we fetch + shapely-test only the
+    # handful of tiles under the geometry's bbox, not every tile on the image (this runs on
+    # EVERY mutation). Tile-size-independent; the `tile(project_image_id, x, y)` UNIQUE index
+    # covers the (project_image_id, x) prefix. INCLUSIVE bounds (`<=`/`>=`) so an edge/corner
+    # TOUCH survives the prune — shapely `intersects` counts a boundary touch, so a strict
+    # `<`/`>` would drop a tile whose edge exactly aligns with the bbox (integer tile coords
+    # make that common); the exact shapely test then decides.
+    minx, miny, maxx, maxy = geom.bounds
     rows = con.execute(
-        'SELECT id, x, y, w, h FROM tile WHERE project_image_id = ?', (project_image_id,)
-    ).fetchall()
+        'SELECT id, x, y, w, h FROM tile WHERE project_image_id = ? '
+        'AND x <= ? AND x + w >= ? AND y <= ? AND y + h >= ?',
+        (project_image_id, maxx, minx, maxy, miny)).fetchall()
     return [t['id'] for t in rows
             if geom.intersects(shapely_box(t['x'], t['y'], t['x'] + t['w'], t['y'] + t['h']))]
 
@@ -383,11 +561,18 @@ def create_project():
     # component rule defines the leaf regardless, so 0 is a safe, no-surprise default.
     raw_threshold = body.get('black_threshold')
     threshold = int(raw_threshold) if raw_threshold is not None else 0
-    classes = taxonomy.coerce_classes(body.get('classes'))
-    if not classes:
-        # New/empty project → seed the single removable 'unknown' label (no more
-        # hardcoded ['lesion','midrib','uncertain'] FE fallback).
-        classes = taxonomy.normalise_classes('[]')
+    # Taxonomy v2: accept either a v2 body ({groups, compounds}) or the legacy flat
+    # `classes` list; both funnel through coerce_taxonomy -> dump_taxonomy. A new/empty
+    # project seeds the single removable 'unknown' compound (backed by one default
+    # group), so it behaves exactly like today's default - no hardcoded trio.
+    taxonomy_body = body.get('taxonomy') or body.get('classes')
+    if body.get('groups') is not None or body.get('compounds') is not None:
+        taxonomy_body = {'groups': body.get('groups') or [],
+                         'compounds': body.get('compounds') or []}
+    if taxonomy_body is None:
+        classes_json = taxonomy.dump_taxonomy(taxonomy.normalise_taxonomy('[]'))
+    else:
+        classes_json = taxonomy.dump_taxonomy(taxonomy.coerce_taxonomy(taxonomy_body))
     if tile_size < 8:
         return jsonify({'error': 'tile_size_px too small'}), 400
     pid = _uid()
@@ -398,7 +583,7 @@ def create_project():
                  (id, name, tile_size_px, black_threshold, classes_json,
                   created_by, created_by_user_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (pid, name, tile_size, threshold, taxonomy.dump_classes(classes),
+            (pid, name, tile_size, threshold, classes_json,
              _byline(), session.get('user_id'), _now()),
         )
         # Auto-add creator as an annotator so the project is immediately visible to them.
@@ -432,11 +617,62 @@ def update_project(project_id: str):
         if 'black_threshold' in body:
             sets.append('black_threshold = ?'); vals.append(int(body['black_threshold']))
             sets.append('tiling_confirmed = ?'); vals.append(1)
-        if 'classes' in body:
-            # Editor (any project member — same permission model as image/batch management,
-            # NOT admin-only) sends the canonical object list; coerce defensively + dump.
-            classes = taxonomy.coerce_classes(body['classes'])
-            sets.append('classes_json = ?'); vals.append(taxonomy.dump_classes(classes))
+        # Taxonomy v2: the editor sends a v2 object ({groups, compounds}); a legacy
+        # flat `classes` list still upgrades cleanly. Both funnel through coerce/dump.
+        # Member permission model unchanged (NOT admin-only).
+        if 'taxonomy' in body or 'groups' in body or 'compounds' in body or 'classes' in body:
+            if 'groups' in body or 'compounds' in body:
+                tax_body = {'groups': body.get('groups') or [],
+                            'compounds': body.get('compounds') or []}
+            elif 'taxonomy' in body:
+                tax_body = body['taxonomy']
+            else:
+                tax_body = body['classes']
+            existing_row = _project(con, project_id)
+            existing_raw = existing_row.get('classes_json') if existing_row else None
+            # t64 C3: a saved compound's `selections` are IMMUTABLE — coerce_taxonomy
+            # re-applies the STORED selections for any incoming compound id that already
+            # existed (name/colour changes ARE honoured); only a brand-new id may set
+            # selections.
+            new_v2 = taxonomy.coerce_taxonomy(tax_body, existing=existing_raw)
+            # t64 C4/C5/C6: a save that DROPS a previously-saved compound id must not
+            # silently orphan lesions that reference it (`annotation.compound_id`).
+            # Unreferenced -> deletes freely. Referenced + no `reassignCompounds` entry
+            # -> reject (4xx naming the blocked id), nothing persisted. Referenced +
+            # entry (mapping to a compound id still present after this save) -> repoint
+            # those annotations' compound_id to the target, then persist without the old.
+            existing_ids = {c['id'] for c in taxonomy.normalise_taxonomy(existing_raw)['compounds']}
+            new_ids = {c['id'] for c in new_v2['compounds']}
+            reassign = body.get('reassignCompounds') or {}
+            repoint: dict[str, str] = {}
+            for removed_id in existing_ids - new_ids:
+                referenced = con.execute(
+                    '''SELECT 1 FROM annotation
+                       WHERE project_id = ? AND compound_id = ? AND deleted_at IS NULL
+                       LIMIT 1''',
+                    (project_id, removed_id),
+                ).fetchone()
+                if not referenced:
+                    continue
+                target = reassign.get(removed_id)
+                if not target or target not in new_ids:
+                    # `blockedCompoundId` is a structured echo of the same id named in
+                    # `error` — the FE reassignment picker (LabelEditor.tsx) keys off it
+                    # rather than parsing the human-readable message.
+                    return jsonify({
+                        'error': f'compound {removed_id} is referenced by existing '
+                                 f'annotations; reassignCompounds must map it to another '
+                                 f'compound before it can be deleted',
+                        'blockedCompoundId': removed_id,
+                    }), 409
+                repoint[removed_id] = target
+            for old_id, new_id in repoint.items():
+                con.execute(
+                    'UPDATE annotation SET compound_id = ? WHERE project_id = ? AND compound_id = ?',
+                    (new_id, project_id, old_id),
+                )
+            classes_json = taxonomy.dump_taxonomy(new_v2)
+            sets.append('classes_json = ?'); vals.append(classes_json)
         if 'tiling_confirmed' in body:
             sets.append('tiling_confirmed = ?'); vals.append(1 if body['tiling_confirmed'] else 0)
         if 'tile_size_px' in body:
@@ -499,10 +735,17 @@ def get_project(project_id: str):
         batches = con.execute(
             'SELECT * FROM batch WHERE project_id = ? ORDER BY seq', (project_id,)
         ).fetchall()
+        session_username = session.get('username')
         for b in batches:
             b['tileCount'] = con.execute(
                 'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (b['id'],)
             ).fetchone()['c']
+            b['mergeReady'] = _merge_ready(con, b['id'])
+            b['members'] = _batch_members_progress(con, b['id'])
+            # t127: isMember drives the FE's "Open in canvas" visibility (non-members
+            # get a read-only view of the batch, per row).
+            b['isMember'] = (session_username == 'admin'
+                              or session_username in _batch_members(con, b['id']))
         out['batches'] = batches
         out['progress'] = _progress(con, project_id, batches)
         return jsonify(out)
@@ -824,12 +1067,19 @@ def upload_images(project_id: str):
 @projects_bp.post('/api/projects/<project_id>/images/probe')
 @login_required
 def probe_images(project_id: str):
-    """Pre-flight dedup probe: given candidate content hashes, return the subset this
-    project already has. Read-only — no bytes, no writes. Lets the browser skip
-    re-uploading files already present; the upload path keeps its own dedup as backstop.
+    """Pre-flight dedup probe: given candidate content hashes, return the subset whose
+    bytes ALREADY EXIST in the global content-addressed store — i.e. referenced by ANY
+    project, not just this one (BUGS #26: global dedup, approved by Christian). Read-only
+    — no bytes, no writes. Lets the browser skip re-uploading content already on disk;
+    for content present globally but not yet in THIS project, the client registers it by
+    hash via /images/register instead of re-sending bytes.
 
     Body {"hashes": [...]}  →  {"have": [...]}. Hashes are imaging.hash_bytes() values
     (sha256(bytes).hexdigest()[:24]); the client reproduces the scheme byte-for-byte.
+
+    NOTE: "have" here means "the bytes are on disk somewhere" — the DB still guards which
+    images are VISIBLE in which project (register-by-hash inserts the per-project row).
+    Reporting a hash as present does NOT make its content viewable across projects.
     """
     hashes = (request.json or {}).get('hashes')
     if not isinstance(hashes, list):
@@ -841,20 +1091,111 @@ def probe_images(project_id: str):
         err = _member_or_403(con, project_id)
         if err:
             return err
-        # De-dupe the candidates and query in chunks so a huge folder can't blow past
-        # SQLite's bound-variable limit. Hits the UNIQUE(project_id, image_hash) index.
+        # GLOBAL: a hash is "have" when ANY project references it (the bytes are on disk in
+        # the content-addressed store). De-dupe + chunk so a huge folder can't blow past
+        # SQLite's bound-variable limit. DISTINCT so a hash shared by many projects hits once.
         wanted = list({str(h) for h in hashes if h})
         have: list[str] = []
         for i in range(0, len(wanted), 500):
             chunk = wanted[i:i + 500]
             placeholders = ','.join('?' * len(chunk))
             rows = con.execute(
-                f'SELECT image_hash FROM project_image '
-                f'WHERE project_id = ? AND image_hash IN ({placeholders})',
-                (project_id, *chunk),
+                f'SELECT DISTINCT image_hash FROM project_image '
+                f'WHERE image_hash IN ({placeholders})',
+                (*chunk,),
             ).fetchall()
             have.extend(r['image_hash'] for r in rows)
         return jsonify({'have': have})
+    finally:
+        _db.close_db(con)
+
+
+def _register_one_by_hash(con, project_id: str, image_hash: str, source_name: str,
+                          threshold: int, tile_size: int) -> dict:
+    """Register an already-stored image into THIS project by content hash, WITHOUT
+    re-uploading its bytes (BUGS #26). Pulls the stored bytes (via imaging.get_image, keyed
+    by hash+ext copied from an existing project_image row anywhere in the system), recomputes
+    THIS project's leaf_bbox/origin_y from its own threshold/tile_size, and inserts a
+    project_image row. Idempotent: a row already present for (project_id, image_hash) is a
+    no-op. Returns {'registered': bool, 'missing': bool} — 'missing' means the hash is
+    genuinely not in the store and the client must fall back to the full upload path.
+
+    Does NOT commit — the caller controls the transaction.
+    """
+    # Already in THIS project? UNIQUE(project_id, image_hash) — idempotent no-op.
+    if con.execute(
+        'SELECT 1 FROM project_image WHERE project_id = ? AND image_hash = ?',
+        (project_id, image_hash),
+    ).fetchone():
+        return {'registered': True, 'missing': False}
+    # The bytes are on disk only if SOME project references the hash. Grab ext + dims from
+    # any existing row (they are content-derived: same hash ⇒ same image ⇒ same ext/dims).
+    src = con.execute(
+        'SELECT image_ext, width, height FROM project_image WHERE image_hash = ? LIMIT 1',
+        (image_hash,),
+    ).fetchone()
+    if src is None:
+        return {'registered': False, 'missing': True}
+    ext = src['image_ext']
+    img = imaging.get_image(image_hash, ext)
+    w, hgt = img.size
+    bb = tiling.compute_leaf_bbox(img, threshold)
+    if bb is None:
+        bb = tiling.Rect(0, 0, w, hgt)
+    origin_y = tiling.bbox_centered_origin_y(bb, hgt, tile_size)
+    con.execute(
+        '''INSERT INTO project_image
+             (id, project_id, image_hash, image_ext, source_name, source_path,
+              width, height, origin_y, leaf_x, leaf_y, leaf_w, leaf_h, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (_uid(), project_id, image_hash, ext, source_name, None, w, hgt,
+         origin_y, bb.x, bb.y, bb.w, bb.h, _now()),
+    )
+    return {'registered': True, 'missing': False}
+
+
+@projects_bp.post('/api/projects/<project_id>/images/register')
+@login_required
+def register_images(project_id: str):
+    """Register already-stored images into THIS project by content hash, WITHOUT
+    re-uploading bytes (BUGS #26: global pre-flight dedup). For each hash whose bytes
+    already exist in the global content-addressed store (any project references it),
+    insert a project_image row for THIS project (ext/dims from the stored image, leaf_bbox
+    + origin recomputed for this project's threshold/tile_size). Hashes that are genuinely
+    absent from the store are returned as 'missing' so the client falls back to the normal
+    full-upload path. UNIQUE(project_id, image_hash) is enforced (idempotent re-register).
+
+    Body {"items": [{"hash": "...", "name": "..."}, ...]}
+      → {"registered": [hash, ...], "missing": [hash, ...]}
+    """
+    items = (request.json or {}).get('items')
+    if not isinstance(items, list):
+        return jsonify({'error': 'items must be a list'}), 400
+    con = _db.get_db()
+    try:
+        proj = _project(con, project_id)
+        if not proj:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, project_id)
+        if err:
+            return err
+        threshold, tile_size = proj['black_threshold'], proj['tile_size_px']
+        registered: list[str] = []
+        missing: list[str] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            h = str(it.get('hash') or '')
+            if not h:
+                continue
+            name = str(it.get('name') or '')
+            res = _register_one_by_hash(con, project_id, h, name, threshold, tile_size)
+            if res['missing']:
+                missing.append(h)
+            else:
+                registered.append(h)
+        con.commit()
+        return jsonify({'registered': registered, 'missing': missing})
     finally:
         _db.close_db(con)
 
@@ -945,16 +1286,6 @@ def create_batch(project_id: str):
         if not images:
             return jsonify({'error': 'project has no images'}), 400
 
-        # Build candidate pool across all images; exclude positions already tiled (= used by
-        # a previous batch, since tiles are only created at batch time).
-        pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
-        for im in images:
-            bb = tiling.Rect(im['leaf_x'], im['leaf_y'], im['leaf_w'], im['leaf_h'])
-            img = imaging.get_image(im['image_hash'], im['image_ext'])
-            for t in tiling.surviving_tiles(
-                img, bb, proj['tile_size_px'], im['origin_y'], proj['black_threshold']
-            ):
-                pool[(im['id'], t.x, t.y)] = (im, t)
         used = {
             (r['project_image_id'], r['x'], r['y'])
             for r in con.execute(
@@ -963,19 +1294,62 @@ def create_batch(project_id: str):
                    WHERE pi.project_id = ?''', (project_id,)
             ).fetchall()
         }
-        picked = tiling.sample_positions(list(pool.keys()), used, size)
-        if not picked:
-            return jsonify({'error': 'no unused tiles left to sample'}), 409
 
+        # Build candidate pool across images; exclude positions already tiled (= used by
+        # a previous batch, since tiles are only created at batch time).
+        #
+        # PERF (task #4 root cause): the per-image work here — imaging.get_image (decode)
+        # + tiling.surviving_tiles (full-resolution connected-component pixel analysis) —
+        # used to run for EVERY project image on EVERY batch-creation call, regardless of
+        # the requested `size` or whether tile_size/black_threshold had changed since the
+        # last call. tile_cache.get_or_compute_tiles memoizes that per (image, tile_size,
+        # threshold), so repeat batch creations become cheap in-memory lookups. On top of
+        # that, images are scanned in RANDOM order and scanning stops early once the
+        # unused-candidate pool comfortably exceeds what this call could ever need — so
+        # even a cold first-ever batch on a huge project only pays for a bounded sample of
+        # images, not a full-project sweep.
+        # Deterministic per-batch RNG: the image scan order and the tile sample are a pure
+        # function of (project_id, seq), so batch composition is reproducible in prod AND tests
+        # and is safe under the concurrent test server (no shared process-global RNG state
+        # consumed in nondeterministic order — the BUGS #31 flake root cause). seq is the next
+        # batch number; compute it up front so it can seed the RNG.
         seq = (con.execute(
             'SELECT COALESCE(MAX(seq), 0) m FROM batch WHERE project_id = ?', (project_id,)
         ).fetchone()['m']) + 1
+        rng = random.Random(f'{project_id}:{seq}')
+        POOL_TARGET = max(size * 20, 200)
+        shuffled = list(images)
+        rng.shuffle(shuffled)
+        pool: dict[tuple, tuple] = {}   # (image_id, x, y) -> (image_row, Rect)
+        unused = 0
+        for im in shuffled:
+            for t in tile_cache.get_or_compute_tiles(im, proj['tile_size_px'], proj['black_threshold']):
+                key = (im['id'], t.x, t.y)
+                if key not in pool:
+                    pool[key] = (im, t)
+                    if key not in used:
+                        unused += 1
+            if unused >= POOL_TARGET:
+                break
+        picked = tiling.sample_positions(list(pool.keys()), used, size, rng=rng)
+        if not picked:
+            return jsonify({'error': 'no unused tiles left to sample'}), 409
+
         batch_id = _uid()
+        now = _now()
         con.execute(
             'INSERT INTO batch (id, project_id, seq, size, status, created_at)'
             " VALUES (?, ?, ?, ?, 'annotation_in_progress', ?)",
-            (batch_id, project_id, seq, size, _now()),
+            (batch_id, project_id, seq, size, now),
         )
+        # t126 Phase 2: batch_member is the durable membership set, SEEDED from the
+        # project roster AT CREATION TIME (preserves today's "membership == live roster"
+        # behaviour for this batch going forward). A later roster add is NOT auto-added.
+        for byline in roster:
+            con.execute(
+                'INSERT OR IGNORE INTO batch_member (batch_id, annotator, created_at) '
+                'VALUES (?, ?, ?)', (batch_id, byline, now),
+            )
         for key in picked:
             im, t = pool[key]
             image_id, x, y = key
@@ -994,12 +1368,9 @@ def create_batch(project_id: str):
                 'INSERT INTO batch_tile (id, batch_id, tile_id) VALUES (?, ?, ?)',
                 (bt_id, batch_id, tile_id),
             )
-            for byline in roster:
-                con.execute(
-                    '''INSERT INTO annotator_tile (id, batch_tile_id, annotator, state, updated_at)
-                       VALUES (?, ?, ?, 'assigned', ?)''',
-                    (_uid(), bt_id, byline, _now()),
-                )
+            # t126: tiles are NOT assigned to users. Per-(member,tile) completion is created
+            # LAZILY when a member first marks a tile (see set_batch_tile_state), so a
+            # late-added roster annotator just works (fixes t112). No pre-provisioning here.
         con.commit()
         return jsonify({'id': batch_id, 'seq': seq, 'size': size,
                         'tileCount': len(picked), 'rosterSize': len(roster)}), 201
@@ -1008,6 +1379,59 @@ def create_batch(project_id: str):
 
 
 # ── batch / canvas read ───────────────────────────────────────────────────────
+
+def _batch_members(con, batch_id: str) -> list[str]:
+    """batch_member bylines for this batch — the durable membership set (t126 Phase 2),
+    NOT the live project_annotator roster."""
+    return [r['annotator'] for r in con.execute(
+        'SELECT annotator FROM batch_member WHERE batch_id = ?', (batch_id,)).fetchall()]
+
+
+def _merge_ready(con, batch_id: str) -> bool:
+    """MERGE Phase 1 gate: a batch is merge-ready when EVERY batch MEMBER has completed
+    EVERY tile. t126 Phase 2: membership is the durable `batch_member` set, not the live
+    project roster — adding a member lowers readiness until they complete; removing one
+    raises it. Completion is lazy (a missing annotator_tile row = not done, NOT
+    pre-provisioned), so readiness is derived from (members × batch tiles) vs the count of
+    'completed' rows for CURRENT members. A batch with no tiles or no members is never
+    ready."""
+    batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+    if not batch:
+        return False
+    members = _batch_members(con, batch_id)
+    tile_count = con.execute(
+        'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (batch_id,)).fetchone()['c']
+    if not members or tile_count == 0:
+        return False
+    qm = ','.join('?' * len(members))
+    done = con.execute(
+        f'''SELECT COUNT(*) c FROM annotator_tile at
+            JOIN batch_tile bt ON bt.id = at.batch_tile_id
+            WHERE bt.batch_id = ? AND at.state = 'completed' AND at.annotator IN ({qm})''',
+        (batch_id, *members)).fetchone()['c']
+    return done == len(members) * tile_count
+
+
+def _batch_members_progress(con, batch_id: str) -> list[dict]:
+    """[{annotator, tilesCompleted, tilesTotal, percent}] for this batch's members, derived
+    from batch_member (durable membership) x batch_tile x completion."""
+    members = _batch_members(con, batch_id)
+    tile_count = con.execute(
+        'SELECT COUNT(*) c FROM batch_tile WHERE batch_id = ?', (batch_id,)).fetchone()['c']
+    out = []
+    for byline in members:
+        done = con.execute(
+            '''SELECT COUNT(*) c FROM annotator_tile at
+               JOIN batch_tile bt ON bt.id = at.batch_tile_id
+               WHERE bt.batch_id = ? AND at.annotator = ? AND at.state = 'completed' ''',
+            (batch_id, byline)).fetchone()['c']
+        percent = round(100 * done / tile_count) if tile_count else 0
+        out.append({
+            'annotator': byline, 'tilesCompleted': done, 'tilesTotal': tile_count,
+            'percent': percent,
+        })
+    return out
+
 
 @projects_bp.get('/api/batches/<batch_id>')
 @login_required
@@ -1026,7 +1450,11 @@ def get_batch(batch_id: str):
         proj = con.execute(
             'SELECT classes_json FROM project WHERE id = ?', (batch['project_id'],)
         ).fetchone()
-        classes = taxonomy.normalise_classes(proj['classes_json']) if proj else []
+        tax = taxonomy.taxonomy_out(proj['classes_json']) if proj else taxonomy.taxonomy_out(None)
+        classes = tax['classes']
+        groups = tax['groups']
+        compounds = tax['compounds']
+        broken = tax['broken']
         rows = con.execute(
             '''SELECT bt.id bt_id, t.id tile_id, t.project_image_id, t.x, t.y, t.w, t.h
                FROM batch_tile bt JOIN tile t ON t.id = bt.tile_id
@@ -1057,18 +1485,717 @@ def get_batch(batch_id: str):
                 'tiles': payload['tiles'], 'annotations': [],
             }
             if annotator:
-                entry['annotations'] = _visible_annotations(con, image_id, annotator,
-                                                            [t['tileId'] for t in payload['tiles']])
+                entry['annotations'] = _visible_annotations(
+                    con, image_id, annotator,
+                    [t['tileId'] for t in payload['tiles']],
+                    proj['classes_json'] if proj else None)
             images.append(entry)
+        session_username = session.get('username')
+        is_member = (session_username == 'admin'
+                     or session_username in _batch_members(con, batch_id))
         return jsonify({
             'id': batch['id'], 'projectId': batch['project_id'], 'seq': batch['seq'],
-            'status': batch['status'], 'classes': classes, 'images': images,
+            'status': batch['status'], 'mergeReady': _merge_ready(con, batch_id),
+            'classes': classes, 'groups': groups, 'compounds': compounds, 'broken': broken,
+            'images': images, 'members': _batch_members_progress(con, batch_id),
+            'isMember': is_member,
         })
     finally:
         _db.close_db(con)
 
 
-def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str]) -> list:
+# ── batch membership (t126 Phase 2) ───────────────────────────────────────────
+
+@projects_bp.post('/api/batches/<batch_id>/members')
+@login_required
+def add_batch_member(batch_id: str):
+    """Add an annotator to a batch's durable membership set. Idempotent (INSERT OR IGNORE);
+    creates NO annotator_tile rows — completion stays lazy per t126 Phase 1. Gated on
+    project membership (_member_or_403; admin bypasses)."""
+    body = request.json or {}
+    annotator = (body.get('annotator') or '').strip()
+    if not annotator:
+        return jsonify({'error': 'annotator required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        con.execute(
+            'INSERT OR IGNORE INTO batch_member (batch_id, annotator, created_at) '
+            'VALUES (?, ?, ?)', (batch_id, annotator, _now()),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'members': _batch_members_progress(con, batch_id)})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/members/<annotator>')
+@login_required
+def remove_batch_member(batch_id: str, annotator: str):
+    """Remove an annotator from a batch's durable membership set. Membership ONLY is
+    dropped — their annotations and completion (annotator_tile) rows are PRESERVED, so
+    re-adding restores their exact prior state. A member WITH existing work (a 'completed'
+    annotator_tile in this batch, or a live annotation in this project) requires an
+    explicit ?confirm=1, else 409 {needsConfirm: true}. Gated on project membership
+    (_member_or_403; admin bypasses)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT project_id FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        has_completion = con.execute(
+            '''SELECT 1 FROM annotator_tile at JOIN batch_tile bt ON bt.id = at.batch_tile_id
+               WHERE bt.batch_id = ? AND at.annotator = ? AND at.state = 'completed' LIMIT 1''',
+            (batch_id, annotator)).fetchone()
+        has_annotation = con.execute(
+            '''SELECT 1 FROM annotation WHERE project_id = ? AND annotator = ?
+               AND deleted_at IS NULL LIMIT 1''',
+            (batch['project_id'], annotator)).fetchone()
+        has_work = bool(has_completion or has_annotation)
+        if has_work and not request.args.get('confirm'):
+            return jsonify({'needsConfirm': True}), 409
+        con.execute(
+            'DELETE FROM batch_member WHERE batch_id = ? AND annotator = ?',
+            (batch_id, annotator))
+        con.commit()
+        return jsonify({'ok': True, 'members': _batch_members_progress(con, batch_id)})
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode (Phase 1: gate + blind pooled read) ────────────────────────────
+
+@projects_bp.post('/api/batches/<batch_id>/enter-merge')
+@login_required
+def enter_merge(batch_id: str):
+    """Advance a merge-ready batch to status='merge'. Idempotent when already in merge;
+    409 when not yet merge-ready (every annotator_tile must be 'completed' — see
+    _merge_ready)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if batch['status'] == 'merge':
+            return jsonify({'ok': True, 'status': 'merge'})
+        if not _merge_ready(con, batch_id):
+            return jsonify({'error': 'batch is not merge-ready — every tile must be '
+                                      'completed by every annotator'}), 409
+        con.execute("UPDATE batch SET status = 'merge' WHERE id = ?", (batch_id,))
+        con.commit()
+        return jsonify({'ok': True, 'status': 'merge'})
+    finally:
+        _db.close_db(con)
+
+
+def _pooled_annotations(con, image_id: str, active_tile_ids: list[str],
+                        raw_taxonomy: Any = _UNSET) -> list:
+    """Every LIVE annotation from EVERY annotator on this image that intersects an
+    active tile — the merge-mode pooled read. Unlike _visible_annotations, this is
+    cross-annotator BY DESIGN (that's the whole point of merge mode); blindness (all
+    marks render identically, one colour, outline-only) is enforced client-side by
+    MergeCanvasScreen, never by hiding whose mark is whose here — the merger is a
+    project member and the data isn't secret, just visually anonymised."""
+    if not active_tile_ids:
+        return []
+    qmarks = ','.join('?' * len(active_tile_ids))
+    rows = con.execute(
+        f'''SELECT DISTINCT a.* FROM annotation a
+            JOIN annotation_tile atl ON atl.annotation_id = a.id
+            WHERE a.project_image_id = ? AND a.deleted_at IS NULL
+              AND atl.tile_id IN ({qmarks})''',
+        (image_id, *active_tile_ids),
+    ).fetchall()
+    return [_annotation_out(r, raw_taxonomy=raw_taxonomy) for r in rows]
+
+
+@projects_bp.get('/api/batches/<batch_id>/merge-annotations')
+@login_required
+def batch_merge_annotations(batch_id: str):
+    """All non-deleted annotations from ALL annotators that intersect this batch's
+    tiles — the pooled, blind read MergeCanvasScreen renders (Phase 1: read-only)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        proj_row = _project(con, batch['project_id'])
+        raw_taxonomy = proj_row.get('classes_json') if proj_row else None
+        rows = con.execute(
+            '''SELECT t.id tile_id, t.project_image_id FROM batch_tile bt
+               JOIN tile t ON t.id = bt.tile_id
+               WHERE bt.batch_id = ?''', (batch_id,)
+        ).fetchall()
+        tiles_by_image: dict[str, list[str]] = {}
+        for r in rows:
+            tiles_by_image.setdefault(r['project_image_id'], []).append(r['tile_id'])
+        out = []
+        for image_id, tile_ids in tiles_by_image.items():
+            out.extend(_pooled_annotations(con, image_id, tile_ids, raw_taxonomy))
+        return jsonify({'annotations': out})
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode Phase 2a: candidate objects ────────────────────────────────────
+# A candidate object (CO) is a merger's lesion-hypothesis during merge mode. Its
+# identity is its MEMBER MARKS only (co_membership rows) — the convex-hull / union
+# shape a merger sees is a FE display concern, not persisted here (see
+# alembic/versions/0005_candidate_objects.py). Any project member may merge and
+# owns/edits only their OWN COs.
+
+
+def _batch_tile_ids_for_image(con, batch_id: str, image_id: str) -> list[str]:
+    """Tile ids of this batch that lie on this image — the "active tiles" that
+    scope which annotations are pooled for merge (see _pooled_annotations)."""
+    rows = con.execute(
+        '''SELECT t.id FROM batch_tile bt
+           JOIN tile t ON t.id = bt.tile_id
+           WHERE bt.batch_id = ? AND t.project_image_id = ?''',
+        (batch_id, image_id),
+    ).fetchall()
+    return [r['id'] for r in rows]
+
+
+def _pooled_annotation_ids_for_image(con, batch_id: str, image_id: str) -> set[str]:
+    """The set of pooled annotation ids for this batch/image — the marks a merger
+    is allowed to reference from a candidate object. Same scoping as
+    `_pooled_annotations` (cross-annotator, live, intersects an active tile), but
+    returns ids only for cheap membership checks."""
+    tile_ids = _batch_tile_ids_for_image(con, batch_id, image_id)
+    if not tile_ids:
+        return set()
+    qmarks = ','.join('?' * len(tile_ids))
+    rows = con.execute(
+        f'''SELECT DISTINCT a.id FROM annotation a
+            JOIN annotation_tile atl ON atl.annotation_id = a.id
+            WHERE a.project_image_id = ? AND a.deleted_at IS NULL
+              AND atl.tile_id IN ({qmarks})''',
+        (image_id, *tile_ids),
+    ).fetchall()
+    return {r['id'] for r in rows}
+
+
+def _co_member_ids(con, coid: str) -> list[str]:
+    return [r['annotation_id'] for r in con.execute(
+        'SELECT annotation_id FROM co_membership WHERE candidate_object_id = ?',
+        (coid,),
+    ).fetchall()]
+
+
+def _co_out(con, row: dict) -> dict:
+    return {'id': row['id'], 'imageId': row['project_image_id'],
+            'memberIds': _co_member_ids(con, row['id'])}
+
+
+def _co_owner_or_403(row: dict):
+    """A merger owns/edits only their OWN COs. Admin bypasses (matches _member_or_403).
+    Returns a 403 tuple or None."""
+    if session.get('username') == 'admin':
+        return None
+    if (row['merger'] or '') != (session.get('username') or ''):
+        return jsonify({'error': 'forbidden'}), 403
+    return None
+
+
+def _resolve_brush_members(con, brush_path, brush_width, pooled_ids: set[str]) -> list[str]:
+    """The BACKEND-side membership resolution for a brush-stroke CO create: build the
+    stroke's shapely footprint (LineString + buffer) and pick every pooled mark whose
+    stored geometry it intersects. Mirrors create_annotation's shapely usage — the
+    client never resolves membership."""
+    if not brush_path or brush_width is None or not pooled_ids:
+        return []
+    try:
+        coords = [tuple(p) for p in brush_path]
+        if len(coords) < 2:
+            return []
+        stroke = LineString(coords).buffer(float(brush_width) / 2.0)
+    except (TypeError, ValueError):
+        return []
+    if stroke is None or stroke.is_empty:
+        return []
+    ids_list = list(pooled_ids)
+    qmarks = ','.join('?' * len(ids_list))
+    rows = con.execute(
+        f'''SELECT * FROM annotation
+            WHERE id IN ({qmarks}) AND deleted_at IS NULL''',
+        (*ids_list,),
+    ).fetchall()
+    members = []
+    for r in rows:
+        g = _annotation_geom(r)
+        if g is not None and not g.is_empty and stroke.intersects(g):
+            members.append(r['id'])
+    return members
+
+
+@projects_bp.get('/api/batches/<batch_id>/candidate-objects')
+@login_required
+def list_candidate_objects(batch_id: str):
+    """That merger's non-deleted COs for this batch."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT * FROM candidate_object
+               WHERE batch_id = ? AND merger = ? AND deleted_at IS NULL
+               ORDER BY created_at ASC''',
+            (batch_id, merger),
+        ).fetchall()
+        return jsonify({'candidateObjects': [_co_out(con, r) for r in rows]})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/candidate-objects')
+@login_required
+def create_candidate_object(batch_id: str):
+    """Create a CO from EITHER explicit `memberIds` OR a brush stroke.
+
+    For a brush stroke: membership is resolved BACKEND-side via shapely against each
+    pooled mark's stored geometry — the client sends the raw path + width only.
+    For explicit `memberIds`: every id must be a pooled mark of this batch on this
+    image (rejected 422 otherwise).
+    """
+    body = request.json or {}
+    image_id = body.get('imageId')
+    if not image_id:
+        return jsonify({'error': 'imageId required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        im = _image_row(con, image_id)
+        if not im or im['project_id'] != batch['project_id']:
+            return jsonify({'error': 'imageId not in this batch project'}), 404
+        pooled = _pooled_annotation_ids_for_image(con, batch_id, image_id)
+
+        raw_member_ids = body.get('memberIds')
+        brush_path = body.get('brushPath')
+        if raw_member_ids is not None:
+            member_ids = list(raw_member_ids)
+            bad = [mid for mid in member_ids if mid not in pooled]
+            if bad:
+                return jsonify({'error': 'member id is not a pooled mark of this batch',
+                                'invalidIds': bad}), 422
+        elif brush_path is not None:
+            brush_width = body.get('brushWidth')
+            if brush_width is None:
+                return jsonify({'error': 'brushWidth required'}), 400
+            member_ids = _resolve_brush_members(con, brush_path, brush_width, pooled)
+        else:
+            return jsonify({'error': 'memberIds or brushPath required'}), 400
+
+        coid = _uid()
+        merger = session.get('username') or ''
+        con.execute(
+            '''INSERT INTO candidate_object
+                 (id, batch_id, project_image_id, merger, created_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, NULL)''',
+            (coid, batch_id, image_id, merger, _now()),
+        )
+        # De-duplicate to keep the (co, annotation) unique-pair contract.
+        for mid in list(dict.fromkeys(member_ids)):
+            con.execute(
+                '''INSERT INTO co_membership (candidate_object_id, annotation_id)
+                   VALUES (?, ?)''',
+                (coid, mid),
+            )
+        con.commit()
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        return jsonify(_co_out(con, row)), 201
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.patch('/api/candidate-objects/<coid>')
+@login_required
+def patch_candidate_object(coid: str):
+    """Group/ungroup a CO's members (addIds / removeIds). Emptying the CO
+    soft-dissolves it (deleted_at set) — the merger's undo can then restore it
+    (v1: no explicit restore endpoint; the row survives for provenance)."""
+    body = request.json or {}
+    add_ids = list(body.get('addIds') or [])
+    remove_ids = list(body.get('removeIds') or [])
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'not found'}), 404
+        batch = con.execute(
+            'SELECT * FROM batch WHERE id = ?', (row['batch_id'],)
+        ).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id']) or _co_owner_or_403(row)
+        if err:
+            return err
+        if row['deleted_at']:
+            return jsonify({'error': 'candidate object dissolved'}), 404
+
+        if add_ids:
+            pooled = _pooled_annotation_ids_for_image(
+                con, row['batch_id'], row['project_image_id']
+            )
+            bad = [mid for mid in add_ids if mid not in pooled]
+            if bad:
+                return jsonify({'error': 'member id is not a pooled mark of this batch',
+                                'invalidIds': bad}), 422
+            for mid in add_ids:
+                con.execute(
+                    '''INSERT OR IGNORE INTO co_membership
+                         (candidate_object_id, annotation_id) VALUES (?, ?)''',
+                    (coid, mid),
+                )
+        if remove_ids:
+            qmarks = ','.join('?' * len(remove_ids))
+            con.execute(
+                f'''DELETE FROM co_membership
+                    WHERE candidate_object_id = ? AND annotation_id IN ({qmarks})''',
+                (coid, *remove_ids),
+            )
+
+        remaining = con.execute(
+            'SELECT COUNT(*) c FROM co_membership WHERE candidate_object_id = ?',
+            (coid,),
+        ).fetchone()['c']
+        if remaining == 0:
+            con.execute(
+                'UPDATE candidate_object SET deleted_at = ? WHERE id = ?',
+                (_now(), coid),
+            )
+        con.commit()
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        return jsonify(_co_out(con, row))
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/candidate-objects/<coid>')
+@login_required
+def dissolve_candidate_object(coid: str):
+    """Soft-dissolve a CO (deleted_at set). The row + its co_membership edges are
+    preserved for provenance; list_candidate_objects hides it going forward."""
+    con = _db.get_db()
+    try:
+        row = con.execute(
+            'SELECT * FROM candidate_object WHERE id = ?', (coid,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'not found'}), 404
+        batch = con.execute(
+            'SELECT * FROM batch WHERE id = ?', (row['batch_id'],)
+        ).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id']) or _co_owner_or_403(row)
+        if err:
+            return err
+        con.execute(
+            'UPDATE candidate_object SET deleted_at = ? '
+            'WHERE id = ? AND deleted_at IS NULL',
+            (_now(), coid),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode Phase 2a: erasures ─────────────────────────────────────────────
+# An erasure = a per-merger "this mark is not a lesion / an error" vote on a
+# pooled mark — a recoverable TOGGLE (delete the row to un-erase; recovery beyond
+# undo/redo), scoped to the merger who cast it (see
+# alembic/versions/0006_co_erasure.py). The source annotation is NEVER touched
+# — erasure lives in its own table so un-erase always restores the mark from
+# provenance. Mirrors the CO endpoints above (member-gated; per-merger visibility).
+
+
+def _annotation_is_pooled_in_batch(con, batch_id: str, annotation_id: str) -> bool:
+    """True iff `annotation_id` is a pooled mark of this batch — a live
+    annotation that intersects any of the batch's active tiles. Same scoping as
+    `_pooled_annotations` / `_pooled_annotation_ids_for_image`, generalised
+    across every image in the batch (an erasure POST identifies a mark by id
+    only — no imageId in the payload)."""
+    row = con.execute(
+        '''SELECT 1 FROM annotation a
+           JOIN annotation_tile atl ON atl.annotation_id = a.id
+           JOIN batch_tile bt ON bt.tile_id = atl.tile_id
+           WHERE bt.batch_id = ? AND a.id = ? AND a.deleted_at IS NULL
+           LIMIT 1''',
+        (batch_id, annotation_id),
+    ).fetchone()
+    return row is not None
+
+
+@projects_bp.get('/api/batches/<batch_id>/erasures')
+@login_required
+def list_erasures(batch_id: str):
+    """That merger's erasures for this batch — the pooled-annotation ids they've
+    toggled off. Per-merger isolation: another merger's erasures never appear
+    here (co_erasure rows are keyed by (batch, merger, annotation))."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        rows = con.execute(
+            '''SELECT annotation_id FROM co_erasure
+               WHERE batch_id = ? AND merger = ?
+               ORDER BY created_at ASC''',
+            (batch_id, merger),
+        ).fetchall()
+        return jsonify({'erasedIds': [r['annotation_id'] for r in rows]})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/erasures')
+@login_required
+def create_erasure(batch_id: str):
+    """Cast an erasure vote on a pooled mark for the acting merger. The mark
+    must be a pooled mark of this batch (rejected 422 otherwise). Idempotent:
+    a repeat erase of the same mark is a no-op — the
+    UNIQUE (batch, merger, annotation) constraint dedupes so we never surface
+    a 500 on a second erase."""
+    body = request.json or {}
+    annotation_id = body.get('annotationId')
+    if not annotation_id:
+        return jsonify({'error': 'annotationId required'}), 400
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        if not _annotation_is_pooled_in_batch(con, batch_id, annotation_id):
+            return jsonify({'error': 'annotationId is not a pooled mark of this batch'}), 422
+        merger = session.get('username') or ''
+        con.execute(
+            '''INSERT OR IGNORE INTO co_erasure
+                 (id, batch_id, merger, annotation_id, created_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (_uid(), batch_id, merger, annotation_id, _now()),
+        )
+        con.commit()
+        return jsonify({'ok': True, 'annotationId': annotation_id}), 201
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/erasures/<annotation_id>')
+@login_required
+def delete_erasure(batch_id: str, annotation_id: str):
+    """Un-erase (recoverable toggle) — drop the acting merger's erasure row on
+    this mark. Idempotent: deleting a non-existent erasure is a no-op 204 (so
+    an undo replaying against a stale state can't spuriously 404)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        con.execute(
+            '''DELETE FROM co_erasure
+               WHERE batch_id = ? AND merger = ? AND annotation_id = ?''',
+            (batch_id, merger, annotation_id),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
+# ── merge mode Phase 2b: completeness + explicit submission ───────────────────
+# A merger's pass is COMPLETE when every pooled mark for the batch is accounted
+# for — a member of one of THAT merger's LIVE candidate objects (co_membership
+# via candidate_object.deleted_at IS NULL) OR erased by that merger (co_erasure).
+# Completeness only ENABLES; SUBMIT is the explicit "I'm done — lock my pass so
+# agreement can compute across mergers" signal (a merger may reach completeness
+# yet keep revising), recorded per merger in `merge_submission`
+# (alembic/versions/0008_merge_submission.py). Mirrors the CO/erasure handlers
+# above (member-gated; per-merger isolation).
+
+
+def _pooled_annotation_ids_for_batch(con, batch_id: str) -> set[str]:
+    """Every pooled mark id for this batch across all its images — the same
+    scoping as `_pooled_annotations` / `_pooled_annotation_ids_for_image`
+    (cross-annotator, live, intersects an active batch tile), rolled up per
+    batch for the completeness count."""
+    rows = con.execute(
+        '''SELECT DISTINCT a.id FROM annotation a
+           JOIN annotation_tile atl ON atl.annotation_id = a.id
+           JOIN batch_tile bt ON bt.tile_id = atl.tile_id
+           WHERE bt.batch_id = ? AND a.deleted_at IS NULL''',
+        (batch_id,),
+    ).fetchall()
+    return {r['id'] for r in rows}
+
+
+def _merger_accounted_ids(con, batch_id: str, merger: str, pooled: set[str]) -> set[str]:
+    """The distinct pooled marks THIS merger has accounted for on this batch —
+    (members of their LIVE COs via co_membership) ∪ (their erasures via
+    co_erasure). Intersected with `pooled` so a mark that has since dropped
+    out of the pool can never count. Per-merger by design."""
+    if not pooled:
+        return set()
+    accounted: set[str] = set()
+    rows = con.execute(
+        '''SELECT DISTINCT m.annotation_id FROM co_membership m
+           JOIN candidate_object c ON c.id = m.candidate_object_id
+           WHERE c.batch_id = ? AND c.merger = ? AND c.deleted_at IS NULL''',
+        (batch_id, merger),
+    ).fetchall()
+    accounted.update(r['annotation_id'] for r in rows)
+    rows = con.execute(
+        '''SELECT annotation_id FROM co_erasure
+           WHERE batch_id = ? AND merger = ?''',
+        (batch_id, merger),
+    ).fetchall()
+    accounted.update(r['annotation_id'] for r in rows)
+    return accounted & pooled
+
+
+@projects_bp.get('/api/batches/<batch_id>/merge-completeness')
+@login_required
+def merge_completeness(batch_id: str):
+    """That merger's pass status on this batch: total pooled marks, how many
+    they've accounted for (CO-member or erased), whether that's complete, and
+    whether they've submitted (with the ISO timestamp). Read-only; per-merger."""
+    merger = (request.args.get('merger') or '').strip()
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        pooled = _pooled_annotation_ids_for_batch(con, batch_id)
+        accounted = _merger_accounted_ids(con, batch_id, merger, pooled)
+        total = len(pooled)
+        n_acc = len(accounted)
+        row = con.execute(
+            'SELECT submitted_at FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        ).fetchone()
+        submitted_at = row['submitted_at'] if row else None
+        return jsonify({
+            'total': total,
+            'accounted': n_acc,
+            'complete': n_acc == total,
+            'submitted': submitted_at is not None,
+            'submittedAt': submitted_at,
+        })
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.post('/api/batches/<batch_id>/submit-merge')
+@login_required
+def submit_merge(batch_id: str):
+    """Lock the SESSION user's merge pass on this batch — 409 if their pass
+    isn't complete (every pooled mark accounted for via CO-member or erasure),
+    otherwise UPSERT the merge_submission row so re-submit is idempotent
+    (never a 500) and returns the recorded timestamp."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        pooled = _pooled_annotation_ids_for_batch(con, batch_id)
+        accounted = _merger_accounted_ids(con, batch_id, merger, pooled)
+        if len(accounted) < len(pooled):
+            return jsonify({'error': 'merge pass is not complete',
+                            'total': len(pooled), 'accounted': len(accounted)}), 409
+        # (batch_id, merger) is the PK — a repeat submit refreshes submitted_at
+        # instead of raising a UNIQUE conflict.
+        con.execute(
+            '''INSERT INTO merge_submission (batch_id, merger, submitted_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT (batch_id, merger)
+               DO UPDATE SET submitted_at = excluded.submitted_at''',
+            (batch_id, merger, _now()),
+        )
+        con.commit()
+        row = con.execute(
+            'SELECT submitted_at FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        ).fetchone()
+        return jsonify({'ok': True, 'submittedAt': row['submitted_at']})
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.delete('/api/batches/<batch_id>/submit-merge')
+@login_required
+def unsubmit_merge(batch_id: str):
+    """Un-submit — drop the SESSION user's merge_submission row so they may
+    revise. Idempotent (no row is a no-op 204)."""
+    con = _db.get_db()
+    try:
+        batch = con.execute('SELECT * FROM batch WHERE id = ?', (batch_id,)).fetchone()
+        if not batch:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, batch['project_id'])
+        if err:
+            return err
+        merger = session.get('username') or ''
+        con.execute(
+            'DELETE FROM merge_submission WHERE batch_id = ? AND merger = ?',
+            (batch_id, merger),
+        )
+        con.commit()
+        return ('', 204)
+    finally:
+        _db.close_db(con)
+
+
+def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: list[str],
+                         raw_taxonomy: Any = _UNSET) -> list:
     """This annotator's non-deleted annotations on this image that intersect an active tile.
 
     Implements the within-your-own-work visibility rule; cross-annotator blindness is by
@@ -1084,36 +2211,414 @@ def _visible_annotations(con, image_id: str, annotator: str, active_tile_ids: li
               AND atl.tile_id IN ({qmarks})''',
         (image_id, annotator, *active_tile_ids),
     ).fetchall()
-    return [_annotation_out(r) for r in rows]
+    return [_annotation_out(r, con, raw_taxonomy=raw_taxonomy) for r in rows]
 
 
-def _annotation_out(row: dict) -> dict:
+def _member_strokes_out(con, annotation_id: str) -> list:
+    """Member strokes of a fused mask, shaped for JSON — the per-stroke clicked/mouse
+    vertices (a11y #40 v1b vertex editing). A stroke's `points` are the raw input path
+    (polyline = clicked vertices; brush = the freehand trail); the FE draws draggable
+    handles from them when the mask is selected and PATCHes /strokes/<id> to reshape.
+
+    t50 phase 1: `points` is reconstructed from the normalized `vertex`/`stroke_vertex`
+    tables (the source of truth), NOT `stroke.points_json` — see `_read_stroke_vertices`.
+    """
+    rows = con.execute(
+        'SELECT id, tool, stroke_width, samples_json FROM stroke WHERE annotation_id = ?',
+        (annotation_id,)).fetchall()
+    return [{'id': s['id'], 'tool': s['tool'],
+             'points': _read_stroke_vertices(con, s['id']),
+             'vertexIds': _read_stroke_vertex_ids(con, s['id']),
+             'strokeWidth': s['stroke_width'],
+             # t141 P1a: the raw max-rate capture (None when the stroke has no rich samples).
+             'samples': json.loads(s['samples_json']) if s['samples_json'] else None}
+            for s in rows]
+
+
+def _annotation_out(row: dict, con=None, raw_taxonomy: Any = _UNSET) -> dict:
     """Shape an `annotation` (mask) row for JSON. kind='stroke' masks render from the
     stored fused `rings` (geometry_json); other kinds render from their own `points`
-    (never fused, so points_json is always the exact shape that was drawn)."""
+    (never fused, so points_json is always the exact shape that was drawn).
+
+    t64: `label`/`labelColor`/`labelSnapshot` resolve LIVE by `compound_id` from
+    `raw_taxonomy` (the project's CURRENT `classes_json`, passed by the caller) — so a
+    rename/recolour of a compound flows through to every lesion that references it.
+    Falls back to the frozen `label_snapshot` column (and bare `label` text) only when
+    `compound_id` is null/unresolvable (legacy data, or `raw_taxonomy` wasn't supplied
+    by a caller that doesn't have it handy — same lenient behaviour as before t64).
+
+    When `con` is supplied, a stroke mask also carries its `strokes` (member vertices)
+    so the FE can offer vertex editing (a11y #40 v1b) — omitted otherwise (small extra
+    query kept opt-in for callers that don't need it)."""
     is_mask = row['kind'] == 'stroke'
     rings = json.loads(row['geometry_json']) if (is_mask and row['geometry_json']) else []
     points = [] if is_mask else (json.loads(row['points_json']) if row['points_json'] else [])
-    return {
+    compound_id = row.get('compound_id') if isinstance(row, dict) else None
+    live = None
+    if compound_id and raw_taxonomy is not _UNSET:
+        live = taxonomy.resolve_compound_snapshot(raw_taxonomy, compound_id)
+    if live is not None:
+        snapshot, label, label_color = live, live['name'], live['color']
+    else:
+        snap_raw = row.get('label_snapshot') if isinstance(row, dict) else None
+        snapshot = json.loads(snap_raw) if snap_raw else None
+        label = row['label']
+        label_color = snapshot.get('color') if snapshot else None
+    out = {
         'id': row['id'], 'kind': row['kind'], 'passNo': row['pass_no'],
-        'points': points, 'rings': rings, 'label': row['label'],
+        'points': points, 'rings': rings, 'label': label,
+        'labelColor': label_color, 'labelSnapshot': snapshot,
         'viewport': json.loads(row['viewport_json']) if row['viewport_json'] else None,
         'annotator': row['annotator'], 'imageId': row['project_image_id'],
     }
+    if is_mask and con is not None:
+        out['strokes'] = _member_strokes_out(con, row['id'])
+    return out
 
 
 # ── annotations CRUD (the painting data sink) ─────────────────────────────────
 
 def _insert_stroke(con, sid: str, annotation_id: str, kind: str, points: list,
-                   stroke_width, outline, now: str) -> None:
-    """INSERT the provenance-only `stroke` row bridged to its owning `annotation`."""
+                   stroke_width, outline, now: str, tool: str = 'brush',
+                   vertex_refs: list | None = None, samples: list | None = None) -> None:
+    """INSERT the provenance-only `stroke` row bridged to its owning `annotation`.
+
+    `tool` records the input mode that created the stroke (brush | polyline) — brush and
+    polyline are two ways of producing the same stroke data (a11y #40). It drives editing
+    affordances (a polyline's clicked vertices are editable), never fusion.
+
+    `vertex_refs` (t50 phase 2a) — see `_write_stroke_vertices`.
+
+    `samples` (t141 P1a) — the OPTIONAL raw max-rate input stream (one entry per pointer
+    sample: x, y, t, pressure, tiltX, tiltY, twist, pointerType), stored verbatim as a JSON
+    blob. Additive: None ⇒ NULL ⇒ no rich capture. Never affects geometry.
+    """
     con.execute(
         '''INSERT INTO stroke (id, annotation_id, kind, points_json, stroke_width,
-             outline_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+             outline_json, created_at, tool, samples_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         (sid, annotation_id, kind, json.dumps(points), stroke_width,
-         json.dumps(outline) if outline is not None else None, now),
+         json.dumps(outline) if outline is not None else None, now, tool,
+         json.dumps(samples) if samples is not None else None),
     )
+    _write_stroke_vertices(con, sid, points, vertex_refs)
+
+
+def _write_stroke_vertices(con, stroke_id: str, points: list,
+                           vertex_refs: list | None = None) -> None:
+    """t50 phase 1/2a: write-through — replace `stroke_id`'s ordered vertex list to match
+    `points` (delete + reinsert stroke_vertex rows, the whole-stroke edit granularity this
+    phase supports).
+
+    `vertex_refs` (t50 phase 2a, optional, parallel to `points`): per point, either an
+    EXISTING vertex id to REFERENCE (a draw-time snap → the new/edited stroke_vertex row
+    points at that SAME vertex, sharing/locking it with whatever else already references
+    it), or None/absent to MINT a fresh vertex (phase-1 behaviour, back-compatible when
+    `vertex_refs` is omitted entirely). A ref to a vertex id that doesn't actually exist
+    just falls back to minting — never crashes. A referenced vertex's `x,y` is NEVER
+    rewritten here — the FE snapped to its canonical position, which stays authoritative.
+
+    Reconciliation ordering matters: we WRITE the new stroke_vertex rows first (so a
+    reused id keeps its row, e.g. re-sending a stroke's own vertexIds as refs is a
+    no-op-shape re-point) and only THEN garbage-collect vertices this stroke used to
+    reference — a vertex still referenced by another stroke_vertex row (this stroke's new
+    rows, or another stroke's rows — a share) survives; nothing else does.
+    """
+    old_vids = [r['vertex_id'] for r in con.execute(
+        'SELECT vertex_id FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,)).fetchall()]
+    con.execute('DELETE FROM stroke_vertex WHERE stroke_id = ?', (stroke_id,))
+    refs = vertex_refs if vertex_refs is not None else []
+    for seq, p in enumerate(points or []):
+        ref = refs[seq] if seq < len(refs) else None
+        x, y = float(p[0]), float(p[1])
+        size = float(p[2]) if len(p) >= 3 and p[2] is not None else None
+        vid = None
+        if ref is not None:
+            exists = con.execute('SELECT 1 FROM vertex WHERE id = ?', (ref,)).fetchone()
+            if exists:
+                vid = ref
+        if vid is None:
+            vid = _uid()
+            con.execute('INSERT INTO vertex (id, x, y) VALUES (?, ?, ?)', (vid, x, y))
+        con.execute(
+            'INSERT INTO stroke_vertex (stroke_id, seq, vertex_id, size) VALUES (?, ?, ?, ?)',
+            (stroke_id, seq, vid, size))
+    # GC AFTER writing the new refs (not before) — a vertex this stroke used to reference
+    # is deleted only if nothing (this stroke's new rows, or another stroke) references it
+    # anymore; a shared vertex survives.
+    if old_vids:
+        qm = ','.join('?' * len(old_vids))
+        con.execute(
+            f'DELETE FROM vertex WHERE id IN ({qm}) '
+            'AND id NOT IN (SELECT vertex_id FROM stroke_vertex)', old_vids)
+
+
+def _read_stroke_vertices(con, stroke_id: str) -> list:
+    """t50 phase 1: the ordered `[[x,y]]`/`[[x,y,size]]` point list reconstructed from the
+    normalized `vertex`/`stroke_vertex` tables — the source of truth (see
+    `_write_stroke_vertices`). A 3-tuple is emitted when the reference's `size` is
+    non-NULL, a 2-tuple otherwise, so the exact drawn shape round-trips."""
+    rows = con.execute(
+        '''SELECT v.x AS x, v.y AS y, sv.size AS size
+           FROM stroke_vertex sv JOIN vertex v ON v.id = sv.vertex_id
+           WHERE sv.stroke_id = ? ORDER BY sv.seq''', (stroke_id,)).fetchall()
+    return [[r['x'], r['y']] if r['size'] is None else [r['x'], r['y'], r['size']]
+            for r in rows]
+
+
+def _read_stroke_vertex_ids(con, stroke_id: str) -> list:
+    """t50 phase 2a: the ordered `vertex_id` list parallel to `_read_stroke_vertices` —
+    the stable per-point identity the FE indexes (position → vertex id) and later sends
+    back as a `vertexRefs` snap-lock or id-stable reconciliation ref."""
+    rows = con.execute(
+        'SELECT vertex_id FROM stroke_vertex WHERE stroke_id = ? ORDER BY seq',
+        (stroke_id,)).fetchall()
+    return [r['vertex_id'] for r in rows]
+
+
+# ── Session-free permission checks (call sites: the do_* mutators below, which are also
+#    reached from the WebSocket op handler in webapp/asgi.py that runs outside a Flask
+#    request context and so cannot read `session`). The Flask shims still use the older
+#    session-driven helpers above; both must stay in sync. ─────────────────────────────
+
+def _member_or_403_direct(con, project_id: str, username: str | None, user_id):
+    """Session-free variant of _member_or_403 — takes user identity as explicit args.
+    Returns None (permitted) or ({'error': 'forbidden'}, 403). Admin bypasses."""
+    if username == 'admin':
+        return None
+    row = con.execute(
+        'SELECT 1 FROM project_annotator WHERE project_id = ? AND user_id = ?',
+        (project_id, user_id),
+    ).fetchone()
+    if row is None:
+        return {'error': 'forbidden'}, 403
+    return None
+
+
+def _owner_or_403_direct(row_annotator: str | None, username: str | None):
+    """Session-free variant of _owner_or_403. Admin bypasses."""
+    if username == 'admin':
+        return None
+    if (row_annotator or '') != (username or ''):
+        return {'error': 'forbidden'}, 403
+    return None
+
+
+# ── t127: batch-membership enforcement (t126 Phase 3) ──────────────────────────────────
+#
+# A user who is NOT a member of a batch (the durable `batch_member` set, t126 Phase 2)
+# must not be able to PAINT/EDIT that batch's tiles — their pre-existing annotations stay
+# read/delete-only. The gate lives HERE, inside the shared do_* cores, so it covers BOTH
+# the HTTP route shims and the WebSocket op handler (webapp/asgi.py) that calls the same
+# functions — a gate that only guards the HTTP route would be bypassable over WS.
+
+def _batch_tiles_or_403(con, tile_ids, username: str | None, is_admin: bool):
+    """Require the actor be a member of EVERY batch the given tiles belong to. Tiles that
+    aren't in any batch impose no restriction. Admin bypasses. Returns a 403 tuple or
+    None (permitted)."""
+    if is_admin or not tile_ids:
+        return None
+    qmarks = ','.join('?' * len(tile_ids))
+    batch_ids = {r['batch_id'] for r in con.execute(
+        f'SELECT DISTINCT batch_id FROM batch_tile WHERE tile_id IN ({qmarks})',
+        tile_ids).fetchall()}
+    for batch_id in batch_ids:
+        if (username or '') not in _batch_members(con, batch_id):
+            return {'error': 'forbidden'}, 403
+    return None
+
+
+def _batch_gate_for_annotation_or_403(con, annotation_id: str, username: str | None,
+                                       is_admin: bool):
+    """Resolve the batch(es) an EXISTING annotation currently touches (via its
+    annotation_tile links) and gate on membership. Used by edit/reverse/splice seams
+    where the touched tiles are the annotation's already-committed geometry."""
+    if is_admin:
+        return None
+    tile_ids = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    return _batch_tiles_or_403(con, tile_ids, username, is_admin)
+
+
+# ── The mutation core (do_* functions) ──────────────────────────────────────────────────
+#
+# The polyline undo-determinism fix (feat/annotation-ws Phase 1) makes the WebSocket the
+# single ordered channel for annotation ops so all writes serialize per connection. To keep
+# ONE mutation path (BE tests are our guardrail the WS extraction didn't drift), the Flask
+# route bodies for `create_annotation` / `edit_stroke` / `reverse_stroke_edit` moved into
+# these plain `do_*(con, project_id, body, username, user_id, is_admin) -> (dict, status)`
+# functions. Both the REST shims below AND the WS op handler in webapp/asgi.py call these
+# same functions — the HTTP contract is UNCHANGED (BE tests still enforce it).
+
+def do_create_annotation(con, project_id: str, body: dict, *,
+                          username: str | None, user_id, is_admin: bool):
+    """Core of create_annotation — returns (response_dict, status). See the route shim's
+    docstring below for the full contract."""
+    image_id = body.get('imageId')
+    kind = body.get('kind')
+    points = body.get('points') or []
+    # t50 phase 2a: optional per-point vertex references (parallel to `points`) — an
+    # existing vertex id to REFERENCE (a draw-time snap → shared/locked vertex) or None to
+    # MINT fresh (absent entirely = mint all, phase-1 back-compatible).
+    vertex_refs = body.get('vertexRefs')
+    # Annotate-as-yourself: non-admins are forced to their own identity; admin may seed any
+    # annotator (matches the _member_or_403 / _owner_or_403 admin bypass).
+    if is_admin:
+        annotator = (body.get('annotator') or '').strip()
+    else:
+        annotator = username or ''
+    if not (image_id and kind and points and annotator):
+        return {'error': 'imageId, kind, points, annotator required'}, 400
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    label = body.get('label')
+    pass_no = body.get('passNo')
+    viewport_json = json.dumps(body['viewport']) if body.get('viewport') else None
+    hsv_json = json.dumps(body['hsvHist']) if body.get('hsvHist') else None
+    # t64: resolve the incoming label NAME to its matching compound's STABLE id and
+    # store that (`compound_id`) — display then resolves {name,color,selections} LIVE
+    # from the CURRENT taxonomy (see _annotation_out), so a later rename/recolour flows
+    # through to every lesion painted with that compound. `label_snapshot` is still
+    # written as a fallback (used only when compound_id is null/unresolvable).
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    compound_id = taxonomy.id_from_label(classes_json, label)
+    snapshot = taxonomy.snapshot_from_label(classes_json, label)
+    snapshot_json = json.dumps(snapshot) if snapshot else None
+    now = _now()
+    sid = _uid()
+
+    if kind == 'stroke':
+        # Clamp stroke width to [1px, image diagonal] — the API must not trust the client.
+        stroke_width = None
+        if body.get('strokeWidth') is not None:
+            im = _image_row(con, image_id)
+            diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+            try:
+                w = float(body['strokeWidth'])
+                stroke_width = max(1.0, min(w, diag) if diag else w)
+            except (TypeError, ValueError):
+                stroke_width = None
+        tool = 'polyline' if body.get('tool') == 'polyline' else 'brush'
+        # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — the server
+        # is the single source of stroke geometry, computed via the geo-engine wasm module.
+        outline = _compute_stroke_outline(points, stroke_width, tool)
+        footprint = _footprint(points, stroke_width, outline)
+        # t59 (Christian, 2026-07-19): defer the tile check for POLYLINE ONLY. A polyline
+        # is drawn click-by-click and an intermediate click may legitimately land off-tile
+        # mid-stroke (e.g. panning while drawing) — rejecting it here 422s and resets the
+        # per-click session, spuriously minting a second annotation on the next click. The
+        # whole-stroke tile check instead runs on FINISH (see do_edit_stroke's `final`
+        # branch below) — keep or discard, exactly like a no-tile brush stroke. Brush is
+        # UNCHANGED: an off-tile brush stroke still 422s at create (that instant reject IS
+        # the brush's discard path).
+        if footprint is None or footprint.is_empty:
+            return {'error': 'annotation must intersect at least one tile'}, 422
+        footprint_tile_ids = _tiles_for_geom(con, image_id, footprint)
+        if tool != 'polyline' and not footprint_tile_ids:
+            return {'error': 'annotation must intersect at least one tile'}, 422
+        # t127: gate paint on batch membership, resolved from the tile(s) this stroke
+        # touches. A polyline may be off-tile mid-draw (footprint_tile_ids empty) — the
+        # gate applies once/if it lands on a tile (also re-checked on finish, see
+        # _do_finish_stroke).
+        err = _batch_tiles_or_403(con, footprint_tile_ids, username, is_admin)
+        if err:
+            return err
+
+        # t68: bbox-index prune (same-annotator/label stroke masks overlapping the new
+        # footprint) → exact test, instead of scanning every same-scope mask.
+        fuse_set = _annotations_overlapping(con, image_id, footprint,
+                                            annotator=annotator, kind='stroke', label=label)
+
+        merged = _engine_fuse([footprint] + [g for _, g in fuse_set]) if fuse_set else footprint
+        if merged.geom_type == 'MultiPolygon':
+            # Defensive: every fuse_set member was chosen because it intersects the new
+            # footprint, so the union should already be one piece; a boundary-only touch
+            # is the one case that can still split it — keep the largest piece.
+            merged = max(merged.geoms, key=lambda g: g.area)
+
+        aid = _uid()
+        con.execute(
+            '''INSERT INTO annotation
+                 (id, project_id, project_image_id, annotator, kind, pass_no, label,
+                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
+                  hsv_hist_json, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+            (aid, project_id, image_id, annotator, pass_no, label, snapshot_json, compound_id,
+             json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
+        )
+        _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now,
+                      tool=tool, vertex_refs=vertex_refs, samples=body.get('samples'))
+        _set_bbox(con, aid, merged)  # t68 index
+
+        consumed_groups = []
+        for r, _g in fuse_set:
+            stroke_ids = [s['id'] for s in con.execute(
+                'SELECT id FROM stroke WHERE annotation_id = ?', (r['id'],)
+            ).fetchall()]
+            if stroke_ids:
+                qmarks = ','.join('?' * len(stroke_ids))
+                con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
+                           (aid, *stroke_ids))
+            consumed_groups.append({'annotationId': r['id'], 'strokeIds': stroke_ids})
+        consumed_ids = [g['annotationId'] for g in consumed_groups]
+        if consumed_ids:
+            qmarks = ','.join('?' * len(consumed_ids))
+            con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
+                       (now, *consumed_ids))
+            con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks})',
+                       consumed_ids)
+
+        tile_ids = _tiles_for_geom(con, image_id, merged)
+        for tid in tile_ids:
+            con.execute(
+                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                (aid, tid),
+            )
+        tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
+        con.commit()
+        out = _annotation_out(
+            con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(),
+            con, raw_taxonomy=classes_json)
+        out.update({'tileIds': tile_ids, 'tileStates': tile_states,
+                   'consumedAnnotationIds': consumed_ids, 'createdStrokeId': sid,
+                   'consumedGroups': consumed_groups})
+        return out, 201
+
+    # Non-fusing kinds (point / line / polygon): unconditional fresh 1:1 wrap.
+    tile_ids = _tiles_intersecting(con, image_id, kind, points)
+    if not tile_ids:
+        return {'error': 'annotation must intersect at least one tile'}, 422
+    err = _batch_tiles_or_403(con, tile_ids, username, is_admin)  # t127
+    if err:
+        return err
+    aid = _uid()
+    con.execute(
+        '''INSERT INTO annotation
+             (id, project_id, project_image_id, annotator, kind, pass_no, label,
+              label_snapshot, compound_id, points_json, geometry_json, viewport_json,
+              hsv_hist_json, created_at, updated_at, deleted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
+        (aid, project_id, image_id, annotator, kind, pass_no, label, snapshot_json, compound_id,
+         json.dumps(points), viewport_json, hsv_json, now, now),
+    )
+    _insert_stroke(con, sid, aid, kind, points, None, None, now, vertex_refs=vertex_refs)
+    _reindex_bbox(con, aid)  # t68 index (non-stroke geometry = points_json)
+    for tid in tile_ids:
+        con.execute(
+            'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+            (aid, tid),
+        )
+    tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
+    con.commit()
+    out = _annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone(),
+        raw_taxonomy=classes_json)
+    out.update({'tileIds': tile_ids, 'tileStates': tile_states,
+               'consumedAnnotationIds': [], 'createdStrokeId': sid, 'consumedGroups': []})
+    return out, 201
 
 
 @projects_bp.post('/api/projects/<project_id>/annotations')
@@ -1129,137 +2634,900 @@ def create_annotation(project_id: str):
     Response always carries `consumedAnnotationIds` / `consumedGroups` / `createdStrokeId`
     (empty/none when no fuse happened) so the FE can tell a plain create from a merge and
     drive undo accordingly (canvasHistory.ts).
+
+    This is a thin shim around do_create_annotation — the WS op handler in webapp/asgi.py
+    calls that same core so mutations serialize through the single WS channel.
     """
     body = request.json or {}
-    image_id = body.get('imageId')
-    kind = body.get('kind')
-    points = body.get('points') or []
-    # Annotate-as-yourself: non-admins are forced to their own identity; admin may seed any
-    # annotator (matches the _member_or_403 / _owner_or_403 admin bypass).
-    if session.get('username') == 'admin':
-        annotator = (body.get('annotator') or '').strip()
-    else:
-        annotator = session.get('username') or ''
-    if not (image_id and kind and points and annotator):
-        return jsonify({'error': 'imageId, kind, points, annotator required'}), 400
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
+        result, status = do_create_annotation(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def _do_finish_stroke(con, srow, ann, points, *, username: str | None = None,
+                       is_admin: bool = False):
+    """t59 FINISH: whole-stroke keep/discard, brush-parity. `points` is the stroke's
+    current (already-persisted, possibly off-tile mid-draw) vertex list. Keep leaves the
+    annotation untouched (same id, same rows) — discard soft-deletes it and drops its
+    tile links, exactly like a no-tile brush stroke create-time reject.
+
+    t111: the keep/discard decision is over the WHOLE annotation's footprint (every live
+    member stroke), NOT just the finishing stroke's own points. A polyline click that
+    snapped onto an existing on-tile mask CONSUMES it (fuse-on-create), so the finishing
+    stroke can be entirely off-tile while its annotation still holds co-fused on-tile
+    geometry — discarding on the lone stroke's footprint wiped that geometry (DATA LOSS).
+    Brush-parity is unchanged for a LONE off-tile stroke (its annotation IS just itself)."""
+    stroke_id = srow['id']
+    aid = ann['id']
+    image_id = ann['project_image_id']
+    stroke_width = srow['stroke_width']
+    outline = json.loads(srow['outline_json']) if srow['outline_json'] else None
+    before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+              'strokeWidth': srow['stroke_width'], 'outline': outline}
+    # Footprint of the WHOLE annotation: union every live member stroke's footprint, using
+    # the finishing stroke's INCOMING points/width/outline for itself (in case `final` also
+    # carried edits) and the stored record for its co-fused siblings.
+    member_polys = []
+    for m in con.execute('SELECT * FROM stroke WHERE annotation_id = ?', (aid,)).fetchall():
+        if m['id'] == stroke_id:
+            m_pts, m_w, m_out = points, stroke_width, outline
+        else:
+            m_pts = json.loads(m['points_json']) if m['points_json'] else []
+            m_w = m['stroke_width']
+            m_out = json.loads(m['outline_json']) if m['outline_json'] else None
+        poly = _footprint(m_pts, m_w, m_out)
+        if poly is not None and not poly.is_empty:
+            member_polys.append(poly)
+    footprint = _engine_fuse(member_polys) if member_polys else None
+    tile_ids = _tiles_for_geom(con, image_id, footprint) \
+        if footprint is not None and not footprint.is_empty else []
+    if tile_ids:
+        # t127: gate the finished (on-tile) stroke on batch membership — a non-member
+        # must not be able to land a polyline on a batch tile via finish either.
+        err = _batch_tiles_or_403(con, tile_ids, username, is_admin)
         if err:
             return err
-        label = body.get('label')
-        pass_no = body.get('passNo')
-        viewport_json = json.dumps(body['viewport']) if body.get('viewport') else None
-        hsv_json = json.dumps(body['hsvHist']) if body.get('hsvHist') else None
-        now = _now()
-        sid = _uid()
+        return {'ok': True, 'strokeId': stroke_id, 'discarded': False, 'before': before,
+                'deletedAnnotationIds': [], 'deletedGroups': [], 'created': [],
+                'createdGroups': [], 'tileStates': []}, 200
+    # No tile touched at all — discard, same as a no-tile brush stroke: soft-delete the
+    # annotation and drop its (empty, since off-tile) annotation_tile links.
+    now = _now()
+    tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (aid,)).fetchall()]
+    con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, aid))
+    con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (aid,))
+    tile_states = _mark_tiles_dirty(con, tiles, ann['annotator'])
+    con.commit()
+    return {'ok': True, 'strokeId': stroke_id, 'discarded': True,
+            # Same message text a no-tile BRUSH stroke's create-time 422 carries — the FE
+            # reuses it verbatim for the discard notice (no new i18n string invented).
+            'message': 'annotation must intersect at least one tile',
+            'before': before, 'deletedAnnotationIds': [aid],
+            'deletedGroups': [{'annotationId': aid, 'strokeIds': [stroke_id]}],
+            'created': [], 'createdGroups': [], 'tileStates': tile_states}, 200
 
-        if kind == 'stroke':
-            # Clamp stroke width to [1px, image diagonal] — the API must not trust the client.
-            stroke_width = None
-            if body.get('strokeWidth') is not None:
-                im = _image_row(con, image_id)
-                diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
-                try:
-                    w = float(body['strokeWidth'])
-                    stroke_width = max(1.0, min(w, diag) if diag else w)
-                except (TypeError, ValueError):
-                    stroke_width = None
-            outline = body.get('outline')
-            footprint = _footprint(points, stroke_width, outline)
-            if footprint is None or footprint.is_empty \
-               or not _tiles_for_geom(con, image_id, footprint):
-                return jsonify({'error': 'annotation must intersect at least one tile'}), 422
 
-            fuse_rows = con.execute(
-                '''SELECT * FROM annotation
-                   WHERE project_image_id = ? AND annotator = ? AND kind = 'stroke'
-                     AND label IS ? AND deleted_at IS NULL''',
-                (image_id, annotator, label),
-            ).fetchall()
-            fuse_set = [(r, g) for r in fuse_rows
-                       for g in [_annotation_geom(r)]
-                       if g is not None and not g.is_empty and g.intersects(footprint)]
+def _recompute_fused_scope(con, project_id: str, image_id: str, annotator: str, label,
+                            now: str) -> dict:
+    """Recompute connected components over ALL live strokes in a (image, annotator, label)
+    scope from their CURRENT `points_json`, soft-deleting the affected annotation(s) and
+    minting one fresh annotation per resulting component. This is the recompute half of
+    `do_edit_stroke` (t59), extracted so `do_move_vertex` (t50 phase 3a) can re-fuse a
+    scope after a shared-vertex move without duplicating the fusion/tile-membership logic.
 
-            merged = unary_union([footprint] + [g for _, g in fuse_set]) if fuse_set else footprint
-            if merged.geom_type == 'MultiPolygon':
-                # Defensive: every fuse_set member was chosen because it intersects the new
-                # footprint, so the union should already be one piece; a boundary-only touch
-                # is the one case that can still split it — keep the largest piece.
-                merged = max(merged.geoms, key=lambda g: g.area)
+    Never mutates a mask in place — same invariant as do_edit_stroke. Returns
+    {'deletedAnnotationIds', 'deletedGroups', 'createdIds', 'createdGroups', 'dirtyTiles'};
+    the caller is responsible for `_mark_tiles_dirty`, building the JSON `created` payload,
+    and `con.commit()`.
+    """
+    srows = con.execute(
+        '''SELECT s.* FROM stroke s JOIN annotation a ON a.id = s.annotation_id
+           WHERE a.project_image_id = ? AND a.annotator = ? AND a.label IS ?
+             AND a.kind = 'stroke' AND a.deleted_at IS NULL''',
+        (image_id, annotator, label)).fetchall()
+    if not srows:
+        return {'deletedAnnotationIds': [], 'deletedGroups': [], 'createdIds': [],
+                'createdGroups': [], 'dirtyTiles': []}
+    parsed = [{'id': s['id'],
+               'points': json.loads(s['points_json']) if s['points_json'] else [],
+               'stroke_width': s['stroke_width'],
+               'outline': json.loads(s['outline_json']) if s['outline_json'] else None}
+              for s in srows]
+    components = _stroke_components(parsed)
 
-            aid = _uid()
-            con.execute(
-                '''INSERT INTO annotation
-                     (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                      points_json, geometry_json, viewport_json, hsv_hist_json,
-                      created_at, updated_at, deleted_at)
-                   VALUES (?, ?, ?, ?, 'stroke', ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
-                (aid, project_id, image_id, annotator, pass_no, label,
-                 json.dumps(_poly_rings(merged)), viewport_json, hsv_json, now, now),
-            )
-            _insert_stroke(con, sid, aid, 'stroke', points, stroke_width, outline, now)
+    old_ids = list({s['annotation_id'] for s in srows})
+    # Snapshot metadata (pass_no/label_snapshot/compound_id/viewport/hsv) from any one of
+    # the scope's live annotations BEFORE soft-deleting — they share (annotator, image,
+    # label) so this metadata is consistent across the scope.
+    qmarks0 = ','.join('?' * len(old_ids))
+    ref_ann = con.execute(
+        f'SELECT * FROM annotation WHERE id IN ({qmarks0}) LIMIT 1', old_ids).fetchone()
+    deleted_groups = [{'annotationId': oid,
+                       'strokeIds': [s['id'] for s in srows if s['annotation_id'] == oid]}
+                      for oid in old_ids]
+    con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks0})',
+               (now, *old_ids))
+    con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks0})', old_ids)
 
-            consumed_groups = []
-            for r, _g in fuse_set:
-                stroke_ids = [s['id'] for s in con.execute(
-                    'SELECT id FROM stroke WHERE annotation_id = ?', (r['id'],)
-                ).fetchall()]
-                if stroke_ids:
-                    qmarks = ','.join('?' * len(stroke_ids))
-                    con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
-                               (aid, *stroke_ids))
-                consumed_groups.append({'annotationId': r['id'], 'strokeIds': stroke_ids})
-            consumed_ids = [g['annotationId'] for g in consumed_groups]
-            if consumed_ids:
-                qmarks = ','.join('?' * len(consumed_ids))
-                con.execute(f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
-                           (now, *consumed_ids))
-                con.execute(f'DELETE FROM annotation_tile WHERE annotation_id IN ({qmarks})',
-                           consumed_ids)
-
-            tile_ids = _tiles_for_geom(con, image_id, merged)
-            for tid in tile_ids:
-                con.execute(
-                    'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                    (aid, tid),
-                )
-            tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
-            con.commit()
-            out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone())
-            out.update({'tileIds': tile_ids, 'tileStates': tile_states,
-                       'consumedAnnotationIds': consumed_ids, 'createdStrokeId': sid,
-                       'consumedGroups': consumed_groups})
-            return jsonify(out), 201
-
-        # Non-fusing kinds (point / line / polygon): unconditional fresh 1:1 wrap.
-        tile_ids = _tiles_intersecting(con, image_id, kind, points)
-        if not tile_ids:
-            return jsonify({'error': 'annotation must intersect at least one tile'}), 422
+    dirty_tiles: list[str] = []
+    created_groups: list[dict] = []
+    created_ids: list[str] = []
+    for comp in components:
+        geom = comp['geometry']
+        if geom is None or geom.is_empty:
+            continue
+        geom = _exterior_only(geom)  # fill loop holes — a lesion is a solid blob
+        rings = _poly_rings(geom)
+        if not rings:
+            continue
         aid = _uid()
         con.execute(
             '''INSERT INTO annotation
                  (id, project_id, project_image_id, annotator, kind, pass_no, label,
-                  points_json, geometry_json, viewport_json, hsv_hist_json,
-                  created_at, updated_at, deleted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL)''',
-            (aid, project_id, image_id, annotator, kind, pass_no, label,
-             json.dumps(points), viewport_json, hsv_json, now, now),
-        )
-        _insert_stroke(con, sid, aid, kind, points, None, None, now)
+                  label_snapshot, compound_id, points_json, geometry_json, viewport_json,
+                  hsv_hist_json, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, 'stroke', ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)''',
+            (aid, project_id, image_id, annotator, ref_ann['pass_no'], label,
+             ref_ann['label_snapshot'], ref_ann.get('compound_id'), json.dumps(rings),
+             ref_ann['viewport_json'], ref_ann['hsv_hist_json'], now, now))
+        _set_bbox(con, aid, geom)  # t68 index
+        member_ids = comp['member_ids']
+        qm = ','.join('?' * len(member_ids))
+        con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
+                   (aid, *member_ids))
+        tile_ids = _tiles_for_geom(con, image_id, geom)
         for tid in tile_ids:
             con.execute(
                 'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                (aid, tid),
-            )
-        tile_states = _mark_tiles_dirty(con, tile_ids, annotator)
-        con.commit()
-        out = _annotation_out(con.execute('SELECT * FROM annotation WHERE id = ?', (aid,)).fetchone())
-        out.update({'tileIds': tile_ids, 'tileStates': tile_states,
-                   'consumedAnnotationIds': [], 'createdStrokeId': sid, 'consumedGroups': []})
-        return jsonify(out), 201
+                (aid, tid))
+        dirty_tiles.extend(tile_ids)
+        created_ids.append(aid)
+        created_groups.append({'annotationId': aid, 'strokeIds': member_ids})
+
+    return {'deletedAnnotationIds': old_ids, 'deletedGroups': deleted_groups,
+            'createdIds': created_ids, 'createdGroups': created_groups,
+            'dirtyTiles': dirty_tiles}
+
+
+def do_edit_stroke(con, project_id: str, stroke_id: str, body: dict, *,
+                    username: str | None, user_id, is_admin: bool):
+    """Core of edit_stroke — returns (response_dict, status). See the route shim's docstring
+    below for the full contract."""
+    srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+    if not srow:
+        return {'error': 'not found'}, 404
+    ann = con.execute('SELECT * FROM annotation WHERE id = ?',
+                      (srow['annotation_id'],)).fetchone()
+    if not ann or ann['deleted_at']:
+        return {'error': 'not found'}, 404
+    if ann['kind'] != 'stroke':
+        return {'error': 'only stroke masks support vertex editing'}, 422
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or _owner_or_403_direct(ann['annotator'], username))
+    if err:
+        return err
+    final = bool(body.get('final'))
+    points = body.get('points')
+    if points is None:
+        # `final: true` may arrive WITHOUT points (t59) — reuse the stored stroke points.
+        if not final:
+            return {'error': 'points required'}, 400
+        points = json.loads(srow['points_json']) if srow['points_json'] else []
+    elif not points:
+        return {'error': 'points required'}, 400
+
+    if final:
+        # t59: FINISH — recompute this stroke's footprint and apply the SAME tile check
+        # the brush uses at create (keep if it touches >=1 tile, discard exactly like a
+        # no-tile brush stroke otherwise). This is deliberately NOT the full recompute/
+        # remint pipeline below (which always mints a fresh annotation id per component,
+        # even a no-op) — finish only decides keep-vs-discard on the WHOLE stroke, never
+        # per-point, and never touches the annotation id when kept. t127: the membership
+        # gate lives INSIDE _do_finish_stroke (it's the one that knows the finished tiles).
+        return _do_finish_stroke(con, srow, ann, points, username=username, is_admin=is_admin)
+
+    image_id = ann['project_image_id']
+    annotator = ann['annotator']
+    label = ann['label']
+    now = _now()
+
+    # Clamp stroke width to [1px, image diagonal] — never trust the client (mirrors create).
+    stroke_width = srow['stroke_width']
+    if body.get('strokeWidth') is not None:
+        im = _image_row(con, image_id)
+        diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+        try:
+            w = float(body['strokeWidth'])
+            stroke_width = max(1.0, min(w, diag) if diag else w)
+        except (TypeError, ValueError):
+            pass
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — recompute the
+    # stroke's contour server-side from its (possibly new) points via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, srow['tool'] or 'brush')
+
+    # t127: gate on the tiles the EDITED stroke is about to touch (not just where it
+    # already sat) — an edit that drags a stroke onto a batch the actor isn't a member of
+    # must 403, same as painting fresh there.
+    new_footprint = _footprint(points, stroke_width, outline)
+    new_tile_ids = _tiles_for_geom(con, image_id, new_footprint) \
+        if new_footprint is not None and not new_footprint.is_empty else []
+    err = _batch_tiles_or_403(con, new_tile_ids, username, is_admin)
+    if err:
+        return err
+
+    # Snapshot the stroke's PRE-edit record so undo can restore it verbatim (robust
+    # undo: exact prior rows, not a lossy re-derivation — Christian, "robust > easy").
+    before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+              'strokeWidth': srow['stroke_width'],
+              'outline': json.loads(srow['outline_json']) if srow['outline_json'] else None}
+
+    # 1) apply the edit to this stroke's raw record.
+    con.execute(
+        'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+        (json.dumps(points), stroke_width,
+         json.dumps(outline) if outline is not None else None, stroke_id))
+    # t141 P1a: an edit MAY carry a fresh max-rate capture (a re-draw) — replace the stored
+    # stream when `samples` is present; a plain reshape (no samples key) leaves it untouched.
+    if 'samples' in body:
+        s = body.get('samples')
+        con.execute('UPDATE stroke SET samples_json = ? WHERE id = ?',
+                    (json.dumps(s) if s is not None else None, stroke_id))
+    # t50 phase 1/2a: write through to the normalized tables — the source of truth for
+    # reads. `vertexRefs` (optional, parallel to `points`) lets the per-click polyline edit
+    # reconcile rather than re-mint — see `_write_stroke_vertices`.
+    _write_stroke_vertices(con, stroke_id, points, body.get('vertexRefs'))
+
+    # 2-5) recompute the whole (annotator, image, label) scope's fusion — shared with
+    # do_move_vertex (t50 phase 3a) via _recompute_fused_scope.
+    scope = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+    old_ids = scope['deletedAnnotationIds']
+    deleted_groups = scope['deletedGroups']
+    created_ids = scope['createdIds']
+    created_groups = scope['createdGroups']
+    dirty_tiles = scope['dirtyTiles']
+
+    tile_states = _mark_tiles_dirty(con, list(set(dirty_tiles)), annotator)
+    con.commit()
+    # The reversal descriptor is everything undo needs (POST /strokes/<id>/reverse):
+    # reset this stroke to `before`, drop the `created` masks, repoint `deletedGroups`
+    # strokes back and un-delete those exact annotations. `created` carries the live
+    # masks (with member strokes) for the FE to splice in immediately.
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    created = [_annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+        for cid in created_ids]
+    return {'ok': True, 'strokeId': stroke_id, 'before': before,
+            'deletedAnnotationIds': old_ids, 'deletedGroups': deleted_groups,
+            'created': created, 'createdGroups': created_groups,
+            'tileStates': tile_states}, 200
+
+
+@projects_bp.patch('/api/projects/<project_id>/strokes/<stroke_id>')
+@login_required
+def edit_stroke(project_id: str, stroke_id: str):
+    """Edit a stroke's vertices and RECOMPUTE the affected mask(s) — a11y #40 v1b.
+
+    The one new capability the computed-from-strokes model unlocks. A `stroke` is the raw
+    record of a mark; brush and polyline are two ways of producing one (a brush stroke is
+    just a polyline whose in-between points perfect-freehand fills), so this endpoint is
+    stroke-general, NOT polyline-only (Christian, 2026-07-11). Moving a stroke's points
+    changes its footprint, so we recompute EVERY same-(annotator, image, label) mask from
+    ALL those strokes' footprints as connected components — which naturally MOVES a mask,
+    SPLITS one whose strokes now disconnect, and MERGES strokes that now overlap. Scoping
+    the recompute over the whole label set (not just the edited stroke's own annotation) is
+    what preserves the "annotations never overlap" invariant. Like create_annotation, we
+    never mutate a mask in place: the affected masks are soft-deleted and one fresh
+    annotation is minted per resulting component.
+
+    Thin shim around do_edit_stroke — the WS op handler in webapp/asgi.py calls the same
+    core function so mutations serialize through the single WS channel.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_edit_stroke(
+            con, project_id, stroke_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
+
+
+def do_splice_polyline(con, project_id: str, body: dict, *,
+                        username: str | None, user_id, is_admin: bool):
+    """t67: splice a freshly-drawn polyline run INTO an existing stroke. The run's first &
+    last vertices snapped (t50) onto an ADJACENT pair of the existing stroke's vertices; the
+    FE has already computed that stroke's NEW point + `vertexRefs` list (the run's middle
+    vertices inserted between the pair, oriented lo→hi, endpoints keeping their shared ids).
+
+    We rewrite that stroke, DELETE the standalone run annotation so its geometry doesn't
+    re-contribute to the fusion, then re-fuse the scope — the same machinery as
+    `do_edit_stroke`. Body: {strokeId (the EXISTING stroke), points, vertexRefs, outline,
+    removeStrokeId (any stroke of the standalone run, whose annotation is deleted)}.
+    """
+    stroke_id = body.get('strokeId')
+    remove_stroke_id = body.get('removeStrokeId')
+    points = body.get('points')
+    if not stroke_id or not remove_stroke_id or not points:
+        return {'error': 'strokeId, removeStrokeId and points required'}, 400
+
+    srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+    if not srow:
+        return {'error': 'not found'}, 404
+    ann = con.execute('SELECT * FROM annotation WHERE id = ?', (srow['annotation_id'],)).fetchone()
+    if not ann or ann['deleted_at']:
+        return {'error': 'not found'}, 404
+    if ann['kind'] != 'stroke':
+        return {'error': 'only stroke masks support splicing'}, 422
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or _owner_or_403_direct(ann['annotator'], username))
+    if err:
+        return err
+
+    if remove_stroke_id == stroke_id:
+        return {'error': 'cannot splice a stroke into itself'}, 422
+    run_srow = con.execute('SELECT * FROM stroke WHERE id = ?', (remove_stroke_id,)).fetchone()
+    if not run_srow:
+        return {'error': 'run stroke not found'}, 404
+    run_ann_id = run_srow['annotation_id']
+
+    image_id = ann['project_image_id']
+    annotator = ann['annotator']
+    label = ann['label']
+    now = _now()
+
+    # Clamp stroke width to [1px, image diagonal] — never trust the client (mirrors edit).
+    stroke_width = srow['stroke_width']
+    if body.get('strokeWidth') is not None:
+        im = _image_row(con, image_id)
+        diag = ((float(im['width']) ** 2 + float(im['height']) ** 2) ** 0.5) if im else None
+        try:
+            w = float(body['strokeWidth'])
+            stroke_width = max(1.0, min(w, diag) if diag else w)
+        except (TypeError, ValueError):
+            pass
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — recompute the
+    # stroke's contour server-side from its (spliced) points via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, srow['tool'] or 'brush')
+
+    # t127: gate on the tiles the RE-WRITTEN stroke is about to touch — same reasoning as
+    # do_edit_stroke's non-final branch.
+    new_footprint = _footprint(points, stroke_width, outline)
+    new_tile_ids = _tiles_for_geom(con, image_id, new_footprint) \
+        if new_footprint is not None and not new_footprint.is_empty else []
+    err = _batch_tiles_or_403(con, new_tile_ids, username, is_admin)
+    if err:
+        return err
+
+    before = {'points': json.loads(srow['points_json']) if srow['points_json'] else [],
+              'strokeWidth': srow['stroke_width'],
+              'outline': json.loads(srow['outline_json']) if srow['outline_json'] else None}
+
+    # 1) rewrite the EXISTING stroke FIRST, so its new stroke_vertex rows reference the run's
+    # middle vertices before we delete the run — keeping those vertices alive (GC-safe).
+    con.execute(
+        'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+        (json.dumps(points), stroke_width,
+         json.dumps(outline) if outline is not None else None, stroke_id))
+    _write_stroke_vertices(con, stroke_id, points, body.get('vertexRefs'))
+
+    # 2) delete the run STROKE (not its annotation): the run + the target usually already
+    # CO-FUSED into one annotation on draw (they share endpoint positions), so removing the
+    # stroke — its middle vertices now referenced by the rewritten stroke (step 1), so GC
+    # keeps them; shared endpoints survive too — is what drops the redundant run geometry.
+    _write_stroke_vertices(con, remove_stroke_id, [])   # deletes its stroke_vertex rows + GCs exclusives
+    con.execute('DELETE FROM stroke WHERE id = ?', (remove_stroke_id,))
+    # If that emptied the run's annotation (it was NOT co-fused with the target), soft-delete
+    # the husk so no stroke-less annotation lingers.
+    husk: list[str] = []
+    if run_ann_id != ann['id']:
+        remaining = con.execute(
+            'SELECT COUNT(*) c FROM stroke WHERE annotation_id = ?', (run_ann_id,)).fetchone()['c']
+        if remaining == 0:
+            con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, run_ann_id))
+            husk.append(run_ann_id)
+
+    # 3) re-fuse the (image, annotator, label) scope — same as do_edit_stroke.
+    scope = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+    tile_states = _mark_tiles_dirty(con, list(set(scope['dirtyTiles'])), annotator)
+    con.commit()
+
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    created = [_annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+        for cid in scope['createdIds']]
+    deleted = list(scope['deletedAnnotationIds']) + [h for h in husk if h not in scope['deletedAnnotationIds']]
+    return {'ok': True, 'strokeId': stroke_id, 'before': before,
+            'deletedAnnotationIds': deleted, 'deletedGroups': scope['deletedGroups'],
+            'created': created, 'createdGroups': scope['createdGroups'],
+            'tileStates': tile_states}, 200
+
+
+def do_move_vertex(con, project_id: str, vertex_id: str, body: dict, *,
+                    username: str | None, user_id, is_admin: bool):
+    """Core of move_vertex (t50 phase 3a) — moves a vertex's canonical position and
+    re-fuses EVERY annotation whose stroke references it. A snap-shared vertex moves
+    every sharer transitively (move one → move all, even across different labels); a
+    vertex referenced by only one stroke moves just that mask.
+
+    Does NOT rewrite `stroke_vertex` refs and does NOT re-mint the vertex — its id and
+    every stroke's reference to it are untouched, only its (x, y) changes. Reuses
+    `_recompute_fused_scope` (the recompute half of `do_edit_stroke`) once per distinct
+    (image, annotator, label) scope touched by the move — different sharers may carry
+    different labels, so each scope re-fuses independently.
+    """
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    vrow = con.execute('SELECT * FROM vertex WHERE id = ?', (vertex_id,)).fetchone()
+    if not vrow:
+        return {'error': 'not found'}, 404
+    try:
+        x = float(body.get('x'))
+        y = float(body.get('y'))
+    except (TypeError, ValueError):
+        return {'error': 'x and y required'}, 400
+    now = _now()
+
+    # 1) update the vertex's canonical position — the single source of truth every
+    # referencing stroke reads through to.
+    con.execute('UPDATE vertex SET x = ?, y = ? WHERE id = ?', (x, y, vertex_id))
+
+    # 2) every stroke referencing this vertex needs its `points_json` synced to the new
+    # position — `_recompute_fused_scope` (like do_edit_stroke) fuses from `points_json`,
+    # not a live vertex-table join. `stroke_vertex` rows themselves are untouched.
+    stroke_ids = [r['stroke_id'] for r in con.execute(
+        'SELECT DISTINCT stroke_id FROM stroke_vertex WHERE vertex_id = ?',
+        (vertex_id,)).fetchall()]
+    scopes: set[tuple] = set()
+    for sid in stroke_ids:
+        pts = _read_stroke_vertices(con, sid)
+        # Sync points_json to the moved vertex AND drop the now-stale outline_json: the
+        # fused-scope recompute prefers a stroke's stored `outline` polygon over its points
+        # (_stroke_polygon), so a moved vertex whose outline still describes the OLD shape
+        # re-fuses to the OLD perimeter (t78 — the mask "stays fused with the old outline").
+        # Clearing it makes the recompute rebuild this stroke's footprint from its new points
+        # (the canonical outline-less path); the FE-supplied outline is a fidelity cache that
+        # a vertex move invalidates, so a per-stroke edit re-sends it but a shared move can't.
+        con.execute('UPDATE stroke SET points_json = ?, outline_json = NULL WHERE id = ?',
+                   (json.dumps(pts), sid))
+        srow = con.execute(
+            'SELECT annotation_id FROM stroke WHERE id = ?', (sid,)).fetchone()
+        if not srow:
+            continue
+        ann = con.execute(
+            'SELECT * FROM annotation WHERE id = ?', (srow['annotation_id'],)).fetchone()
+        if ann and not ann['deleted_at'] and ann['kind'] == 'stroke':
+            scopes.add((ann['project_image_id'], ann['annotator'], ann['label']))
+
+    # 3) re-fuse every affected (image, annotator, label) scope independently.
+    deleted_ids: list[str] = []
+    deleted_groups: list[dict] = []
+    created_ids: list[str] = []
+    created_groups: list[dict] = []
+    dirty_by_annotator: dict[str, list[str]] = {}
+    for image_id, annotator, label in scopes:
+        res = _recompute_fused_scope(con, project_id, image_id, annotator, label, now)
+        deleted_ids.extend(res['deletedAnnotationIds'])
+        deleted_groups.extend(res['deletedGroups'])
+        created_ids.extend(res['createdIds'])
+        created_groups.extend(res['createdGroups'])
+        dirty_by_annotator.setdefault(annotator, []).extend(res['dirtyTiles'])
+
+    tile_states: list[dict] = []
+    for annotator, tiles in dirty_by_annotator.items():
+        tile_states.extend(_mark_tiles_dirty(con, list(set(tiles)), annotator))
+
+    con.commit()
+
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    created = [_annotation_out(
+        con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+        for cid in created_ids]
+    return {'ok': True, 'vertexId': vertex_id, 'x': x, 'y': y,
+            'deletedAnnotationIds': deleted_ids, 'deletedGroups': deleted_groups,
+            'annotations': created, 'createdGroups': created_groups,
+            'tileStates': tile_states}, 200
+
+
+@projects_bp.post('/api/projects/<project_id>/splice')
+@login_required
+def splice_polyline(project_id: str):
+    """Splice a freshly-drawn polyline run into an existing stroke (t67) — thin shim around
+    do_splice_polyline (the WS op handler calls the same core). See its docstring."""
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_splice_polyline(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.patch('/api/projects/<project_id>/vertices/<vertex_id>')
+@login_required
+def move_vertex(project_id: str, vertex_id: str):
+    """Move a shared vertex's canonical position — the payoff of the snap-lock (t50 phase
+    3a): moving a vertex shared by several strokes moves every mask that references it,
+    transitively, even across different labels/annotations. Thin shim around
+    do_move_vertex — see its docstring for the full contract.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_move_vertex(
+            con, project_id, vertex_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def do_reverse_stroke_edit(con, project_id: str, stroke_id: str, body: dict, *,
+                            username: str | None, user_id, is_admin: bool):
+    """Core of reverse_stroke_edit — returns (response_dict, status). See the route shim's
+    docstring below for the full contract."""
+    before = body.get('before') or {}
+    deleted_groups = body.get('deletedGroups') or []
+    created_ids = body.get('createdAnnotationIds') or []
+    srow = con.execute('SELECT * FROM stroke WHERE id = ?', (stroke_id,)).fetchone()
+    if not srow:
+        return {'error': 'not found'}, 404
+    old_ids = [g['annotationId'] for g in deleted_groups]
+    # Authorize via a resurrection target's owner (all one annotator by construction).
+    owner = None
+    for oid in old_ids:
+        r = con.execute('SELECT annotator FROM annotation WHERE id = ?', (oid,)).fetchone()
+        if r:
+            owner = r['annotator']
+            break
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or (_owner_or_403_direct(owner, username) if owner else None))
+    if err:
+        return err
+    now = _now()
+    # Tiles the minted masks occupied — reopen them once the masks are gone.
+    created_tiles: list[str] = []
+    if created_ids:
+        qm = ','.join('?' * len(created_ids))
+        created_tiles = [r['tile_id'] for r in con.execute(
+            f'SELECT tile_id FROM annotation_tile WHERE annotation_id IN ({qm})',
+            created_ids).fetchall()]
+    err = _batch_tiles_or_403(con, created_tiles, username, is_admin)  # t127
+    if err:
+        return err
+
+    # 1) reset the edited stroke to its pre-edit record.
+    before_points = before.get('points') or []
+    con.execute(
+        'UPDATE stroke SET points_json = ?, stroke_width = ?, outline_json = ? WHERE id = ?',
+        (json.dumps(before_points), before.get('strokeWidth'),
+         json.dumps(before.get('outline')) if before.get('outline') is not None else None,
+         stroke_id))
+    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
+    _write_stroke_vertices(con, stroke_id, before_points)
+    # 2) repoint each retired mask's strokes back to it + un-delete those exact rows.
+    for g in deleted_groups:
+        sids = g.get('strokeIds') or []
+        if sids:
+            qm = ','.join('?' * len(sids))
+            con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qm})',
+                       (g['annotationId'], *sids))
+    if old_ids:
+        qm = ','.join('?' * len(old_ids))
+        con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qm})',
+                   (now, *old_ids))
+    # 3) hard-delete the minted masks (cascades their annotation_tile).
+    for cid in created_ids:
+        con.execute('DELETE FROM annotation WHERE id = ?', (cid,))
+    # 4) rebuild resurrected masks' tiles from their stored geometry + dirty every tile.
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    dirtied: dict[str, dict] = {}
+    annotator = None
+    resurrected = []
+    for oid in old_ids:
+        r = con.execute('SELECT * FROM annotation WHERE id = ?', (oid,)).fetchone()
+        if not r:
+            continue
+        annotator = r['annotator']
+        tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
+        for tid in tile_ids:
+            con.execute(
+                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                (oid, tid))
+        for d in _mark_tiles_dirty(con, tile_ids, annotator):
+            dirtied[d['tileId']] = d
+        resurrected.append(_annotation_out(r, con, raw_taxonomy=classes_json))
+    if annotator and created_tiles:
+        for d in _mark_tiles_dirty(con, created_tiles, annotator):
+            dirtied[d['tileId']] = d
+    con.commit()
+    return {'ok': True, 'resurrected': resurrected,
+            'deletedAnnotationIds': created_ids,
+            'tileStates': list(dirtied.values())}, 200
+
+
+@projects_bp.post('/api/projects/<project_id>/strokes/<stroke_id>/reverse')
+@login_required
+def reverse_stroke_edit(project_id: str, stroke_id: str):
+    """Undo a stroke-vertex edit (compound op — mirrors reverse_annotation_merge). Reset the
+    stroke to its pre-edit record, hard-delete the annotations the edit minted, repoint every
+    retired mask's strokes back to it and resurrect those EXACT rows (flip deleted_at to NULL
+    + rebuild their tiles from stored geometry). Robust undo: the prior annotation ids/rows
+    come back verbatim, not a re-derivation (Christian, "robust > easy").
+
+    Body (the edit's reversal descriptor): { before: {points, strokeWidth, outline},
+      deletedGroups: [{annotationId, strokeIds}, ...], createdAnnotationIds: [...] }
+    Returns: { ok, resurrected: [...], deletedAnnotationIds: [...], tileStates: [...] }
+
+    Thin shim around do_reverse_stroke_edit — the WS op handler in webapp/asgi.py calls
+    the same core function so mutations serialize through the single WS channel.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_reverse_stroke_edit(
+            con, project_id, stroke_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def do_create_viewport_events(con, project_id: str, body: dict, *,
+                               username: str | None, user_id, is_admin: bool):
+    """Core of create_viewport_events — returns (response_dict, status). See the route
+    shim's docstring below for the full contract.
+
+    Called BOTH by the REST route AND by the WS `viewport` fire-and-forget message
+    handler in webapp/asgi.py, so the single mutation path stays in one place. Admin
+    sessions are dropped server-side (unchanged behaviour) — the REST test pins this,
+    and the WS handler skips the call entirely for admin connections.
+    """
+    image_id = body.get('imageId')
+    events = body.get('events') or []
+    acting = username or ''
+    if not (image_id and acting and isinstance(events, list) and events):
+        return {'error': 'imageId, events required'}, 400
+    if is_admin:
+        # Admins are read-only when viewing an annotator's canvas — never record telemetry
+        # "as" admin. AFTER body-validation so a malformed admin body still 400s like a
+        # non-admin's. Keep this guard confined to THIS endpoint; see docstring above.
+        return {'ok': True, 'count': 0}, 201
+    err = _member_or_403_direct(con, project_id, acting, user_id)
+    if err:
+        return err
+    received_at = _now()
+    rows = []
+    for ev in events:
+        try:
+            rows.append((
+                project_id, image_id, acting,
+                str(ev.get('clientTs') or ''), received_at,
+                float(ev['x']), float(ev['y']), float(ev['w']), float(ev['h']),
+                float(ev['cssW']), float(ev['cssH']), float(ev['dpr']),
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue  # malformed sample — skip it, never fail the whole batch
+    if rows:
+        con.executemany(
+            '''INSERT INTO viewport_event
+                 (project_id, image_id, user_id, client_ts, received_at,
+                  x, y, w, h, css_w, css_h, dpr)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            rows,
+        )
+        con.commit()
+    return {'ok': True, 'count': len(rows)}, 201
+
+
+@projects_bp.post('/api/projects/<project_id>/viewport-events')
+@login_required
+def create_viewport_events(project_id: str):
+    """Batch-insert canvas viewport (pan+zoom) telemetry samples for later analysis of
+    how users view images at different magnifications (per-user tile-size
+    preferences, eventually). Best-effort / fail-quiet by design on the frontend
+    (webapp/frontend/src/projects/viewportTelemetry.ts) — this endpoint just needs to be
+    fast and not blow up; it never affects annotation UX.
+
+    The sample is always attributed to the acting session user (their own token) — there
+    is no admin/annotator override: we never record telemetry "as" someone else, and admins
+    viewing the annotator view are read-only, so their navigation is simply not recorded.
+
+    No consent/opt-out gating — annotators are lab staff. This is the spot to add a
+    gate (e.g. a per-user opt-out flag) if that's ever needed.
+
+    Body: {imageId, events: [{clientTs, x, y, w, h, cssW, cssH, dpr}, ...]}.
+    Response: {ok: true, count: N}.
+
+    Thin shim around do_create_viewport_events — the WS handler in webapp/asgi.py calls
+    the same core over a fire-and-forget `{type:"viewport"}` message so ALL viewport
+    telemetry funnels through one mutation path.
+    """
+    body = request.json or {}
+    con = _db.get_db()
+    try:
+        result, status = do_create_viewport_events(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+@projects_bp.get('/api/projects/<project_id>/images/<image_id>/viewport-events')
+@admin_required
+def list_viewport_events(project_id: str, image_id: str):
+    """Admin-only: return `viewport_event` rows for a project + image so the client can
+    compute the viewport-attention heatmap overlay.
+
+    Each row is one sampled canvas viewport (the SVG viewBox in IMAGE coordinates: pan =
+    x,y; zoom = w,h; smaller w*h = more zoomed in). Rows are ordered by (user_id,
+    client_ts) so the client can compute per-user dwell (Delta-t) between consecutive
+    samples from the SAME user on this image.
+
+    Optional `?user_id=<byline>` filters to a single annotator. Admin-only (auth.
+    admin_required) - this is analysis data, not part of the annotator workflow.
+
+    Response: {events: [{id, userId, clientTs, receivedAt, x, y, w, h, cssW, cssH, dpr}, ...]}.
+    """
+    user_filter = (request.args.get('user_id') or '').strip()
+    con = _db.get_db()
+    try:
+        if user_filter:
+            rows = con.execute(
+                'SELECT * FROM viewport_event WHERE project_id = ? AND image_id = ? AND user_id = ? ORDER BY user_id, client_ts, id',
+                (project_id, image_id, user_filter),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                'SELECT * FROM viewport_event WHERE project_id = ? AND image_id = ? ORDER BY user_id, client_ts, id',
+                (project_id, image_id),
+            ).fetchall()
+        return jsonify({
+            'events': [
+                {
+                    'id': r['id'],
+                    'userId': r['user_id'],
+                    'clientTs': r['client_ts'],
+                    'receivedAt': r['received_at'],
+                    'x': r['x'], 'y': r['y'], 'w': r['w'], 'h': r['h'],
+                    'cssW': r['css_w'], 'cssH': r['css_h'], 'dpr': r['dpr'],
+                }
+                for r in rows
+            ]
+        })
+    finally:
+        _db.close_db(con)
+
+
+def do_update_annotation(con, annotation_id: str, body: dict, *,
+                          username: str | None, user_id, is_admin: bool):
+    """Core of update_annotation — returns (response_dict, status). See the route shim's
+    docstring below for the full contract. Phase 2 (feat/annotation-ws): the WS op
+    handler in webapp/asgi.py calls this same function for the `relabel` op so mutations
+    serialize through the single WS channel."""
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
+    if not row or row['deleted_at']:
+        return {'error': 'not found'}, 404
+    if row['kind'] == 'stroke':
+        # Compound labels Phase 2b (relabel): a LABEL-ONLY patch (no `points` key) on a
+        # fused mask is allowed — it re-labels the lesion in place without touching its
+        # geometry. Any attempt to also edit `points`/geometry on a stroke still 422s
+        # (see docstring): erase + redraw is still the only way to reshape a fused mask.
+        if 'points' in body or 'label' not in body:
+            return {'error': 'a fused mask cannot be edited directly; erase and redraw'}, 422
+        err = (_member_or_403_direct(con, row['project_id'], username, user_id)
+               or _owner_or_403_direct(row['annotator'], username))
+        if err:
+            return err
+        err = _batch_gate_for_annotation_or_403(con, annotation_id, username, is_admin)  # t127
+        if err:
+            return err
+        label = body.get('label')
+        proj_row = _project(con, row['project_id'])
+        classes_json = proj_row.get('classes_json') if proj_row else None
+        compound_id = taxonomy.id_from_label(classes_json, label)
+        snap = taxonomy.snapshot_from_label(classes_json, label)
+        snapshot_json = json.dumps(snap) if snap else None
+        con.execute(
+            'UPDATE annotation SET label = ?, label_snapshot = ?, compound_id = ?, '
+            'updated_at = ? WHERE id = ?',
+            (label, snapshot_json, compound_id, _now(), annotation_id),
+        )
+        tile_ids = [r['tile_id'] for r in con.execute(
+            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+        ).fetchall()]
+        _mark_tiles_dirty(con, tile_ids, row['annotator'])
+        con.commit()
+        out = _annotation_out(con.execute(
+            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(),
+            con, raw_taxonomy=classes_json)
+        out['tileIds'] = tile_ids
+        return out, 200
+    err = (_member_or_403_direct(con, row['project_id'], username, user_id)
+           or _owner_or_403_direct(row['annotator'], username))
+    if err:
+        return err
+    old_tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
+    label = body.get('label', row['label'])
+    # t127: gate on old ∪ new tiles — a relocate must not slip a non-member onto (or off
+    # of, undetected) a batch tile it isn't a member of.
+    new_tile_ids_probe = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
+    err = _batch_tiles_or_403(con, list(set(old_tiles) | set(new_tile_ids_probe)),
+                               username, is_admin)
+    if err:
+        return err
+    # Taxonomy v2: re-snapshot when the label changes so the denormalised colour/
+    # selections stay in sync with the newly-assigned compound (Phase 1 has no
+    # relabel UI, but the PATCH endpoint stays correct for any caller). t64: also
+    # re-resolve compound_id so LIVE display (_annotation_out) follows the relabel.
+    proj_row = _project(con, row['project_id'])
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    snapshot_json = row.get('label_snapshot')
+    compound_id = row.get('compound_id')
+    if body.get('label') is not None:
+        compound_id = taxonomy.id_from_label(classes_json, label)
+        snap = taxonomy.snapshot_from_label(classes_json, label)
+        snapshot_json = json.dumps(snap) if snap else None
+    points_json = json.dumps(points)
+    con.execute(
+        'UPDATE annotation SET points_json = ?, label = ?, label_snapshot = ?, '
+        'compound_id = ?, updated_at = ? WHERE id = ?',
+        (points_json, label, snapshot_json, compound_id, _now(), annotation_id),
+    )
+    con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
+               (points_json, annotation_id))
+    _reindex_bbox(con, annotation_id)  # t68 index (geometry may have changed with points)
+    # t50 phase 1: write through to the normalized tables — the source of truth for reads.
+    for srow2 in con.execute(
+            'SELECT id FROM stroke WHERE annotation_id = ?', (annotation_id,)).fetchall():
+        _write_stroke_vertices(con, srow2['id'], points)
+    # Recompute tile membership and dirty every touched tile (old ∪ new).
+    new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
+    con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
+    for tid in new_tiles:
+        con.execute(
+            'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+            (annotation_id, tid),
+        )
+    _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
+    con.commit()
+    out = _annotation_out(con.execute(
+        'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone(),
+        con, raw_taxonomy=classes_json)
+    out['tileIds'] = new_tiles
+    return out, 200
 
 
 @projects_bp.patch('/api/annotations/<annotation_id>')
@@ -1267,44 +3535,19 @@ def create_annotation(project_id: str):
 def update_annotation(annotation_id: str):
     """Edit points/label in place. Only non-fusing kinds (point/line/polygon) support this
     — a `stroke` mask is fused geometry, not a single editable shape; erase + redraw
-    instead (see docs/plans/Plan — Annotation-stroke model (fused masks).md)."""
+    instead (see docs/plans/Plan — Annotation-stroke model (fused masks).md).
+
+    Thin shim around do_update_annotation — the WS op handler in webapp/asgi.py calls
+    the same core function so mutations serialize through the single WS channel (Phase 2)."""
     body = request.json or {}
     con = _db.get_db()
     try:
-        row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
-        if not row or row['deleted_at']:
-            return jsonify({'error': 'not found'}), 404
-        if row['kind'] == 'stroke':
-            return jsonify({'error': 'a fused mask cannot be edited directly; erase and redraw'}), 422
-        err = _member_or_403(con, row['project_id']) or _owner_or_403(row['annotator'])
-        if err:
-            return err
-        old_tiles = [r['tile_id'] for r in con.execute(
-            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
-        ).fetchall()]
-        points = body.get('points', json.loads(row['points_json']) if row['points_json'] else [])
-        label = body.get('label', row['label'])
-        points_json = json.dumps(points)
-        con.execute(
-            'UPDATE annotation SET points_json = ?, label = ?, updated_at = ? WHERE id = ?',
-            (points_json, label, _now(), annotation_id),
-        )
-        con.execute('UPDATE stroke SET points_json = ? WHERE annotation_id = ?',
-                   (points_json, annotation_id))
-        # Recompute tile membership and dirty every touched tile (old ∪ new).
-        new_tiles = _tiles_intersecting(con, row['project_image_id'], row['kind'], points)
-        con.execute('DELETE FROM annotation_tile WHERE annotation_id = ?', (annotation_id,))
-        for tid in new_tiles:
-            con.execute(
-                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                (annotation_id, tid),
-            )
-        _mark_tiles_dirty(con, list(set(old_tiles) | set(new_tiles)), row['annotator'])
-        con.commit()
-        out = _annotation_out(con.execute(
-            'SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone())
-        out['tileIds'] = new_tiles
-        return jsonify(out)
+        result, status = do_update_annotation(
+            con, annotation_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
 
@@ -1334,6 +3577,63 @@ def delete_annotation(annotation_id: str):
 
 # ── bulk mutate (eraser-undo + draw-undo/redo) ────────────────────────────────
 
+def do_mutate_annotations(con, project_id: str, body: dict, *,
+                           username: str | None, user_id, is_admin: bool):
+    """Core of mutate_annotations — returns (response_dict, status). Phase 2
+    (feat/annotation-ws): the WS op handler in webapp/asgi.py calls this same function
+    for the `mutate` op so draw-undo/redo mutations serialize through the single WS
+    channel behind any in-flight polyline persist ops."""
+    op = body.get('op')
+    ids = body.get('ids') or []
+    if op not in ('delete', 'restore') or not ids:
+        return {'error': 'op (delete|restore) and ids required'}, 400
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    annotator = None
+    for ann_id in ids:
+        row = con.execute('SELECT * FROM annotation WHERE id = ?', (ann_id,)).fetchone()
+        if not row:
+            return {'error': f'annotation {ann_id} not found'}, 404
+        if row['project_id'] != project_id:
+            return {'error': 'forbidden'}, 403
+        e = _owner_or_403_direct(row['annotator'], username)
+        if e:
+            return e
+        e = _batch_gate_for_annotation_or_403(con, ann_id, username, is_admin)  # t127
+        if e:
+            return e
+        if annotator is None:
+            annotator = row['annotator']
+    now = _now()
+    # BUGS #16: either direction (erase or undo/redo-restore) re-opens a completed tile
+    # it touches for this annotator. Dedupe by tileId across ids in case several
+    # annotations land in the same tile.
+    dirtied: dict[str, dict] = {}
+    if op == 'delete':
+        for ann_id in ids:
+            tiles = [r['tile_id'] for r in con.execute(
+                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
+            ).fetchall()]
+            con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
+            for d in _mark_tiles_dirty(con, tiles, annotator):
+                dirtied[d['tileId']] = d
+    else:  # restore
+        con.execute(
+            f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
+            ids,
+        )
+        qmarks = ','.join('?' * len(ids))
+        tiles = [r['tile_id'] for r in con.execute(
+            f'SELECT DISTINCT tile_id FROM annotation_tile WHERE annotation_id IN ({qmarks})',
+            ids,
+        ).fetchall()]
+        for d in _mark_tiles_dirty(con, tiles, annotator):
+            dirtied[d['tileId']] = d
+    con.commit()
+    return {'ok': True, 'ids': ids, 'tileStates': list(dirtied.values())}, 200
+
+
 @projects_bp.post('/api/projects/<project_id>/annotations/mutate')
 @login_required
 def mutate_annotations(project_id: str):
@@ -1346,58 +3646,74 @@ def mutate_annotations(project_id: str):
     All ids must belong to the same project_image_id and annotator (enforced by the
     eraser/undo design; a mismatch here is a client bug, not a valid request).
     Returns: { 'ok': True, 'ids': [...], 'tileStates': [...] }
+
+    Thin shim around do_mutate_annotations — the WS op handler in webapp/asgi.py calls
+    the same core function so mutations serialize through the single WS channel (Phase 2).
     """
     body = request.json or {}
-    op = body.get('op')
-    ids = body.get('ids') or []
-    if op not in ('delete', 'restore') or not ids:
-        return jsonify({'error': 'op (delete|restore) and ids required'}), 400
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
-        if err:
-            return err
-        annotator = None
-        for ann_id in ids:
-            row = con.execute('SELECT * FROM annotation WHERE id = ?', (ann_id,)).fetchone()
-            if not row:
-                return jsonify({'error': f'annotation {ann_id} not found'}), 404
-            if row['project_id'] != project_id:
-                return jsonify({'error': 'forbidden'}), 403
-            e = _owner_or_403(row['annotator'])
-            if e:
-                return e
-            if annotator is None:
-                annotator = row['annotator']
+        result, status = do_mutate_annotations(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
+    finally:
+        _db.close_db(con)
+
+
+def do_erase_stroke(con, project_id: str, body: dict, *,
+                     username: str | None, user_id, is_admin: bool):
+    """Core of erase_stroke — returns (response_dict, status). See the route shim's
+    docstring below for the full contract. Phase 2 (feat/annotation-ws): the WS op
+    handler in webapp/asgi.py calls this same function for the `erase` op so brush-
+    eraser mutations serialize through the single WS channel."""
+    image_id = body.get('imageId')
+    points = body.get('points') or []
+    stroke_width = body.get('strokeWidth')
+    # t103 Phase D: the wire `outline` is IGNORED (tolerated but unused) — the eraser is
+    # always a round brush sweep, computed server-side via the geo-engine.
+    outline = _compute_stroke_outline(points, stroke_width, 'brush')
+    # Annotate-as-yourself, same admin bypass as create_annotation.
+    if is_admin:
+        annotator = (body.get('annotator') or '').strip()
+    else:
+        annotator = username or ''
+    if not (image_id and points and annotator):
+        return {'error': 'imageId, points, annotator required'}, 400
+    err = _member_or_403_direct(con, project_id, username, user_id)
+    if err:
+        return err
+    eraser_geom = _footprint(points, stroke_width, outline=outline)
+    if eraser_geom is None or eraser_geom.is_empty:
+        return {'deletedAnnotationIds': [], 'tileStates': []}, 200
+    # t127: gate the eraser sweep on batch membership — resolved from the tile(s) the
+    # eraser itself touches (erasing is a paint-adjacent action).
+    eraser_tile_ids = _tiles_for_geom(con, image_id, eraser_geom)
+    err = _batch_tiles_or_403(con, eraser_tile_ids, username, is_admin)
+    if err:
+        return err
+    # t68: bbox-index prune (this annotator's marks, ANY kind, overlapping the eraser) →
+    # exact test, instead of scanning every mark this annotator has on the image.
+    deleted_ids = [r['id'] for r, _g in _annotations_overlapping(
+        con, image_id, eraser_geom, annotator=annotator, kind=None)]
+    dirtied: dict[str, dict] = {}
+    if deleted_ids:
         now = _now()
-        # BUGS #16: either direction (erase or undo/redo-restore) re-opens a completed tile
-        # it touches for this annotator. Dedupe by tileId across ids in case several
-        # annotations land in the same tile.
-        dirtied: dict[str, dict] = {}
-        if op == 'delete':
-            for ann_id in ids:
-                tiles = [r['tile_id'] for r in con.execute(
-                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
-                ).fetchall()]
-                con.execute('UPDATE annotation SET deleted_at = ? WHERE id = ?', (now, ann_id))
-                for d in _mark_tiles_dirty(con, tiles, annotator):
-                    dirtied[d['tileId']] = d
-        else:  # restore
-            con.execute(
-                f'UPDATE annotation SET deleted_at = NULL WHERE id IN ({",".join("?" * len(ids))})',
-                ids,
-            )
-            qmarks = ','.join('?' * len(ids))
-            tiles = [r['tile_id'] for r in con.execute(
-                f'SELECT DISTINCT tile_id FROM annotation_tile WHERE annotation_id IN ({qmarks})',
-                ids,
+        qmarks = ','.join('?' * len(deleted_ids))
+        con.execute(
+            f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
+            (now, *deleted_ids),
+        )
+        for ann_id in deleted_ids:
+            tiles = [t['tile_id'] for t in con.execute(
+                'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
             ).fetchall()]
             for d in _mark_tiles_dirty(con, tiles, annotator):
                 dirtied[d['tileId']] = d
         con.commit()
-        return jsonify({'ok': True, 'ids': ids, 'tileStates': list(dirtied.values())})
-    finally:
-        _db.close_db(con)
+    return {'deletedAnnotationIds': deleted_ids, 'tileStates': list(dirtied.values())}, 200
 
 
 @projects_bp.post('/api/projects/<project_id>/annotations/erase-stroke')
@@ -1420,55 +3736,83 @@ def erase_stroke(project_id: str):
     Body: { imageId, annotator, points, strokeWidth, outline? } — same shape as a paint
     stroke commit (points + brush size, optionally the perfect-freehand outline).
     Returns: { deletedAnnotationIds: [...], tileStates: [...] }
+
+    Thin shim around do_erase_stroke — the WS op handler in webapp/asgi.py calls the
+    same core function so mutations serialize through the single WS channel (Phase 2).
     """
     body = request.json or {}
-    image_id = body.get('imageId')
-    points = body.get('points') or []
-    stroke_width = body.get('strokeWidth')
-    outline = body.get('outline')
-    # Annotate-as-yourself, same admin bypass as create_annotation.
-    if session.get('username') == 'admin':
-        annotator = (body.get('annotator') or '').strip()
-    else:
-        annotator = session.get('username') or ''
-    if not (image_id and points and annotator):
-        return jsonify({'error': 'imageId, points, annotator required'}), 400
     con = _db.get_db()
     try:
-        err = _member_or_403(con, project_id)
-        if err:
-            return err
-        eraser_geom = _footprint(points, stroke_width, outline=outline)
-        if eraser_geom is None or eraser_geom.is_empty:
-            return jsonify({'deletedAnnotationIds': [], 'tileStates': []})
-        rows = con.execute(
-            '''SELECT * FROM annotation
-               WHERE project_image_id = ? AND annotator = ? AND deleted_at IS NULL''',
-            (image_id, annotator),
-        ).fetchall()
-        deleted_ids = []
-        for r in rows:
-            g = _annotation_geom(r)
-            if g is not None and not g.is_empty and g.intersects(eraser_geom):
-                deleted_ids.append(r['id'])
-        dirtied: dict[str, dict] = {}
-        if deleted_ids:
-            now = _now()
-            qmarks = ','.join('?' * len(deleted_ids))
-            con.execute(
-                f'UPDATE annotation SET deleted_at = ? WHERE id IN ({qmarks})',
-                (now, *deleted_ids),
-            )
-            for ann_id in deleted_ids:
-                tiles = [t['tile_id'] for t in con.execute(
-                    'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (ann_id,)
-                ).fetchall()]
-                for d in _mark_tiles_dirty(con, tiles, annotator):
-                    dirtied[d['tileId']] = d
-            con.commit()
-        return jsonify({'deletedAnnotationIds': deleted_ids, 'tileStates': list(dirtied.values())})
+        result, status = do_erase_stroke(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
+
+
+def do_reverse_annotation_merge(con, project_id: str, body: dict, *,
+                                 username: str | None, user_id, is_admin: bool):
+    """Core of reverse_annotation_merge — returns (response_dict, status). See the
+    route shim's docstring below for the full contract. Phase 2 (feat/annotation-ws):
+    the WS op handler in webapp/asgi.py calls this same function for the
+    `reverse_merge` op so merge-undo mutations serialize through the single WS channel."""
+    annotation_id = body.get('annotationId')
+    stroke_id = body.get('strokeId')
+    groups = body.get('consumedGroups') or []
+    if not (annotation_id and stroke_id and groups):
+        return {'error': 'annotationId, strokeId, consumedGroups required'}, 400
+    row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
+    if not row:
+        return {'error': 'not found'}, 404
+    err = (_member_or_403_direct(con, project_id, username, user_id)
+           or _owner_or_403_direct(row['annotator'], username))
+    if err:
+        return err
+    created_tiles = [r['tile_id'] for r in con.execute(
+        'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
+    ).fetchall()]
+    err = _batch_tiles_or_403(con, created_tiles, username, is_admin)  # t127
+    if err:
+        return err
+    con.execute('DELETE FROM stroke WHERE id = ?', (stroke_id,))
+    consumed_ids = [g['annotationId'] for g in groups]
+    for g in groups:
+        stroke_ids = g.get('strokeIds') or []
+        if stroke_ids:
+            qmarks = ','.join('?' * len(stroke_ids))
+            con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
+                       (g['annotationId'], *stroke_ids))
+    qmarks = ','.join('?' * len(consumed_ids))
+    con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qmarks})',
+               (_now(), *consumed_ids))
+    con.execute('DELETE FROM annotation WHERE id = ?', (annotation_id,))  # cascades annotation_tile
+
+    proj_row = _project(con, project_id)
+    classes_json = proj_row.get('classes_json') if proj_row else None
+    dirtied: dict[str, dict] = {}
+    resurrected = []
+    for cid in consumed_ids:
+        r = con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone()
+        if not r:
+            continue
+        tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
+        for tid in tile_ids:
+            con.execute(
+                'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
+                (cid, tid),
+            )
+        for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
+            dirtied[d['tileId']] = d
+        resurrected.append(_annotation_out(r, con, raw_taxonomy=classes_json))
+    for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
+        dirtied[d['tileId']] = d
+    con.commit()
+    return {'ok': True, 'resurrected': resurrected,
+            'deletedAnnotationId': annotation_id,
+            'tileStates': list(dirtied.values())}, 200
 
 
 @projects_bp.post('/api/projects/<project_id>/annotations/reverse')
@@ -1485,57 +3829,20 @@ def reverse_annotation_merge(project_id: str):
 
     Body: { annotationId, strokeId, consumedGroups: [{annotationId, strokeIds}, ...] }
     Returns: { ok, resurrected: [...], deletedAnnotationId, tileStates: [...] }
+
+    Thin shim around do_reverse_annotation_merge — the WS op handler in webapp/asgi.py
+    calls the same core function so mutations serialize through the single WS channel
+    (Phase 2).
     """
     body = request.json or {}
-    annotation_id = body.get('annotationId')
-    stroke_id = body.get('strokeId')
-    groups = body.get('consumedGroups') or []
-    if not (annotation_id and stroke_id and groups):
-        return jsonify({'error': 'annotationId, strokeId, consumedGroups required'}), 400
     con = _db.get_db()
     try:
-        row = con.execute('SELECT * FROM annotation WHERE id = ?', (annotation_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'not found'}), 404
-        err = _member_or_403(con, project_id) or _owner_or_403(row['annotator'])
-        if err:
-            return err
-        created_tiles = [r['tile_id'] for r in con.execute(
-            'SELECT tile_id FROM annotation_tile WHERE annotation_id = ?', (annotation_id,)
-        ).fetchall()]
-        con.execute('DELETE FROM stroke WHERE id = ?', (stroke_id,))
-        consumed_ids = [g['annotationId'] for g in groups]
-        for g in groups:
-            stroke_ids = g.get('strokeIds') or []
-            if stroke_ids:
-                qmarks = ','.join('?' * len(stroke_ids))
-                con.execute(f'UPDATE stroke SET annotation_id = ? WHERE id IN ({qmarks})',
-                           (g['annotationId'], *stroke_ids))
-        qmarks = ','.join('?' * len(consumed_ids))
-        con.execute(f'UPDATE annotation SET deleted_at = NULL, updated_at = ? WHERE id IN ({qmarks})',
-                   (_now(), *consumed_ids))
-        con.execute('DELETE FROM annotation WHERE id = ?', (annotation_id,))  # cascades annotation_tile
-
-        dirtied: dict[str, dict] = {}
-        resurrected = []
-        for cid in consumed_ids:
-            r = con.execute('SELECT * FROM annotation WHERE id = ?', (cid,)).fetchone()
-            if not r:
-                continue
-            tile_ids = _tiles_for_geom(con, r['project_image_id'], _annotation_geom(r))
-            for tid in tile_ids:
-                con.execute(
-                    'INSERT OR IGNORE INTO annotation_tile (annotation_id, tile_id) VALUES (?, ?)',
-                    (cid, tid),
-                )
-            for d in _mark_tiles_dirty(con, tile_ids, r['annotator']):
-                dirtied[d['tileId']] = d
-            resurrected.append(_annotation_out(r))
-        for d in _mark_tiles_dirty(con, created_tiles, row['annotator']):
-            dirtied[d['tileId']] = d
-        con.commit()
-        return jsonify({'ok': True, 'resurrected': resurrected,
-                        'deletedAnnotationId': annotation_id, 'tileStates': list(dirtied.values())})
+        result, status = do_reverse_annotation_merge(
+            con, project_id, body,
+            username=session.get('username') or '',
+            user_id=session.get('user_id'),
+            is_admin=session.get('username') == 'admin')
+        return jsonify(result), status
     finally:
         _db.close_db(con)
 
@@ -1573,6 +3880,50 @@ def set_tile_state(at_id: str):
         _db.close_db(con)
 
 
+@projects_bp.post('/api/batch-tiles/<bt_id>/state')
+@login_required
+def set_batch_tile_state(bt_id: str):
+    """t126: mark MY completion of a batch tile — keyed on (batch_tile, annotator), UPSERTing
+    the per-(member,tile) completion record LAZILY. Tiles are not pre-assigned to users, so
+    the row is minted on first mark; this is what lets a late-added roster annotator complete
+    a tile at all (fixes t112, where a missing pre-provisioned row made the checkmark no-op).
+    `annotator` is body-supplied (admin may mark as any annotator; a non-admin is forced to
+    self via _owner_or_403). Gated on project membership (_member_or_403)."""
+    body = request.json or {}
+    state = body.get('state')
+    if state not in ('assigned', 'completed', 'dirty'):
+        return jsonify({'error': 'state must be assigned|completed|dirty'}), 400
+    is_admin = session.get('username') == 'admin'
+    annotator = (body.get('annotator') or '').strip() if is_admin else (session.get('username') or '')
+    con = _db.get_db()
+    try:
+        bt = con.execute(
+            '''SELECT bt.id, b.project_id FROM batch_tile bt
+               JOIN batch b ON b.id = bt.batch_id WHERE bt.id = ?''', (bt_id,)).fetchone()
+        if not bt:
+            return jsonify({'error': 'not found'}), 404
+        err = _member_or_403(con, bt['project_id']) or _owner_or_403(annotator)
+        if err:
+            return err
+        now = _now()
+        existing = con.execute(
+            'SELECT id FROM annotator_tile WHERE batch_tile_id = ? AND annotator = ?',
+            (bt_id, annotator)).fetchone()
+        if existing:
+            at_id = existing['id']
+            con.execute('UPDATE annotator_tile SET state = ?, updated_at = ? WHERE id = ?',
+                        (state, now, at_id))
+        else:
+            at_id = _uid()
+            con.execute(
+                '''INSERT INTO annotator_tile (id, batch_tile_id, annotator, state, updated_at)
+                   VALUES (?, ?, ?, ?, ?)''', (at_id, bt_id, annotator, state, now))
+        con.commit()
+        return jsonify({'ok': True, 'state': state, 'annotatorTileId': at_id})
+    finally:
+        _db.close_db(con)
+
+
 # ── project image serving ─────────────────────────────────────────────────────
 
 def _image_row(con, image_id: str):
@@ -1592,8 +3943,16 @@ def image_overview(image_id: str):
             return err
     finally:
         _db.close_db(con)
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
-    return send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
+    resp = send_file(_bytesio(imaging.overview_png(img)), mimetype='image/png')
+    # t162: an image id's pixels never change, so let the browser keep it. The canvas preloads +
+    # decodes the overview, then mounts its <image>; that must be a cache hit, not a second async
+    # load (iPad WebKit left the image unpainted until the next pan/zoom).
+    resp.headers['Cache-Control'] = 'private, max-age=86400, immutable'
+    return resp
 
 
 @projects_bp.get('/api/projects/images/<image_id>/crop')
@@ -1614,7 +3973,10 @@ def image_crop(image_id: str):
         w, h = int(request.args['w']), int(request.args['h'])
     except (KeyError, ValueError):
         return jsonify({'error': 'x, y, w, h required'}), 400
-    img = imaging.get_image(im['image_hash'], im['image_ext'])
+    try:
+        img = imaging.get_image(im['image_hash'], im['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     return send_file(_bytesio(imaging.crop_png(img, x, y, w, h)), mimetype='image/png')
 
 

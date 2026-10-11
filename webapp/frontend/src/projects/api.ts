@@ -1,8 +1,11 @@
 // API client + types for the annotator project pipeline.
 // Mirrors webapp/projects.py. Kept thin so the backend stays the single source of truth.
 
-/** A per-project label (Option A taxonomy): flat list, no hierarchy/sharing. */
-export type Label = { id: string; name: string; color: string; order: number };
+/** A per-project label (Option A taxonomy): flat list, no hierarchy/sharing.
+ * `broken` (t109, optional): true when this option is a folded-in BROKEN compound —
+ * still paintable (resolution matches by name against the full compound list), just
+ * flagged in the picker so the user sees it needs fixing in the labels editor. */
+export type Label = { id: string; name: string; color: string; order: number; broken?: boolean };
 
 export type ProjectSummary = {
   id: string;
@@ -10,6 +13,11 @@ export type ProjectSummary = {
   tile_size_px: number;
   black_threshold: number;
   classes: Label[];
+  groups: Group[];
+  compounds: Compound[];
+  /** t109: INVALID compounds — never in `compounds`/`classes`, shown read-only in the
+   * editor's "Broken labels" section (delete opens the existing reassign flow). */
+  brokenCompounds: BrokenCompound[];
   tiling_confirmed: boolean;
   created_by: string | null;
   created_at: string;
@@ -35,12 +43,26 @@ export type ProjectImage = {
   leaf_x: number; leaf_y: number; leaf_w: number; leaf_h: number;
 };
 
+/** t126 Phase 2: a batch_member's derived per-tile progress. */
+export type BatchMember = {
+  annotator: string;
+  tilesCompleted: number;
+  tilesTotal: number;
+  percent: number;
+};
+
 export type Batch = {
   id: string;
   seq: number;
   size: number;
   status: string;
   tileCount: number;
+  /** MERGE Phase 1 gate: true once every batch_member has completed every tile. */
+  mergeReady: boolean;
+  /** t126 Phase 2: the durable batch_member set + each member's percent-complete. */
+  members: BatchMember[];
+  /** t127: is the SESSION user a member of this batch? Drives "Open in canvas". */
+  isMember: boolean;
 };
 
 export type Progress = {
@@ -70,14 +92,18 @@ export type TilePreview = {
 };
 
 import { jbody, jfetch } from './httpJson';
+import type { Group, Compound, BrokenCompound } from './taxonomy';
 
 // Canvas annotation types + their API methods live in their own module (keeps this file
 // ≤200 lines) — re-exported here so every existing `projectsApi.foo(...)` / `import type
 // {...} from './api'` call site keeps working unchanged.
 export type {
   CanvasTile, TileStateUpdate, CanvasAnnotation, CanvasImage, BatchCanvas,
-  ConsumedGroup, CreateAnnotationResult,
+  ConsumedGroup, CreateAnnotationResult, MergeAnnotations,
+  CandidateObject, CandidateObjects, Erasures,
+  CanvasStroke, StrokeEditBefore, StrokeEditGroup,
 } from './canvasApi';
+export type { PointerSample } from './canvasCapture';
 import { canvasApi } from './canvasApi';
 
 // Streaming import lives in its own module to keep this file ≤200 lines; re-export so
@@ -89,7 +115,13 @@ export const projectsApi = {
   get: (id: string) => jfetch<ProjectDetail>(`/api/projects/${id}`),
   create: (body: { name: string }) =>
     jfetch<ProjectSummary>('/api/projects', jbody('POST', body)),
-  update: (id: string, body: Partial<{ name: string; black_threshold: number; classes: Label[]; tiling_confirmed: boolean }>) =>
+  update: (id: string, body: Partial<{
+    name: string; black_threshold: number; classes: Label[]; groups: Group[];
+    compounds: Compound[]; tiling_confirmed: boolean;
+    /** t64: old compound id -> new compound id, for a save that drops a REFERENCED
+     * compound (see LabelEditor.tsx's reassignment picker). */
+    reassignCompounds: Record<string, string>;
+  }>) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', body)),
   updateTileSize: (id: string, tileSizePx: number) =>
     jfetch<ProjectSummary>(`/api/projects/${id}`, jbody('PATCH', { tile_size_px: tileSizePx })),
@@ -122,6 +154,17 @@ export const projectsApi = {
 
   createBatch: (id: string, size: number) =>
     jfetch<Batch & { rosterSize: number }>(`/api/projects/${id}/batches`, jbody('POST', { size })),
+
+  /** t126 Phase 2: batch membership editing. addBatchMember is idempotent; removeBatchMember
+   * needs confirm=true when the member has existing work (else the server 409s with
+   * {needsConfirm: true} — see ApiError.body in httpJson.ts). */
+  addBatchMember: (batchId: string, annotator: string) =>
+    jfetch<{ ok: boolean; members: BatchMember[] }>(
+      `/api/batches/${batchId}/members`, jbody('POST', { annotator })),
+  removeBatchMember: (batchId: string, annotator: string, confirm?: boolean) =>
+    jfetch<{ ok: boolean; members: BatchMember[] }>(
+      `/api/batches/${batchId}/members/${encodeURIComponent(annotator)}${confirm ? '?confirm=1' : ''}`,
+      { method: 'DELETE' }),
 
   ...canvasApi,
 };

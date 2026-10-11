@@ -9,6 +9,9 @@ RUN cd webapp/frontend && npm ci
 # Copy frontend source + the legacy CSS source it reads
 COPY webapp/frontend/ ./webapp/frontend/
 COPY webapp/static/style.css ./webapp/static/style.css
+# The committed geo-engine wasm — the build's copy-wasm step copies it into static/ (and
+# hard-fails without it).
+COPY geo-engine/geo_engine.wasm ./geo-engine/geo_engine.wasm
 
 # Build: vite bundle → /app/webapp/static/dist/  +  legacy.css
 RUN cd webapp/frontend && npm run build

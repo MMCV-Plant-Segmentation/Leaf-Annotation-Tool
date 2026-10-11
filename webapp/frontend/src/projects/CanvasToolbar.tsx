@@ -1,34 +1,53 @@
-import { type Component, For, Show } from 'solid-js';
+import { type Component, type JSX, For, Show } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import type { Tool } from './canvasShapes';
 import type { Label } from './api';
 import { AnnotatorPicker } from './AnnotatorPicker';
+import { LabelPicker } from './LabelPicker';
+import { toolMeta } from './canvasToolRegistry';
+import { BrushMenu } from './BrushMenu';
 import { t } from '../i18n/catalog';
 import * as styles from './CanvasScreen.css';
 
 type Props = {
+  /** Enabled tool buttons, in order — TOOLS-LIST-DRIVEN (see canvasToolRegistry.ts).
+   * Annotate: ['select','pan','brush','eraser']. Merge: ['pan'] only (Phase 1 — no
+   * grouping/erase/select-CO tools yet). */
+  tools: Tool[];
   tool: Accessor<Tool>;
   setTool: (tl: Tool) => void;
-  annotator: string;
-  readOnly: boolean;
-  roster: Accessor<string[]>;
-  onSelectAnnotator: (byline: string) => void;
-  brushSize: Accessor<number>;
-  setBrushSize: (s: number) => void;
-  maxBrushSize: Accessor<number>;
-  selClass: Accessor<string>;
-  setSelClass: (c: string) => void;
-  classOptions: () => Label[];
+  /** Outer wrapper `data-testid` — defaults to the annotate value; merge overrides. */
+  wrapTestId?: string;
+  /** Leading badge slot, rendered right after Back — e.g. merge's blind-mode pill. */
+  badge?: JSX.Element;
+  /** Undefined ⇒ no annotator info is rendered at all (merge has no annotator concept). */
+  annotator?: string;
+  // BUGS #15: admin is a read-only viewer of another annotator's work — when true, the
+  // whole paint/erase/undo/redo/class-picker cluster below is hidden, and the annotator
+  // slot renders a roster picker instead of a plain "as X" label. Annotate-only; merge
+  // never sets this (it has no per-annotator concept to switch between).
+  readOnly?: boolean;
+  roster?: Accessor<string[]>;
+  onSelectAnnotator?: (byline: string) => void;
+  brushSize?: Accessor<number>;
+  setBrushSize?: (s: number) => void;
+  maxBrushSize?: Accessor<number>;
+  // t65: on the Select tool, the size control targets the SELECTED mask (null = no selection).
+  selectionSize?: () => number | null;
+  setSelectionSize?: (px: number) => void;
+  selClass?: Accessor<string>;
+  setSelClass?: (c: string) => void;
+  classOptions?: () => Label[];
   imgIdx: Accessor<number>;
   imgCount: number;
   onBack: () => void;
   onFit: () => void;
   onImgPrev: () => void;
   onImgNext: () => void;
-  onUndo: () => void;
-  onRedo: () => void;
-  canUndo: Accessor<boolean>;
-  canRedo: Accessor<boolean>;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: Accessor<boolean>;
+  canRedo?: Accessor<boolean>;
 };
 
 // Slider is logarithmic across [1, maxBrushSize] so the low end (fine control on
@@ -39,6 +58,25 @@ type Props = {
 const SLIDER_RESOLUTION = 1000;
 
 const clampBrushSize = (v: number, max: number) => Math.max(1, Math.min(max, Math.round(v)));
+
+// Quick absolute sizes offered by the size combobox (t65 → t91). Clamped to maxBrushSize on pick.
+const SIZE_PRESETS = [2, 4, 8, 16, 32, 64];
+// t91: the presets hang off the number input as a native combobox (font-size-picker style),
+// so this id ties the <input list=…> to its <datalist>.
+const SIZE_PRESETS_ID = 'canvas-size-presets';
+
+// The active size control target: the brush (paint tools) or the SELECTED mask (Select tool,
+// t65) — or null when no size control applies. t91: presets now apply to BOTH, so there is
+// no longer a flag gating them.
+type SizeCtx = { get: () => number; set: (n: number) => void };
+const activeSizeCtx = (props: Props): SizeCtx | null => {
+  const tl = props.tool();
+  if ((tl === 'brush' || tl === 'eraser' || tl === 'polyline') && props.brushSize && props.setBrushSize)
+    return { get: props.brushSize, set: props.setBrushSize };
+  if (tl === 'select' && props.selectionSize && props.setSelectionSize && props.selectionSize() != null)
+    return { get: () => props.selectionSize!() ?? 1, set: props.setSelectionSize };
+  return null;
+};
 
 const sizeToSliderPos = (size: number, max: number): number => {
   const hi = Math.log(Math.max(2, max));
@@ -51,72 +89,96 @@ const sliderPosToSize = (pos: number, max: number): number => {
   return clampBrushSize(Math.exp((pos / SLIDER_RESOLUTION) * hi), max);
 };
 
-// Toolbar strip extracted from CanvasScreen to keep parent under 200 lines.
+// Toolbar strip shared by CanvasScreen (annotate) and MergeCanvasScreen (merge) — a
+// `tools: Tool[]` list drives which tool buttons render (see canvasToolRegistry.ts);
+// every annotate-only extra (brush size, undo/redo, class picker, annotator info) is
+// conditional on its own props/callbacks being supplied, so merge simply omits them.
 export const CanvasToolbar: Component<Props> = (props) => (
-  <div class={styles.toolbar} data-testid="canvas-toolbar">
+  <div class={styles.toolbar} data-testid={props.wrapTestId ?? 'canvas-toolbar'}>
     <button class={styles.back} onClick={props.onBack}>{t('canvas.back')}</button>
-    <Show when={!props.readOnly} fallback={
-      <AnnotatorPicker roster={props.roster} value={() => props.annotator} onChange={props.onSelectAnnotator} />
-    }>
-      <span class={styles.who}>{t('canvas.as')} <strong>{props.annotator}</strong></span>
+    {props.badge}
+    <Show when={props.annotator !== undefined}>
+      <Show when={!props.readOnly} fallback={
+        <AnnotatorPicker roster={props.roster!} value={() => props.annotator!} onChange={props.onSelectAnnotator!} />
+      }>
+        <span class={styles.who}>{t('canvas.as')} <strong>{props.annotator}</strong></span>
+      </Show>
     </Show>
     <span class={styles.sep} />
-    {/* BUGS #15: admin is a read-only viewer — no paint/erase/undo/redo/class tools. */}
     <Show when={!props.readOnly}>
-      <For each={(['pan', 'brush', 'eraser'] as Tool[])}>
-        {(tl) => (
-          <button class={props.tool() === tl ? styles.toolActive : styles.tool}
-            onClick={() => props.setTool(tl)}
-            title={tl === 'brush' ? 'Brush' : tl === 'eraser' ? 'Eraser (drag over strokes to delete them)' : 'Pan'}>
-            {tl === 'brush' ? 'brush' : tl === 'eraser' ? '✕ eraser' : 'pan'}
-          </button>
-        )}
+      <For each={props.tools}>
+        {(tl) => {
+          const m = toolMeta(tl);
+          if (tl === 'brush') {
+            return (
+              <BrushMenu active={props.tool() === tl} testId={m.testId} title={m.title}
+                label={m.label} toolClass={props.tool() === tl ? styles.toolActive : styles.tool}
+                onClick={() => props.setTool(tl)} />
+            );
+          }
+          return (
+            <button class={props.tool() === tl ? styles.toolActive : styles.tool}
+              aria-pressed={props.tool() === tl}
+              onClick={() => props.setTool(tl)}
+              title={m.title}
+              data-testid={m.testId}>
+              {m.label}
+            </button>
+          );
+        }}
       </For>
-      <Show when={props.tool() === 'brush' || props.tool() === 'eraser'}>
-        <label class={styles.sizeLabel}>
-          {'Size'}
-          <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
-            step={1} value={sizeToSliderPos(props.brushSize(), props.maxBrushSize())}
-            data-testid="brush-size-slider"
-            onInput={(e) => props.setBrushSize(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize()))} />
-          <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize()}
-            step={1} value={props.brushSize()} data-testid="brush-size-input"
-            onChange={(e) => {
-              const parsed = Number(e.currentTarget.value);
-              const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize()) : props.brushSize();
-              e.currentTarget.value = String(next);
-              props.setBrushSize(next);
-            }} />
-          <span data-testid="brush-size-value">{'px'}</span>
-        </label>
+      {/* Size control — brush size on the paint tools, or the SELECTED mask's width on the
+          Select tool (t65, with a quick-presets dropdown). See activeSizeCtx. */}
+      <Show when={props.maxBrushSize && props.tools.includes(props.tool()) && activeSizeCtx(props)}>
+        {(ctx) => (
+          <label class={styles.sizeLabel}>
+            {'Size'}
+            <input class={styles.sizeSlider} type="range" min={0} max={SLIDER_RESOLUTION}
+              step={1} value={sizeToSliderPos(ctx().get(), props.maxBrushSize!())}
+              data-testid="brush-size-slider"
+              onInput={(e) => ctx().set(sliderPosToSize(+e.currentTarget.value, props.maxBrushSize!()))} />
+            {/* t91: native combobox — the presets drop out of the number input itself (click
+                to reveal, still free-typeable), not a separate button. Applies to every tool
+                the size control serves, brush included. */}
+            <input class={styles.sizeNumberInput} type="number" min={1} max={props.maxBrushSize!()}
+              step={1} value={ctx().get()} data-testid="brush-size-input" list={SIZE_PRESETS_ID}
+              onChange={(e) => {
+                const parsed = Number(e.currentTarget.value);
+                const next = Number.isFinite(parsed) ? clampBrushSize(parsed, props.maxBrushSize!()) : ctx().get();
+                e.currentTarget.value = String(next);
+                ctx().set(next);
+              }} />
+            <datalist id={SIZE_PRESETS_ID}>
+              <For each={SIZE_PRESETS}>{(px) => <option value={px} />}</For>
+            </datalist>
+            <span data-testid="brush-size-value">{'px'}</span>
+          </label>
+        )}
       </Show>
-      <span class={styles.sep} />
-      <button class={styles.tool} disabled={!props.canUndo()} onClick={props.onUndo}
-        data-testid="undo-btn" title="Undo (Ctrl+Z)">{t('canvas.undo')}</button>
-      <button class={styles.tool} disabled={!props.canRedo()} onClick={props.onRedo}
-        data-testid="redo-btn" title="Redo (Ctrl+Shift+Z / Ctrl+Y)">{t('canvas.redo')}</button>
-      <span class={styles.sep} />
-      <label class={styles.classPick}>{t('canvas.class')}
-        <select onChange={(e) => props.setSelClass(e.currentTarget.value)} value={props.selClass()}>
-          <For each={props.classOptions()}>{(c) => <option value={c.name}>{c.name}</option>}</For>
-          {/* Lenient backend: keep an out-of-set selClass selectable as free text. */}
-          <Show when={props.selClass() && !props.classOptions().some((c) => c.name === props.selClass())}>
-            <option value={props.selClass()}>{props.selClass()}</option>
-          </Show>
-        </select>
-        <Show when={props.classOptions().find((c) => c.name === props.selClass())}>
-          {(c) => <span class={styles.swatch} style={{ background: c().color }} aria-hidden="true" />}
-        </Show>
-      </label>
+      <Show when={props.onUndo && props.onRedo}>
+        <span class={styles.sep} />
+        <button class={styles.tool} disabled={!props.canUndo?.()} onClick={props.onUndo}
+          data-testid="undo-btn" title="Undo (Ctrl+Z)">{t('canvas.undo')}</button>
+        <button class={styles.tool} disabled={!props.canRedo?.()} onClick={props.onRedo}
+          data-testid="redo-btn" title="Redo (Ctrl+Shift+Z / Ctrl+Y)">{t('canvas.redo')}</button>
+      </Show>
+      <Show when={props.selClass && props.setSelClass && props.classOptions}>
+        <span class={styles.sep} />
+        <span class={styles.classPick}>{t('canvas.class')}
+          <LabelPicker value={props.selClass!} onChange={props.setSelClass!}
+            options={props.classOptions!} ariaLabel={t('canvas.class')} testId="class-picker" />
+        </span>
+      </Show>
     </Show>
     <button class={styles.tool} onClick={props.onFit}>{t('canvas.fit')}</button>
+    {/* t161: /calibrate moved into the Brush button's hidden popup (see BrushMenu.tsx). */}
     <Show when={props.imgCount > 1}>
       <span class={styles.sep} />
       <button class={styles.tool} disabled={props.imgIdx() === 0}
-        onClick={props.onImgPrev}>{t('canvas.imgPrev')}</button>
+        data-testid="img-prev" onClick={props.onImgPrev}>{t('canvas.imgPrev')}</button>
       <span class={styles.who}>{props.imgIdx() + 1}/{props.imgCount}</span>
       <button class={styles.tool} disabled={props.imgIdx() >= props.imgCount - 1}
-        onClick={props.onImgNext}>{t('canvas.imgNext')}</button>
+        data-testid="img-next" onClick={props.onImgNext}>{t('canvas.imgNext')}</button>
     </Show>
   </div>
 );

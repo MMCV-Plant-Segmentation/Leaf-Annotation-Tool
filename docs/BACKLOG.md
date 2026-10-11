@@ -182,3 +182,66 @@ lost. Pull one up when there's slack. (Renamed from RAINYDAY 2026-07-03.)
   app (it's a separate concern / external tool, not part of the annotation tool). Logged 2026-07-04.
 - **LabelMe export for projects.** Export a project's annotations to LabelMe format. Ties to compound-label
   serialization (export to strings — base64 the serialized value if needed). Logged 2026-07-04.
+- **Dedicated production branch (deploy prod from it, not `main`).** Christian (2026-07-04): with the new
+  "test from a branch, don't merge-to-test" workflow, `main` is effectively the integration/test line. Add a
+  `production` (or `release`) branch that prod actually deploys from, so merging to `main` no longer implies
+  "this is live." Prod redeploys track that branch; `main` stays the staging tip. Logged 2026-07-04.
+- **Structured BE error/request logging + log backup (with version/sha).** Christian (2026-07-04): today the
+  backend logs nothing durable — malformed requests return a `400` JSON but are unrecorded, and uncaught
+  exceptions only hit container stdout (ephemeral). Add real logging: capture 4xx/5xx + tracebacks to a
+  persistent log (a file in a volume), **stamp every line with the build version/sha** (so we can tie a bug to
+  a deploy), and **back the logs up** alongside the DB (litestream/lsyncd sidecars). Goal = catch bugs we don't
+  know about. Companion to the harness token/tool-usage audit work. Logged 2026-07-04.
+- **Coverage gate step (FE + BE), no threshold yet.** Christian (2026-07-04): add a coverage-measurement stage
+  to `scripts/gate.py` for BOTH backends (wrap the standalone test scripts in `coverage run`) and frontend
+  (vitest/c8 or Playwright coverage) — **report the percentage but do NOT fail the gate** (no minimum for now).
+  A minimum threshold comes later; right now the priority is fixing known bugs, collecting all the data we need,
+  and the minimum features to support annotation. Logged 2026-07-04.
+- **Let the test env RUN the backup sidecars (not just restore).** Christian (2026-07-04): today `start test
+  --data-mode restore` can *consume* a backup (reads `BACKUP_DIR`), but `--with-backup` (litestream/lsyncd
+  sidecars) is prod-only — so there's no way to exercise the backup *machinery* in test. Allow `--with-backup`
+  on `start test`, pointed at a **throwaway/non-prod backup dir** (never prod's), so the whole backup path can
+  be validated before it ships to prod. Logged 2026-07-04.
+- **Multi-select lesions (Ctrl+click + rectangular drag-select).** Christian (2026-07-04): once the Phase-2
+  selection tool exists (see `Plan — Compound labels.md`), extend it to select MULTIPLE lesions — Ctrl+click to
+  add/remove from the selection, and a rectangular click-and-drag marquee select while in select mode — so a
+  batch of lesions can be re-labeled at once. Follows the single-select relabel flow. Logged 2026-07-04.
+- **Configurable tool keybinds (select / brush / pan / etc.).** Christian (2026-07-04): give the annotator
+  quick keys to swap between tools (e.g. select ⇄ brush ⇄ pan), and make them **user-configurable** from the
+  start — whenever we set a default keybind it should be rebindable (per-user setting), not hardcoded. NOT the
+  temporary space-held-for-pan (that ships with the Phase-2 selection tool); this is the persistent swap keys +
+  their config UI. Logged 2026-07-04.
+
+- **Viewport behavior for undo/redo of off-screen edits.** Once all edit operations are undoable
+  (relabel included), an undo/redo may affect an annotation that is OUTSIDE the current viewport —
+  the user could undo something and see nothing change. Think through the right UX: should undo/redo
+  pan/zoom to reveal the affected annotation, flash a marker, be disallowed off-screen, or something
+  else? Design before building. Logged 2026-07-06 (Christian, alongside wiring relabel into undo/redo).
+
+- **Quarantine/excise the legacy non-Kobalte system.** Thought fully quarantined, but it isn't: the
+  static `webapp/static/index.html` still loads `<script src="/static/compare.js">` and
+  `<script src="/static/app.js">`, and the new SolidJS app mounts INSIDE the legacy `#setup-screen`
+  shell (`position:fixed; z-index:200`) alongside the legacy `#compare-screen`/`#analyze-screen` DOM
+  + `legacy.css`. That shell's z-index:200 is what made a new Kobalte portal dropdown render behind
+  it (the LabelPicker click-intercept bug, fixed 2026-07-08 by bumping the portal z-index above the
+  shell — a workaround, not a cure). Task: migrate the remaining legacy screens (compare/analyze) to
+  Solid or fully isolate them, drop the legacy JS/CSS/DOM shell, and mount the app at the document
+  root so no legacy stacking context can clobber new UI. Logged 2026-07-08 (Christian).
+
+- **Replace seeded/synthetic test data with hard-coded fixtures (parameterized).** The e2e fixture
+  (`webapp/frontend/e2e/fixtures/seed.py`) generates *synthetic* images at fixed sizes, and batch
+  composition used to be random (now seeded deterministically from `(project_id, seq)` — see
+  `test_batch_determinism.py`). Determinism removed the flake, but the test *data* is still
+  procedurally generated. Switch to a small set of **hard-coded, checked-in fixture images/annotations**
+  (real content, known geometry) so tests assert against ground truth, and **parameterize** over that
+  set (e.g. several leaf shapes/sizes, edge/black-threshold cases, thin/vertical strokes) to get broad
+  coverage without procedural randomness. Removes the last source of "it depends what got generated"
+  from the suite. Logged 2026-07-10 (Christian, after the #31 RNG-flake root-cause).
+
+- ~~**Chimera masks — preserve polyline editability when a polyline fuses with a brush stroke.**~~
+  **DISSOLVED 2026-07-10 by the computed-from-strokes reframe.** Christian: brush and polyline are two
+  input modes over the SAME data; a mask's shape is COMPUTED (and cached) from its member strokes, each
+  stroke keeping its own provenance. So a mask can hold mixed polyline+freehand member strokes natively
+  — the polyline strokes stay editable, the freehand ones don't, and the shape recomputes from all of
+  them. No special "chimera" representation is needed. (Superseded; see root `docs/plans/Plan — Polyline
+  click-brush tool (a11y #40).md`.)

@@ -16,6 +16,19 @@
 
 import { test, expect } from '@playwright/test';
 
+// t150: these exercise geometry that now comes from the shared wasm engine rather than a pure-JS
+// implementation, so the engine must be loaded first. Same artifact the server runs.
+async function loadEngine() {
+  const { readFileSync } = await import('node:fs');
+  const { dirname, resolve } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const mod = await import('../../src/projects/geoEngine');
+  const b = readFileSync(resolve(repo, 'geo-engine/geo_engine.wasm'));
+  mod.setGeoEngine(await mod.instantiateGeoEngine(
+    b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer));
+}
+
 // ── Duck-typed event helpers (no DOM globals in Node unit tests) ───────────────
 
 function kbEvent(key: string, extra: Record<string, unknown> = {}) {
@@ -40,6 +53,7 @@ function fakeSvg() {
 
 test.describe('buildStrokePath', () => {
   test('returns a non-empty SVG path for a single point (click = circle)', async () => {
+    await loadEngine();
     const { buildStrokePath } = await import('../../src/projects/canvasShapes');
     const d = buildStrokePath([[100, 100]], 20);
     expect(d.length).toBeGreaterThan(0);
@@ -47,6 +61,7 @@ test.describe('buildStrokePath', () => {
   });
 
   test('returns a non-empty SVG path for a multi-point stroke', async () => {
+    await loadEngine();
     const { buildStrokePath } = await import('../../src/projects/canvasShapes');
     const d = buildStrokePath([[0,0],[10,5],[20,0],[30,5],[40,0]], 10);
     expect(d.length).toBeGreaterThan(0);
@@ -159,6 +174,26 @@ test.describe('createCanvasInteraction', () => {
     cx.handleKeyUp(kbEvent(' ') as KeyboardEvent);
     expect(cx.isSpaceDown()).toBe(false);
   });
+
+  // ── BUGS #38 — space+drag pan must work while the ERASER tool is active ──────
+  // Regression guard: the space-pan gesture must take priority over the eraser's own
+  // pointer handling (space down → pointer-drag pans, and does NOT draft/commit an erase).
+  // The same must hold for the group (merge) tool, which shares the eraser's draw path.
+  for (const tool of ['eraser', 'group', 'brush'] as const) {
+    test(`space+drag pans while the ${tool} tool is active (no stroke drafted)`, async () => {
+      const { cx, vb, draft, committed } = await makeInteraction({ tool });
+      cx.handleKeyDown(kbEvent(' ') as KeyboardEvent);
+      expect(cx.isSpaceDown()).toBe(true);
+      cx.onPointerDown(ptrEvent(100, 300, 1) as unknown as PointerEvent);
+      cx.onPointerMove(ptrEvent(200, 300, 1) as unknown as PointerEvent);
+      // The viewport panned by the drag delta (CTM a=1 → 100px client = 100 image units)…
+      expect(vb().x).toBe(-100);
+      // …and NO erase/paint stroke was started while space-panning.
+      expect(draft()).toHaveLength(0);
+      cx.onPointerUp(ptrEvent(200, 300, 1) as unknown as PointerEvent);
+      expect(committed).toHaveLength(0);
+    });
+  }
 
   // ── #7 — CTM-based coordinate mapping (letterbox) ──────────────────────────
   test('toImage maps screen coords to image coords accounting for letterbox y-offset', async () => {

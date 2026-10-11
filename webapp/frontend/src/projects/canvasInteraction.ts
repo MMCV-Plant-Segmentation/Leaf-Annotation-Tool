@@ -1,27 +1,31 @@
-import { createSignal } from 'solid-js';
-import type { Accessor, Setter } from 'solid-js';
+import { createSignal, type Accessor, type Setter } from 'solid-js';
 import type { Tool, ViewBox } from './canvasShapes';
+import { firePolylineClick } from './canvasPolyline';
+import type { VertexIndex } from './canvasSnap';
+import { createSampleCapture, createRepeatFilter, type PointerSample } from './canvasCapture';
+import { createPenModeGate } from './canvasPenModeGate';
 
 export interface CanvasInteractionOpts {
-  getSvg: () => SVGSVGElement | undefined;
-  vb: Accessor<ViewBox>;
-  setVb: Setter<ViewBox>;
-  tool: Accessor<Tool>;
-  brushSize: Accessor<number>;
-  setBrushSize: (s: number) => void;
-  maxBrushSize: Accessor<number>;
-  draft: Accessor<number[][]>;
-  setDraft: Setter<number[][]>;
-  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number) => void;
-}
+  getSvg: () => SVGSVGElement | undefined; vb: Accessor<ViewBox>; setVb: Setter<ViewBox>; tool: Accessor<Tool>;
+  brushSize: Accessor<number>; setBrushSize: (s: number) => void; maxBrushSize: Accessor<number>;
+  draft: Accessor<number[][]>; setDraft: Setter<number[][]>;
+  // t50 phase 2b: parallel per-point vertex refs for the polyline draft + snap inputs.
+  // Optional — only CanvasScreen's polyline tool wires these (MergeCanvasScreen shares this type).
+  draftRefs?: Accessor<(string | null)[]>; setDraftRefs?: (v: (string | null)[]) => void;
+  snapIndex?: Accessor<VertexIndex>; snapRadiusImg?: Accessor<number>;
+  commit: (kind: string, points: number[][], passNo?: number, strokeWidth?: number, tool?: string, samples?: PointerSample[]) => void;
+  /** Polyline per-click hook: fires with growing point list; persistence picks create/edit. */
+  polylineStep?: (points: number[][], strokeWidth: number, refs: (string | null)[]) => void;
+  /** t65: scroll over a SELECTED mask resizes it; true = handled (else the caller pans). */
+  resizeSelected?: (dir: 1 | -1) => boolean;
+  onSelect?: (imgPoint: [number, number]) => void; }
 
 export interface CanvasInteraction {
   toImage: (clientX: number, clientY: number) => [number, number];
   onWheel: (e: WheelEvent) => void;
   onPointerDown: (e: PointerEvent) => void;
   onPointerMove: (e: PointerEvent) => void;
-  onPointerUp: (e: PointerEvent) => void;
-  onPointerLeave: () => void;
+  onPointerUp: (e: PointerEvent) => void; onPointerCancel: (e: PointerEvent) => void; onPointerLeave: () => void;
   handleKeyDown: (e: KeyboardEvent) => void;
   handleKeyUp: (e: KeyboardEvent) => void;
   isSpaceDown: Accessor<boolean>;
@@ -29,8 +33,7 @@ export interface CanvasInteraction {
   finishDraft: () => void;
 }
 
-// Pointer/zoom/draft controller for the annotation canvas. Pure closure over the
-// supplied signals — keeps CanvasScreen focused on data + composition.
+// Pointer/zoom/draft controller for the annotation canvas — pure closure over the signals.
 export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInteraction {
   // Space-bar pan state (reactive so SVG cursor can respond)
   const [spaceDown, setSpaceDown] = createSignal(false);
@@ -38,25 +41,25 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   let spacePanRef: { x: number; y: number; vb: ViewBox } | null = null;
 
   // Mid-stroke pan lock (B §D: all pan disabled while pointer is down drawing)
-  let strokeInProgress = false;
+  let strokeInProgress = false, strokeId = -1;  // strokeId = the pointer drawing it (only its lift commits)
   let panDragging = false;
   let lastPanClient: { x: number; y: number } | null = null;
 
-  // Multi-touch tracking for two-finger pinch (§E)
   type TouchPt = { clientX: number; clientY: number; imgX: number; imgY: number };
-  const touches = new Map<number, TouchPt>();
+  const touches = new Map<number, TouchPt>();  // multi-touch tracking for two-finger pinch (§E)
   let pinchStart: { dist: number; midImgX: number; midImgY: number; vb: ViewBox } | null = null;
+  const penGate = createPenModeGate();  // t161: pen-mode touch gating (see canvasPenModeGate.ts)
 
   const toImage = (clientX: number, clientY: number): [number, number] => { // client px → image px via CTM
     const ctm = o.getSvg()!.getScreenCTM();
     if (!ctm) return [clientX, clientY];
     return [(clientX - ctm.e) / ctm.a, (clientY - ctm.f) / ctm.d];
   };
+  const capture = createSampleCapture(toImage), isRepeat = createRepeatFilter();  // t141 capture; t157 drop Safari's doubled Pencil moves
 
   const clampSize = (s: number) => Math.max(1, Math.min(o.maxBrushSize(), Math.round(s)));
 
-  // Multiplicative brush resize for fine low-end control; used by scroll wheel.
-  const stepSize = (dir: 1 | -1) => {
+  const stepSize = (dir: 1 | -1) => {  // multiplicative brush resize (scroll wheel)
     const cur = o.brushSize();
     o.setBrushSize(dir > 0 ? clampSize(Math.max(cur + 1, Math.round(cur * 1.15))) : clampSize(Math.min(cur - 1, Math.round(cur / 1.15))));
   };
@@ -80,51 +83,49 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
     if (strokeInProgress) return;  // §D: pan + size-scroll locked mid-stroke
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && !e.shiftKey) {
-      // Brush/eraser mode plain scroll → adjust size (§B); eraser shares the brush's size control
+    // Plain scroll: sizeable tool → brush size (§B); Select over a mask → resize it (t65); else pan.
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group' || o.tool() === 'polyline') && !e.shiftKey) {
       stepSize(e.deltaY > 0 ? -1 : 1);
       return;
     }
+    if (o.tool() === 'select' && !e.shiftKey && o.resizeSelected?.(e.deltaY > 0 ? -1 : 1)) return;
     // Shift+scroll → pan horizontal; else pan vertical (§C). Negative = natural scroll direction.
     if (e.shiftKey) { panBy(-e.deltaY, 0); } else { panBy(0, -e.deltaY); }
   };
 
   const onPointerDown = (e: PointerEvent) => {
+    if (penGate.onDown(e, touches)) return;  // t161: pen is down + pen mode on — ignore this touch entirely
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const [ix, iy] = toImage(e.clientX, e.clientY);
     touches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY, imgX: ix, imgY: iy });
 
-    if (touches.size >= 2) {
-      // Two-finger gesture starts: cancel any in-flight stroke (§E)
+    if (touches.size >= 2) {  // Two-finger gesture starts: cancel any in-flight stroke (§E)
       if (strokeInProgress) { o.setDraft([]); strokeInProgress = false; }
       panDragging = false; spacePanRef = null;
       const pts = [...touches.values()];
       const dx = pts[1].clientX - pts[0].clientX, dy = pts[1].clientY - pts[0].clientY;
-      pinchStart = {
-        dist: Math.hypot(dx, dy),
-        midImgX: (pts[0].imgX + pts[1].imgX) / 2,
-        midImgY: (pts[0].imgY + pts[1].imgY) / 2,
-        vb: o.vb(),
-      };
+      pinchStart = { dist: Math.hypot(dx, dy), midImgX: (pts[0].imgX + pts[1].imgX) / 2,
+        midImgY: (pts[0].imgY + pts[1].imgY) / 2, vb: o.vb() };
       return;
     }
 
     // Space+drag → temporary pan from any tool, not mid-stroke (§C)
-    if (spaceDown() && !strokeInProgress) {
-      spacePanRef = { x: e.clientX, y: e.clientY, vb: o.vb() };
-      return;
-    }
+    if (spaceDown() && !strokeInProgress) { spacePanRef = { x: e.clientX, y: e.clientY, vb: o.vb() }; return; }
+    // t161: pen mode ON — a finger only navigates (pans), any tool; never draws/erases/selects.
+    if (penGate.isTouchNav(e)) { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
 
     const tl = o.tool();
+    if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
-    if (tl === 'brush' || tl === 'eraser') { strokeInProgress = true; o.setDraft([[ix, iy]]); return; }
-    // polygon/line: add a vertex (legacy tools, not shown in toolbar)
-    o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);
+    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; strokeId = e.pointerId; o.setDraft([[ix, iy]]); capture.reset(); capture.collect(e); return; }
+    if (tl === 'polyline') { firePolylineClick(ix, iy, o); return; }  // per-click persist (see canvasPolyline.ts)
+    o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
 
   const onPointerLeave = () => { setHoverImg(null); };
   const onPointerMove = (e: PointerEvent) => {
-    setHoverImg(toImage(e.clientX, e.clientY));
+    if (penGate.isIgnoredMove(e, touches)) return;  // t161: stays ignored for its whole gesture
+    if (isRepeat(e)) return; setHoverImg(toImage(e.clientX, e.clientY));
     if (touches.has(e.pointerId)) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
       touches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY, imgX: ix, imgY: iy });
@@ -152,48 +153,47 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
 
-    if (o.tool() === 'pan' && panDragging && lastPanClient) {
+    // t161: a forced touch-nav pan (pen mode, finger, any tool) also lands here.
+    if (panDragging && lastPanClient && (o.tool() === 'pan' || penGate.isTouchNav(e))) {
       panBy(e.clientX - lastPanClient.x, e.clientY - lastPanClient.y);
       lastPanClient = { x: e.clientX, y: e.clientY };
       return;
     }
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
-      o.setDraft((d) => [...d, [ix, iy]]);
+      o.setDraft((d) => [...d, [ix, iy]]); capture.collect(e);  // t141: + this frame's max-rate samples
     }
   };
 
   const onPointerUp = (e: PointerEvent) => {
+    penGate.release(e.pointerId);
     touches.delete(e.pointerId);
     if (touches.size < 2) pinchStart = null;
 
-    if ((o.tool() === 'brush' || o.tool() === 'eraser') && strokeInProgress) {
-      // Commit (1-point click still works). Eraser is the same gesture, kind 'erase' —
-      // CanvasScreen's commit() routes that to the delete-by-intersection endpoint.
-      const pts = o.draft().map(([x, y]) => [Math.round(x), Math.round(y)]);
-      o.commit(o.tool() === 'eraser' ? 'erase' : 'stroke', pts, 1, o.brushSize());
-      o.setDraft([]);
-      strokeInProgress = false;
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress && e.pointerId === strokeId) {
+      // Commit (1-point click ok). kind='erase'=CanvasScreen delete-by-intersection;
+      // 'group'=MergeCanvasScreen POST candidate-object (server resolves); 'stroke'=brush create.
+      capture.collect(e); const pts = o.draft();  // t61 float precision; t141 final samples
+      const kind = ({eraser: 'erase', group: 'group'} as const)[o.tool() as 'eraser' | 'group'] ?? 'stroke';
+      o.commit(kind, pts, 1, o.brushSize(), undefined, o.tool() === 'brush' ? capture.take() : undefined);
+      o.setDraft([]); strokeInProgress = false;
     }
-    panDragging = false;
-    spacePanRef = null;
-    lastPanClient = null;
+    panDragging = false; spacePanRef = null; lastPanClient = null;
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === ' ') setSpaceDown(true);
-  };
-
-  const handleKeyUp = (e: KeyboardEvent) => {
-    if (e.key === ' ') { setSpaceDown(false); spacePanRef = null; }
-  };
+  // t161: iOS ends a rejected PALM touch with pointercancel, never pointerup. Forget it like a lift, else
+  // it stays "down" and every later pen stroke reads as a two-finger pinch until reload. Never commits.
+  const onPointerCancel = (e: PointerEvent) => { if (e.pointerId === strokeId) { o.setDraft([]); strokeInProgress = false; } onPointerUp(e); };
+  const handleKeyDown = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceDown(true); };
+  const handleKeyUp = (e: KeyboardEvent) => { if (e.key === ' ') { setSpaceDown(false); spacePanRef = null; } };
 
   const finishDraft = () => {
-    const d = o.draft(); const tl = o.tool();
+    const tl = o.tool();
+    if (tl === 'polyline') return;  // Per-click rebuild: every click already persisted.
+    const d = o.draft();
     if (tl === 'polygon' && d.length >= 3) o.commit('polygon', d, 2);
     else if (tl === 'line' && d.length >= 2) o.commit('line', d);
     o.setDraft([]);
   };
-
-  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
+  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
 }

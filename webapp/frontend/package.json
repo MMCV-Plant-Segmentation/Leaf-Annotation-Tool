@@ -5,12 +5,13 @@
   "version": "0.1.0",
   "scripts": {
     "build:legacy": "node scripts/build-legacy-css.mjs",
-    "build": "vite build && npm run build:legacy",
+    "build": "npm run build:wasm && vite build && npm run build:legacy",
     "build:watch": "vite build --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "playwright test --project=unit --project=fast",
-    "test:full": "playwright test --project=unit --project=fast --project=full"
+    "test:full": "playwright test --project=unit --project=fast --project=full",
+    "build:wasm": "node scripts/copy-wasm.mjs"
   },
   "dependencies": {
     "@kobalte/core": "^0.13.11",
@@ -18,7 +19,7 @@
     "@solidjs/router": "^0.16.1",
     "@vanilla-extract/css": "^1.21.0",
     "@vanilla-extract/vite-plugin": "^5.2.3",
-    "perfect-freehand": "^1.2.3",
+    "kdbush": "^4.1.0",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {

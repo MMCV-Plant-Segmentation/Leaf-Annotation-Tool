@@ -1,41 +1,29 @@
 import { type Component, For, Show } from 'solid-js';
-import { getStroke } from 'perfect-freehand';
+import { outlineBrushSyncOrEmpty } from './geoEngine';
 import type { CanvasAnnotation, CanvasTile, Rect, TileStateUpdate } from './api';
 
-export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser';
+export type Tool = 'pan' | 'polygon' | 'point' | 'line' | 'brush' | 'eraser' | 'select' | 'group' | 'polyline';
 export type ViewBox = { x: number; y: number; w: number; h: number };
 
 export const TILE_COLORS: Record<string, string> = {
   assigned: '#9ca3af', completed: '#16a34a', dirty: '#f59e0b',
 };
 
-// Convert a flat outline polygon (from getStroke) to a smooth SVG path via
-// quadratic bezier chords — the Steve Ruiz idiom for perfect-freehand output.
-function outlineToPath(pts: number[][]): string {
-  if (!pts.length) return '';
-  const d: (string | number)[] = ['M', pts[0][0], pts[0][1], 'Q'];
-  for (let i = 0; i < pts.length; i++) {
-    const [x0, y0] = pts[i];
-    const [x1, y1] = pts[(i + 1) % pts.length];
-    d.push(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
-  }
-  d.push('Z');
-  return d.join(' ');
-}
+// t150: the brush preview now comes from the SHARED ENGINE, so what you see while drawing is
+// what gets stored. The old path went through perfect-freehand's `getStroke` plus a
+// quadratic-bezier smoothing of its output — a second implementation of geometry the server
+// already owned, and the reason preview and stored mask could disagree.
+//
+// One deliberate consequence (Christian's call, 2026-07-27): perfect-freehand took a `last`
+// flag, and the live draft passed `last=false` to leave the leading edge OPEN and tapered while
+// the stroke was in progress. The engine has no such concept, so an in-progress stroke now
+// renders CLOSED and capped throughout — which is precisely the divergence D2 exists to remove.
 
-// Compute the perfect-freehand outline polygon for a brush stroke.
-// Returns the raw getStroke result (number[][] polygon in image coords).
-// The outline is the actual painted shape; re-used by buildStrokePath and the API commit.
-export function strokeOutline(points: number[][], size: number, last = true): number[][] {
-  return getStroke(points, {
-    size, thinning: 0, smoothing: 0.5, last, simulatePressure: false,
-  }) as number[][];
-}
-
-// Build an SVG path string for a brush stroke (or live draft when last=false).
-// size is in image-space pixels (constant world size regardless of zoom).
-export function buildStrokePath(points: number[][], size: number, last = true): string {
-  return outlineToPath(strokeOutline(points, size, last));
+/** Build an SVG path for a brush stroke. `size` is in image-space pixels (constant world size
+ * regardless of zoom). Empty while the engine is still loading — see preloadGeoEngine(). */
+export function buildStrokePath(points: number[][], size: number): string {
+  if (!points.length) return '';
+  return ringsToPath(outlineBrushSyncOrEmpty(points, Math.max(size, 1)));
 }
 
 /** Build an SVG "M…L…Z" path from polygon rings (exterior first, then holes). */
@@ -92,83 +80,47 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-export const AnnotationShape: Component<{ ann: CanvasAnnotation; color?: string }> = (props) => {
+// `blind` renders marks outline-only (Phase 1). Phase 2a `erased` flags a mark VISIBLE but
+// dotted + faded with data-erased="true" (a recovery toggle), via a shared `<g>` wrapper.
+export const AnnotationShape: Component<{
+  ann: CanvasAnnotation; color?: string; blind?: boolean; erased?: boolean;
+}> = (props) => {
   const color = () => props.color ?? '#2563eb';
-  const fill = () => withAlpha(color(), 0.55);
+  const fill = () => props.blind ? 'none' : withAlpha(color(), 0.55);
   return (
-    <Show when={props.ann.kind === 'stroke'} fallback={
-      <Show when={props.ann.kind === 'point'} fallback={
-        <Show when={props.ann.kind === 'line'} fallback={
-          <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill={withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
-            vector-effect="non-scaling-stroke" />
+    <g data-erased={props.erased ? 'true' : undefined}
+       stroke-dasharray={props.erased ? '4 3' : undefined}
+       opacity={props.erased ? 0.4 : undefined}
+       pointer-events="all">
+      <Show when={props.ann.kind === 'stroke'} fallback={
+        <Show when={props.ann.kind === 'point'} fallback={
+          <Show when={props.ann.kind === 'line'} fallback={
+            <polygon points={props.ann.points.map((p) => p.join(',')).join(' ')}
+              fill={props.blind ? 'none' : withAlpha(color(), 0.18)} stroke={color()} stroke-width="2"
+              vector-effect="non-scaling-stroke" />
+          }>
+            <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
+              fill="none" stroke={color()} stroke-width="2"
+              vector-effect="non-scaling-stroke" />
+          </Show>
         }>
-          <polyline points={props.ann.points.map((p) => p.join(',')).join(' ')}
-            fill="none" stroke={color()} stroke-width="2"
-            vector-effect="non-scaling-stroke" />
+          <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
+            fill={props.blind ? 'none' : color()} stroke={props.blind ? color() : undefined}
+            stroke-width={props.blind ? '2' : undefined} vector-effect="non-scaling-stroke" />
         </Show>
       }>
-        <circle cx={props.ann.points[0][0]} cy={props.ann.points[0][1]} r="5"
-          fill={color()} vector-effect="non-scaling-stroke" />
+        <Show when={props.ann.rings.length > 0}>
+          <path data-testid="annotation-mask" d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
+            fill={fill()} stroke={color()} stroke-width="1.5"
+            vector-effect="non-scaling-stroke" />
+        </Show>
       </Show>
-    }>
-      <Show when={props.ann.rings.length > 0}>
-        <path d={ringsToPath(props.ann.rings)} fill-rule="evenodd"
-          fill={fill()} stroke={color()} stroke-width="1.5"
-          vector-effect="non-scaling-stroke" />
-      </Show>
-    </Show>
+    </g>
   );
 };
 
-// Accessibility-tuned colours for the *live* brush/eraser draft + hover preview —
-// deliberately louder than the committed-stroke rendering above (AnnotationShape),
-// since a low-vision user needs to see her own in-progress stroke while drawing.
-// A white halo is drawn under a dark-toned outline so the shape reads against both
-// light and dark leaf backgrounds. Kept as one object so Christian can retune by eye.
-export const LIVE_DRAFT = {
-  haloColor: '#ffffff',
-  haloWidth: 4,
-  brushFill: 'rgba(37,99,235,0.6)',
-  brushStroke: '#1e3a8a',
-  eraserFill: 'rgba(220,38,38,0.6)',
-  eraserStroke: '#7f1d1d',
-  strokeWidth: 2,
-  previewHaloWidth: 4.5,
-  previewStrokeWidth: 2.5,
-};
-
-/** Live in-progress brush/eraser stroke + hover-radius preview circle. Rendered on
- * top of everything else while drawing; not shown for committed strokes. */
-export const LiveDraftOverlay: Component<{
-  tool: Tool; draft: number[][]; brushSize: number; hover: [number, number] | null;
-}> = (props) => (
-  <>
-    <Show when={props.draft.length > 0 && (props.tool === 'brush' || props.tool === 'eraser')}>
-      <path d={buildStrokePath(props.draft, props.brushSize, false)} fill="none"
-        stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.haloWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-      <path d={buildStrokePath(props.draft, props.brushSize, false)}
-        fill={props.tool === 'eraser' ? LIVE_DRAFT.eraserFill : LIVE_DRAFT.brushFill}
-        stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
-        stroke-width={LIVE_DRAFT.strokeWidth}
-        vector-effect="non-scaling-stroke" pointer-events="none" />
-    </Show>
-    <Show when={(props.tool === 'brush' || props.tool === 'eraser') && props.hover}>
-      {(c) => (
-        <>
-          <circle cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
-            stroke={LIVE_DRAFT.haloColor} stroke-width={LIVE_DRAFT.previewHaloWidth}
-            vector-effect="non-scaling-stroke" pointer-events="none" />
-          <circle cx={c()[0]} cy={c()[1]} r={props.brushSize / 2} fill="none"
-            stroke={props.tool === 'eraser' ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}
-            stroke-width={LIVE_DRAFT.previewStrokeWidth}
-            vector-effect="non-scaling-stroke" pointer-events="none" />
-        </>
-      )}
-    </Show>
-  </>
-);
+// LIVE_DRAFT constants + LiveDraftOverlay component moved to ./LiveDraftOverlay.tsx —
+// keeps this file under the 200-line cap while making room for polyline draft rendering.
 
 // Clamp a viewport to the image bounds (used when persisting an annotation's viewport).
 export function clampRect(v: ViewBox, w: number, h: number): Rect {

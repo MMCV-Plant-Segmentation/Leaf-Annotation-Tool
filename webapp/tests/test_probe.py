@@ -4,7 +4,10 @@ Backend acceptance tests for the pre-flight upload-dedup probe endpoint.
 Covers:
   P1. Known-vector: the hash scheme is sha256(bytes).hexdigest()[:24] (24 hex chars).
   P2. Probe returns EXACTLY the present subset (present ∩ candidates; absent excluded).
-  P3. Per-project scoping: a hash present in project A is NOT reported for project B.
+  P3. GLOBAL scoping (BUGS #26): a hash present in project A IS reported for project B,
+      because the bytes live in one global content-addressed store — re-sending them is
+      pointless. The DB still guards VISIBILITY (register-by-hash inserts the per-project
+      row); reporting a hash present does not leak image content across projects.
   P4. Empty / malformed body handling.
   P5. Member gate: non-member → 403; member → 200.
 
@@ -97,13 +100,17 @@ assert out_none['have'] == [], f'all-absent probe should be empty, got {out_none
 print('  ✓  all-absent probe → have == []')
 
 
-# ── P3: per-project scoping ───────────────────────────────────────────────────
-print('\n── P3: per-project scoping ──')
+# ── P3: GLOBAL scoping (BUGS #26) ─────────────────────────────────────────────
+print('\n── P3: global scoping ──')
 pid2 = jdump(client.post('/api/projects', json={'name': 'Probe test 2'}))['id']
-# h1/h2 live in pid, NOT pid2. Probing pid2 for them must return nothing.
+# h1/h2 live in pid, NOT pid2. With GLOBAL dedup, probing pid2 for them MUST report them as
+# present (bytes are on disk somewhere) so the client registers them by hash instead of
+# re-uploading. The DB still guards which project VIEWS them — visibility is unaffected.
 out2 = jdump(_probe(client, pid2, [h1, h2]))
-assert out2['have'] == [], f'hashes from another project leaked: {out2["have"]}'
-print('  ✓  hashes present in project A are not reported for project B')
+have2 = set(out2['have'])
+assert have2 == {h1, h2}, f'globally-present hashes should be reported for any project: {have2}'
+assert absent not in have2, 'absent hash must not be reported present globally'
+print('  ✓  hashes present in project A ARE reported for project B (global dedup); absent excluded')
 
 
 # ── P4: empty / malformed body ────────────────────────────────────────────────

@@ -1,0 +1,105 @@
+// Taxonomy v2 types — groups + saved compound labels (per-project, no sharing).
+// Mirrors webapp/taxonomy.py's read surface. Kept in its own module so api.ts stays
+// under 200 lines; re-exported from api.ts.
+
+/** A group member: a name + order ONLY (members carry NO colour). */
+export type Member = { id: string; name: string; order: number };
+
+/** A group: ordered members + a required? flag. Members are mutually exclusive. */
+export type Group = {
+  id: string;
+  name: string;
+  order: number;
+  required: boolean;
+  members: Member[];
+};
+
+/**
+ * A saved COMPOUND label = { name, color, selections } where selections maps each chosen
+ * group id -> one of its member ids. Valid only if it selects a member for every REQUIRED
+ * group (optional groups may be omitted). Compounds are the paintable, coloured palette.
+ */
+export type Compound = {
+  id: string;
+  name: string;
+  color: string;
+  selections: Record<string, string>;
+};
+
+/**
+ * A BROKEN compound (t109): an INVALID compound (missing a required group/member, or an
+ * orphaned painted label folded in by the `0012_orphan_labels` migration) projected to
+ * just what the editor/annotator need to surface it — {id,name,color}, no `selections`
+ * (it is never editable in place, only deletable/reassignable via `ReassignPicker`).
+ */
+export type BrokenCompound = { id: string; name: string; color: string };
+
+/** The full taxonomy read surface (groups + the valid compound palette + flat classes). */
+export type Taxonomy = {
+  groups: Group[];
+  compounds: Compound[];
+  /** Compounds projected to the legacy flat {id,name,color,order} (single-group parity). */
+  classes: { id: string; name: string; color: string; order: number }[];
+};
+
+/** A group id -> {memberId, memberName, groupName} entry in a lesion's snapshot. */
+export type SnapshotSelection = {
+  memberId: string;
+  memberName: string;
+  groupName: string;
+};
+
+/** The denormalised compound snapshot stored on a lesion at assign time. */
+export type LabelSnapshot = {
+  name: string;
+  color: string;
+  selections: Record<string, SnapshotSelection>;
+};
+
+/**
+ * Is a compound valid against the current groups? Mirrors webapp.taxonomy.is_compound_valid:
+ * selects an existing member for every required group; every selection present points at a
+ * real group+member. Pure (used by the editor to block saving invalid compounds).
+ */
+/**
+ * The label DERIVED from a compound's member selections: the selected members' names
+ * joined in GROUP order (a single-group compound => just that member's name). Mirrors
+ * webapp.taxonomy.derive_label. Members deleted since selection contribute nothing.
+ */
+export function deriveLabel(compound: Compound, groups: Group[]): string {
+  const sel = compound.selections || {};
+  const parts: string[] = [];
+  for (const g of groups) {
+    const mid = sel[g.id];
+    if (!mid) continue;
+    const m = g.members.find((mm) => mm.id === mid);
+    if (m && m.name) parts.push(m.name);
+  }
+  return parts.join(' / ');
+}
+
+/**
+ * A compound's DISPLAY label: its custom `name` when set, else the label DERIVED live from
+ * its member selections (t89). Mirrors webapp.taxonomy.compound_label — the single source
+ * of truth so an uncustomised (empty-name) compound tracks member renames everywhere.
+ */
+export function compoundLabel(compound: Compound, groups: Group[]): string {
+  const name = (compound.name || '').trim();
+  return name || deriveLabel(compound, groups);
+}
+
+export function isCompoundValid(compound: Compound, groups: Group[]): boolean {
+  const sel = compound.selections || {};
+  for (const g of groups) {
+    if (!g.required) continue;
+    const mid = sel[g.id];
+    if (!mid) return false;
+    if (!g.members.some((m) => m.id === mid)) return false;
+  }
+  const memberIdsByGroup = new Map(groups.map((g) => [g.id, new Set(g.members.map((m) => m.id))]));
+  for (const [gid, mid] of Object.entries(sel)) {
+    const set = memberIdsByGroup.get(gid);
+    if (!set || !set.has(mid)) return false;
+  }
+  return true;
+}

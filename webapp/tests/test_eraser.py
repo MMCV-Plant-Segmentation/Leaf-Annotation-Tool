@@ -142,10 +142,13 @@ def erase(client, points, sw, outline=None):
     return jdump(r2)
 
 
-def tile_state(at_id):
+def tile_state(bt_id):
     c = db.get_db()
     try:
-        return c.execute('SELECT state FROM annotator_tile WHERE id = ?', (at_id,)).fetchone()['state']
+        row = c.execute(
+            "SELECT state FROM annotator_tile WHERE batch_tile_id = ? AND annotator = 'alice'",
+            (bt_id,)).fetchone()
+        return row['state'] if row else None
     finally:
         db.close_db(c)
 
@@ -211,9 +214,10 @@ print('  ✓  no intersection → no deletions')
 
 print('\n── E4: erase in a completed tile flips it to dirty ──')
 
-r = alice_client.patch(f"/api/annotator-tiles/{t0['annotatorTileId']}", json={'state': 'completed'})
+r = alice_client.post(f"/api/batch-tiles/{t0['batchTileId']}/state",
+                      json={'annotator': 'alice', 'state': 'completed'})  # t126: lazy completion
 assert r.status_code == 200, jdump(r)
-assert tile_state(t0['annotatorTileId']) == 'completed'
+assert tile_state(t0['batchTileId']) == 'completed'
 
 res4 = erase(alice_client, [[tx + 6, ty + 6]], sw=6)  # sweeps `untouched`
 assert res4['deletedAnnotationIds'] == [untouched['id']], \
@@ -221,7 +225,7 @@ assert res4['deletedAnnotationIds'] == [untouched['id']], \
 assert 'tileStates' in res4, f'tileStates missing from erase-stroke response: {res4.keys()}'
 ts4 = [s for s in res4['tileStates'] if s['tileId'] == t0['tileId']]
 assert len(ts4) == 1 and ts4[0]['state'] == 'dirty', f'expected t0 flipped to dirty, got {res4["tileStates"]}'
-assert tile_state(t0['annotatorTileId']) == 'dirty'
+assert tile_state(t0['batchTileId']) == 'dirty'
 print('  ✓  erasing in a completed tile re-opens it')
 
 

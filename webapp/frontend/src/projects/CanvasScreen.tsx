@@ -1,17 +1,41 @@
-import { type Component, createEffect, createMemo, createResource, createSignal, For, Show, on, onMount, onCleanup } from 'solid-js';
+import { type Component, createEffect, createMemo, createResource, createSignal, Show, on } from 'solid-js';
 import { useNavigate, useParams } from '@solidjs/router';
-import { projectsApi, imageUrls, type CanvasImage, type Label } from './api';
+import { projectsApi, type CanvasImage, type Label } from './api';
 import { t } from '../i18n/catalog';
-import { type Tool, type ViewBox, AnnotationShape, CanvasTiles, LiveDraftOverlay } from './canvasShapes';
+import { type Tool, type ViewBox } from './canvasShapes';
+import { LiveDraftOverlay } from './LiveDraftOverlay';
+import { SelectionHighlight } from './SelectionHighlight';
+import { hitTestAnnotation } from './lesionSelect';
+import { VertexHandles } from './VertexHandles';
 import { createCanvasInteraction } from './canvasInteraction';
 import { createCanvasHistory } from './canvasHistory';
 import { createCanvasPersistence } from './canvasPersistence';
+import { createCanvasSocket } from './canvasSocket';
+import { createRelabelDropdown } from './relabelDropdown';
+import { createCanvasKeyboard } from './canvasKeyboard';
+import { createTileToggle } from './tileComplete';
 import { createAnnotatorSelect } from './annotatorSelect';
 import { createImageDecodeGate } from './imageDecodeGate';
+import { createViewportTelemetry } from './viewportTelemetry';
+import { createViewportUrlSync } from './viewportUrlSync';
+import { createUnsavedGuard } from './canvasUnsavedGuard';
 import { CanvasToolbar } from './CanvasToolbar';
+import { CanvasStage } from './CanvasStage';
 import { CanvasHints } from './CanvasHints';
+import CanvasLegend from './CanvasLegend';
 import { adminReadOnlyCommit } from './adminReadOnly';
+import { createViewportHeatmap, ViewportHeatmapLayer, ViewportHeatmapPanel } from './ViewportHeatmapOverlay';
+import { createPolylineSnapState } from './canvasSnapIndex';
+import { makeFinishOrSplice } from './canvasSplice';
+import { createSelectionResize } from './canvasSelectionResize';
+import { buildClassOptions } from './canvasClassOptions';
+import { createTileNav } from './canvasTileNav';
+import { createPersistedBrushSize } from './brushSizePersistSync';
+import { goBack, projectHubRoute } from './canvasBackRoute';
 import * as styles from './CanvasScreen.css';
+
+// Annotate enables the full tool set; 'polyline' is the a11y click-brush (feature #40).
+const ANNOTATE_TOOLS: Tool[] = ['select', 'pan', 'brush', 'polyline', 'eraser'];
 
 const CanvasScreen: Component = () => {
   const params = useParams();
@@ -23,150 +47,150 @@ const CanvasScreen: Component = () => {
     () => { const bid = batchId(); const ann = annotator(); return (bid && ann) ? `${bid}|${ann}` : undefined; },
     (key: string) => { const s = key.indexOf('|'); return projectsApi.batchCanvas(key.slice(0, s), key.slice(s + 1)); }
   );
-
   const [imgIdx, setImgIdx] = createSignal(0);
   const image = createMemo<CanvasImage | undefined>(() => canvas()?.images[imgIdx()]);
-  const [tool, setTool] = createSignal<Tool>('pan');
+  const [tool, setTool] = createSignal<Tool>('select');
+  const [selId, setSelId] = createSignal<string | null>(null);
   const [draft, setDraft] = createSignal<number[][]>([]);
-  const [selClass, setSelClass] = createSignal('');
+  // `paintLabel` = the last compound the user chose for painting (drives commits + pickDropdown).
+  const [paintLabel, setPaintLabel] = createSignal('');
   const [vb, setVb] = createSignal<ViewBox>({ x: 0, y: 0, w: 100, h: 100 });
-  const [brushSize, setBrushSize] = createSignal(0);
-  // BUGS #20: the annotation overlay must not paint before the <image> is decode-ready
-  // (else it briefly floats over a blank/late image). imgLoaded is driven by decode(),
-  // not the SVG <image> onLoad, and is keyed to imageId only — never on pan/zoom — so
-  // there's no flicker while panning/zooming an already-loaded image. See imageDecodeGate.ts.
-  const imageId = createMemo(() => image()?.imageId);
+  const [brushSize, setBrushSize] = createPersistedBrushSize(); // t93: persist across reloads
+  // t50 phase 2b: draw-time vertex snapping state (see canvasSnapIndex.ts).
+  const { draftRefs, setDraftRefs, snapIndex, snapRadiusImg } = createPolylineSnapState(image, brushSize);
+  const imageId = createMemo(() => image()?.imageId);  // BUGS #20: gate paint on decode-ready
   const imgLoaded = createImageDecodeGate(imageId);
 
   let svgRef: SVGSVGElement | undefined;
-
   const fitImage = () => { const im = image(); if (im) setVb({ x: 0, y: 0, w: im.width, h: im.height }); };
-  createEffect(on(imageId, () => { if (image()) fitImage(); history.reset(); }));
-
+  // t139: prev/next step a FLAT tile list (canvasTileNav.ts), framing the landed tile.
+  // Initial open/same-image stays whole-image-fit; consumeFraming() lets a tile-nav image
+  // switch skip that fit so the tile frame wins instead.
+  const { tileIndex, flatTiles, tilePrev, tileNext, consumeFraming } = createTileNav(() => canvas()?.images, imgIdx, setImgIdx, setVb);
+  createEffect(on(imageId, () => {
+    if (!image()) return;
+    if (!consumeFraming()) fitImage();
+    history.reset(); setSelId(null);
+  }));
   const maxBrushSize = createMemo(() => { const im = image(); return im ? Math.round(Math.hypot(im.width, im.height)) : 1000; });
   createEffect(on(canvas, (c) => {
     if (!c || brushSize() !== 0) return;
     const tile = c.images.flatMap((im) => im.tiles)[0];
     setBrushSize(Math.max(1, Math.round(Math.hypot(tile?.w ?? 100, tile?.h ?? 100) * 0.1)));
   }));
-
-  const updateImg = (fn: (im: CanvasImage) => CanvasImage) =>
-    setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
-
-  const history = createCanvasHistory(
-    () => canvas()?.projectId ?? '',
-    updateImg,
-  );
-
-  const { commit } = createCanvasPersistence({
-    image, getProjectId: () => canvas()?.projectId, annotator, selClass, vb, updateImg, history,
+  const updateImg = (fn: (im: CanvasImage) => CanvasImage) => setCanvas((c) => c && ({ ...c, images: c.images.map((im, i) => i === imgIdx() ? fn(im) : im) }));
+  // Phase 1 (feat/annotation-ws): ONE WebSocket per canvas — create/edit/reverse channel.
+  const socket = createCanvasSocket({ projectId: () => canvas()?.projectId, imageId });
+  const history = createCanvasHistory(() => canvas()?.projectId ?? '', updateImg, socket);
+  const { commit, relabel, editStroke, moveSharedVertex, polylineStep, resetPolyline,
+    finishPolyline, splicePolyline, polylineStrokeId } = createCanvasPersistence({
+    image, getProjectId: () => canvas()?.projectId, annotator, selClass: paintLabel, vb, updateImg, history, socket, setSelectedId: setSelId, setDraftRefs,
   });
+  const finishOrSplice = makeFinishOrSplice({  // t67: splice run into existing stroke, else finish
+    draft, draftRefs, annotations: () => image()?.annotations ?? [],
+    runStrokeId: polylineStrokeId, brushSize, splice: splicePolyline, finish: finishPolyline,
+  });
+  const selResize = createSelectionResize({ selected: () => image()?.annotations.find((a) => a.id === selId()), editStroke }); // t65
+  const { dropdownLabel, pickDropdown } = createRelabelDropdown({ selId, image, paintLabel, setPaintLabel, relabel });
+  createEffect(on(tool, (tl) => { if (tl !== 'polyline') resetPolyline(); })); // leaving polyline ends the session
 
-  // BUGS #15: an admin viewing another user's annotations may look but must NOT add or
-  // delete anything for that user. When isAdmin() is true, the commit handed to the canvas
-  // interaction is a no-op, so drawing/erasing produces no server write — regardless of
-  // which tool is selected. (Admin's API-level ability is intentionally left intact; this
-  // is FE enforcement only, consistent with readOnly={isAdmin()} used elsewhere.)
+  // BUGS #15: admin viewer is FE read-only — commit + polylineStep no-op when isAdmin().
   const interaction = createCanvasInteraction({
-    getSvg: () => svgRef, vb, setVb, tool, draft, setDraft,
-    brushSize, setBrushSize, maxBrushSize,
-    commit: (kind, points, passNo, strokeWidth) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth),
+    getSvg: () => svgRef, vb, setVb, tool, draft, setDraft, draftRefs, setDraftRefs, snapIndex, snapRadiusImg,
+    brushSize, setBrushSize, maxBrushSize, resizeSelected: selResize.resizeSelected,
+    commit: (kind, points, passNo, strokeWidth, tool, samples) => adminReadOnlyCommit(isAdmin(), commit, kind, points, passNo, strokeWidth, tool, samples),
+    polylineStep: (pts, sw, refs) => { if (!isAdmin()) polylineStep(pts, sw, refs); },  // BUGS #15 admin viewer no-op
+    onSelect: (pt) => setSelId(hitTestAnnotation(image()?.annotations ?? [], pt[0], pt[1])),
   });
+  // Best-effort viewport telemetry, URL persist/restore (t92), + an unsaved-op unload guard.
+  createViewportTelemetry({ getProjectId: () => canvas()?.projectId, imageId, vb, getSvg: () => svgRef, isAdmin, socket });
+  createViewportUrlSync({ imageId, vb, setVb });
+  createUnsavedGuard({ hasPending: () => socket.hasPending(), message: () => t('canvas.unsavedWarn') });
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!isAdmin()) {
-      // Edit shortcuts only for the annotator who owns this work — never for an admin viewer.
-      if (e.key === 'Enter') interaction.finishDraft();
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); void history.undo(); }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') { e.preventDefault(); void history.redo(); }
-      if (e.ctrlKey && !e.metaKey && e.key === 'y') { e.preventDefault(); void history.redo(); }
-    }
-    // Non-edit keys remain available to everyone: Escape (clear draft), Ctrl+0 (fit).
-    if (e.key === 'Escape') { setDraft([]); setTool('pan'); }
-    if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); fitImage(); }
-    interaction.handleKeyDown(e);
-  };
-  const onKeyUp = (e: KeyboardEvent) => interaction.handleKeyUp(e);
-  onMount(() => { window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp); });
-  onCleanup(() => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); });
+  createCanvasKeyboard({ isAdmin, interaction, history, tool, setTool, setDraft, setDraftRefs, setSelId, fitImage, draft, finishPolyline: finishOrSplice });
 
-  const toggleTile = async (tile: import('./api').CanvasTile) => {
-    if (!tile.annotatorTileId) return;
-    const next = tile.state === 'completed' ? 'assigned' : 'completed';
-    await projectsApi.setTileState(tile.annotatorTileId, next);
-    setCanvas((c) => c && ({
-      ...c,
-      images: c.images.map((im, i) => i === imgIdx()
-        ? { ...im, tiles: im.tiles.map((tl) => tl.tileId === tile.tileId ? { ...tl, state: next } : tl) } : im),
-    }));
-  };
+  // a11y #40 v1b: the selected stroke-mask annotation (for vertex handles), if any.
+  const selectedStrokeAnn = createMemo(() => {
+    const id = selId(); if (!id) return undefined;
+    const a = image()?.annotations.find((x) => x.id === id);
+    return a?.kind === 'stroke' && (a.strokes?.length ?? 0) > 0 ? a : undefined;
+  });
+  // "meet" fits to the more-constraining axis → image-px-per-screen-px = max of both ratios.
+  const imgPerScreenPx = () =>
+    svgRef ? Math.max(vb().w / svgRef.clientWidth, vb().h / svgRef.clientHeight) : 1;
 
-  const classOptions = (): Label[] => canvas()?.classes ?? [];
+  // Admin-only viewport-attention HEATMAP overlay (math in viewportHeatmap.ts); gated
+  // admin-only backend-side since it's analysis data non-admin annotators never see.
+  const heat = isAdmin()
+    ? createViewportHeatmap(
+        () => canvas()?.projectId ?? '',
+        () => image()?.imageId ?? '',
+        () => image()?.width ?? 0,
+        () => image()?.height ?? 0,
+        annotator)
+    : null;
 
-  // Labels render in their configured colour (per-label colours, Option A). Annotations
-  // whose label is not in the configured set (lenient backend, legacy free-text) fall
-  // back to the canonical blue so existing data still reads.
-  const labelColor = (label: string | null): string => {
+  const { toggle: toggleTile, error: tileErr } = createTileToggle(imgIdx, setCanvas, annotator);
+
+  const classOptions = (): Label[] => buildClassOptions(canvas()?.classes ?? [], canvas()?.broken ?? []);
+  // Taxonomy v2: a lesion renders in its SNAPSHOT colour; legacy free-text falls back to
+  // the matching compound's colour, then the canonical blue.
+  const labelColor = (label: string | null, snap?: string | null): string => {
+    if (snap) return snap;
     const match = (canvas()?.classes ?? []).find((c) => c.name === label);
     return match ? match.color : '#2563eb';
   };
 
-  // Keep selClass valid against the project's labels. The backend is LENIENT (a label
-  // need not be configured), so an out-of-set selClass is preserved as a free-text
-  // option rather than dropped — but when empty, default to the first configured label.
+  // Backend is LENIENT (a label need not be configured); default paintLabel when empty.
   createEffect(on(classOptions, (opts) => {
-    const cur = selClass();
-    if (!cur && opts.length) setSelClass(opts[0].name);
+    if (!paintLabel() && opts.length) setPaintLabel(opts[0].name);
   }));
 
   return (
-    <div class={styles.wrap} data-screen="canvas">
+    <div class={styles.wrap}>
       <Show when={!annotator()}>
         <div class={styles.banner}>{t('canvas.noAnnotator')}</div>
       </Show>
+      <Show when={tileErr()}>
+        <div class={styles.banner} data-testid="tile-error" role="alert">{tileErr()}</div>
+      </Show>
       <CanvasToolbar
-        tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); }}
+        tools={ANNOTATE_TOOLS}
+        tool={tool} setTool={(tl) => { setTool(tl); setDraft([]); setDraftRefs([]); }}
         annotator={annotator()} readOnly={isAdmin()} roster={roster} onSelectAnnotator={selectAnnotator}
         brushSize={brushSize} setBrushSize={setBrushSize} maxBrushSize={maxBrushSize}
-        selClass={selClass} setSelClass={setSelClass} classOptions={classOptions}
-        imgIdx={imgIdx} imgCount={canvas()?.images.length ?? 0}
-        onBack={() => nav(-1)} onFit={fitImage}
-        onImgPrev={() => setImgIdx((i) => i - 1)} onImgNext={() => setImgIdx((i) => i + 1)}
+        selectionSize={selResize.selectionSize} setSelectionSize={selResize.setSelectionSize}
+        selClass={dropdownLabel} setSelClass={pickDropdown} classOptions={classOptions}
+        imgIdx={tileIndex} imgCount={flatTiles().length}
+        onBack={() => goBack(nav, projectHubRoute(params.id))} onFit={fitImage}
+        onImgPrev={tilePrev} onImgNext={tileNext}
         onUndo={() => void history.undo()} onRedo={() => void history.redo()}
         canUndo={history.canUndo} canRedo={history.canRedo}
       />
 
-      <Show when={image()} fallback={<div class={styles.stage}>{t('common.loading')}</div>}>
-        {(im) => (
-          <div class={styles.stage}>
-            <svg ref={svgRef} class={styles.svg}
-              viewBox={`${vb().x} ${vb().y} ${vb().w} ${vb().h}`}
-              preserveAspectRatio="xMidYMid meet"
-              onWheel={interaction.onWheel}
-              onPointerDown={interaction.onPointerDown}
-              onPointerMove={interaction.onPointerMove}
-              onPointerUp={interaction.onPointerUp}
-              onPointerLeave={interaction.onPointerLeave}
-              classList={{
-                [styles.panning]: tool() === 'pan',
-                [styles.spacePanning]: interaction.isSpaceDown() && tool() !== 'pan',
-                [styles.erasing]: tool() === 'eraser',
-              }}
-            >
-              <image href={imageUrls.overview(im().imageId)} x="0" y="0"
-                width={im().width} height={im().height} />
-              <CanvasTiles tiles={im().tiles} checkClass={styles.check}
-                onToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)} />
-              <Show when={imgLoaded()}>
-                <For each={im().annotations}>{(a) => <AnnotationShape ann={a} color={labelColor(a.label)} />}</For>
-              </Show>
-              <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
-                hover={interaction.hoverImg()} />
-            </svg>
-          </div>
-        )}
-      </Show>
+      <CanvasStage
+        setSvgRef={(el) => { svgRef = el; }}
+        vb={vb} image={image} imgLoaded={imgLoaded} tool={tool} interaction={interaction}
+        onTileToggle={isAdmin() ? undefined : (tile) => void toggleTile(tile)}
+        annotations={image()?.annotations ?? []}
+        annotationColor={(a) => labelColor(a.label, a.labelColor)}
+        panel={heat ? <ViewportHeatmapPanel heat={heat} /> : undefined}
+      >
+        <Show when={imgLoaded() && image()?.annotations.find((a) => a.id === selId())}>{(sel) =>
+          <SelectionHighlight ann={sel()} />
+        }</Show>
+        <Show when={imgLoaded() && tool() === 'select' && selectedStrokeAnn()}>{(ann) =>
+          <VertexHandles ann={ann()} scale={imgPerScreenPx} toImage={interaction.toImage}
+            onCommit={(sid, tl, pts, sw, refs) => void editStroke(sid, tl, pts, sw, refs)}
+            allAnnotations={() => image()?.annotations ?? []}
+            onMoveSharedVertex={(vid, b, a) => void moveSharedVertex(vid, b, a)} />
+        }</Show>
+        <LiveDraftOverlay tool={tool()} draft={draft()} brushSize={brushSize()}
+          hover={interaction.hoverImg()} color={labelColor(paintLabel())} scale={imgPerScreenPx()} />
+        {heat && <ViewportHeatmapLayer heat={heat} />}
+      </CanvasStage>
 
+      <CanvasLegend annotations={image()?.annotations ?? []} classes={canvas()?.classes ?? []} />
       <CanvasHints vb={vb} />
     </div>
   );

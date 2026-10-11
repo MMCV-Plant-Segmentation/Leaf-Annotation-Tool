@@ -7,6 +7,11 @@ export const section = style({
   border: `1px solid ${vars.color.border}`,
   borderRadius: vars.radius.md,
   background: vars.color.surface,
+  // t73 ROOT CAUSE: as a flex/grid child the editor adopts its content's intrinsic
+  // min-width and can push wider than its column; cap it + let min-width:0 below shrink.
+  maxWidth: '100%',
+  minWidth: 0,
+  boxSizing: 'border-box',
 });
 
 export const head = style({
@@ -25,6 +30,8 @@ export const summary = style({
   fontSize: '0.82rem',
   color: vars.color.textMuted,
   flex: '1 1 auto',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
 });
 
 export const list = style({
@@ -38,6 +45,8 @@ export const row = style({
   display: 'flex',
   alignItems: 'center',
   gap: '0.4rem',
+  // t107: input grows+shrinks (min-width:0) so nowrap fills the width without wrapping controls.
+  flexWrap: 'nowrap',
 });
 
 export const color = style({
@@ -51,7 +60,12 @@ export const color = style({
 });
 
 export const name = style({
-  flex: '1 1 auto',
+  flex: '1 1 8rem',
+  // t73: a text <input> defaults to min-width:auto (~its `size` in ch) and won't shrink as
+  // a flex child → row overflow. min-width:0 lets it share the row; border-box caps padding.
+  minWidth: 0,
+  maxWidth: '100%',
+  boxSizing: 'border-box',
   padding: '0.3rem 0.5rem',
   border: `1px solid ${vars.color.border}`,
   borderRadius: '4px',
@@ -105,4 +119,81 @@ export const btn = style({
 export const err = style({
   color: vars.color.danger,
   fontSize: '0.82rem',
+});
+
+export const subTitle = style({
+  margin: '0.4rem 0 0.2rem',
+  fontSize: '0.85rem',
+  color: vars.color.textMuted,
+});
+
+export const groupBlock = style({
+  padding: '0.5rem',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: vars.radius.sm,
+  background: vars.color.bg,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.35rem',
+});
+
+// t75: members render as a plain, slightly-indented list under the group (the same style
+// used elsewhere) — the earlier "tree rail + branch connector" look was reverted.
+export const memberList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.35rem',
+  marginLeft: '1rem',
+});
+
+export const memberRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.4rem',
+  flexWrap: 'nowrap',   // t107: input fills the row, ↑/↓/✕ stay inline (see `row`)
+});
+
+export const checkLabel = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.3rem',
+  fontSize: '0.8rem',
+  color: vars.color.textMuted,
+});
+
+export const pickerRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.5rem',
+  flexWrap: 'wrap',
+});
+
+export const pickerLabel = style({
+  fontSize: '0.8rem',
+  color: vars.color.textMuted,
+  minWidth: '7rem',
+});
+
+export const compoundName = style({
+  flex: '1 1 auto',
+  minWidth: 0,
+  overflowWrap: 'anywhere',
+  fontSize: '0.85rem',
+  color: vars.color.text,
+});
+
+export const swatches = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '0.3rem',
+  marginTop: '0.4rem',
+});
+
+export const swatchBtn = style({
+  width: '20px',
+  height: '20px',
+  padding: '0',
+  border: `1px solid ${vars.color.border}`,
+  borderRadius: '4px',
+  cursor: 'pointer',
 });

@@ -19,7 +19,6 @@ import argparse
 import hashlib
 import io
 import json
-import os
 import shutil
 import sys
 import uuid
@@ -27,7 +26,6 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
-from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, request, send_file, session
 from PIL import Image
 from shapely.geometry import Polygon as ShapelyPolygon
@@ -37,9 +35,7 @@ from werkzeug.security import generate_password_hash
 from . import db as _db
 from .auth import admin_required, auth_bp, login_required
 from .config import AppConfig, default_data_dir
-from .config_file import load_file_config
 from .projects import projects_bp
-from .seed import resolve_port, seed_data
 from .sync_status import fetch_sync_status
 from .version import get_version
 
@@ -77,6 +73,24 @@ LEGACY_JSON  = BASE / 'DSC_0018_segment_1_segmented_smoothed.json'
 app = Flask(__name__, static_folder=str(STATIC))
 app.register_blueprint(auth_bp)
 app.register_blueprint(projects_bp)
+
+
+@app.after_request
+def _log_client_error(response):
+    """Log every client-visible /api 4xx/5xx with its error message.
+
+    Without this an API error is only an anonymous status code in the werkzeug access line —
+    the actual message (returned to the client) never reaches the server log. That's exactly
+    why the "annotation must intersect at least one tile" 422 (BUGS #31) stayed invisible: a
+    failing test then failed on a downstream symptom instead of the real cause. Bound at import
+    on the module-level `app` (like the routes), so it's active on every server path + in tests.
+    """
+    if response.status_code >= 400 and request.path.startswith('/api/'):
+        data = response.get_json(silent=True)
+        msg = (data.get('error') or data.get('message') or '') if isinstance(data, dict) else ''
+        app.logger.warning('%s %s -> %s%s', request.method, request.path,
+                            response.status_code, f': {msg}' if msg else '')
+    return response
 
 _img_cache:      dict[str, Image.Image] = {}
 _overview_cache: dict[str, bytes]       = {}
@@ -255,14 +269,6 @@ def _warn_if_bundle_stale() -> None:
         pass  # a dev-convenience check must never break startup
 
 
-def _load_env() -> None:
-    """Load the legacy .env from the project root into os.environ (existing vars take priority).
-
-    DEPRECATED path: only used when app.config.toml is absent. The preferred source is
-    app.config.toml, read via webapp/config_file.py and merged explicitly in main()."""
-    load_dotenv(BASE / '.env')
-
-
 def _configure_app(cfg: AppConfig) -> None:
     if not cfg.secret_key:
         raise RuntimeError('AppConfig.secret_key is required — set secret_key in app.config.toml '
@@ -271,29 +277,33 @@ def _configure_app(cfg: AppConfig) -> None:
 
 
 def _sync_admin(cfg: AppConfig) -> None:
-    """Seed or force-update the admin user from cfg.admin_password.
-
-    cfg.admin_password is SEED-only: it creates the admin row on first boot (no admin
-    exists yet) but never touches an already-existing admin's password — so an
-    env-sourced ADMIN_PASSWORD (e.g. the dev .env's placeholder) can't silently clobber
-    an admin restored from a prod snapshot. cfg.admin_password_force opts into
-    overwriting an existing admin too — set only by the explicit `--admin-password` CLI
-    flag, never by the env fallback (see main()/wsgi.py).
+    """Apply cfg.admin_password to the 'admin' user. There is no "seed-only" mode — an
+    admin_password is always explicit operator intent (it's CLI-only, --admin-password, never
+    sourced from a config file), so it CREATES the admin if none exists and OVERWRITES an
+    existing admin's password otherwise. When no password is given:
+      - an existing admin is left untouched (the normal restart / restore-from-backup path); but
+      - if NO admin exists, boot fails loudly — a first deployment MUST set --admin-password.
+    You only ever change the admin by passing the flag, so a restore (flag omitted) is safe.
     """
     password = cfg.admin_password
     con = _db.get_db()
     try:
         row = con.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
-        if row and password and cfg.admin_password_force:
+        if password:
             phash = generate_password_hash(password)
-            con.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (phash,))
+            if row:
+                con.execute(
+                    "UPDATE users SET password_hash = ?, session_epoch = session_epoch + 1"
+                    " WHERE username = 'admin'",
+                    (phash,),
+                )
+            else:
+                con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
             con.commit()
         elif not row:
-            if not password:
-                raise RuntimeError('ADMIN_PASSWORD must be set on first boot (no admin user exists)')
-            phash = generate_password_hash(password)
-            con.execute("INSERT INTO users (username, password_hash) VALUES ('admin', ?)", (phash,))
-            con.commit()
+            raise RuntimeError(
+                'no admin user exists and no admin password was given — a first deployment must '
+                'set one (deploy.py --admin-password).')
     finally:
         _db.close_db(con)
 
@@ -317,10 +327,10 @@ def _startup(cfg: AppConfig) -> None:
     Restore-from-backup is NOT here — it's an explicit orchestration step
     (`docker compose run --rm restore`, or seed_data(cfg) for the native path).
 
-    Only ever called from create_app(cfg) — all three server entries (main(), wsgi:app,
-    scripts/gate.py's run_ephemeral()) build an explicit AppConfig before reaching here.
+    Only ever called from create_app(cfg) — all three server entries (dev via deploy.py,
+    prod via container_entry.py, and the gate's run_ephemeral()) build an explicit AppConfig
+    before reaching here. No ambient environment is read from this path.
     """
-    _load_env()
     _configure_app(cfg)
     _migrate_data_to_local(cfg)
     _db.auto_create_schema()   # Alembic upgrade/stamp — see webapp/db.py
@@ -774,7 +784,10 @@ def api_image_overview(image_hash: str):
         _db.close_db(con)
     if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, row['image_ext'])
+    try:
+        img  = _get_image(image_hash, row['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     w, h = img.size
     if max(w, h) > 2000:
         scale = 2000 / max(w, h)
@@ -799,7 +812,10 @@ def api_image_crop(image_hash: str):
         _db.close_db(con)
     if not row:
         return jsonify({'error': 'image not found'}), 404
-    img  = _get_image(image_hash, row['image_ext'])
+    try:
+        img  = _get_image(image_hash, row['image_ext'])
+    except FileNotFoundError:
+        return jsonify({'error': 'image file not found'}), 404
     iw, ih = img.size
     try:
         x = max(0, int(request.args['x']))
@@ -1004,17 +1020,29 @@ def api_compare():
     def union(x, y):
         parent[find(x)] = find(y)
 
+    # t68-i2: build each annotation's polygon ONCE (was rebuilt O(n²) times inside the inner
+    # loop). The AABB pre-filter below still prunes the pair count; this just stops re-buffering.
+    def _poly(pts):
+        try:
+            p = ShapelyPolygon(pts).buffer(0)
+            return p if not p.is_empty else None
+        except Exception:
+            return None
+    polys = [_poly(a['points']) for a in annotations]
+
     edges: list[list[str]] = []
     for i in range(len(annotations)):
         ai = annotations[i]
+        pi = polys[i]
+        if pi is None:
+            continue
         for j in range(i + 1, len(annotations)):
             aj = annotations[j]
             ax0, ay0, ax1, ay1 = ai['bbox']
             bx0, by0, bx1, by1 = aj['bbox']
             if ax0 >= bx1 or ax1 <= bx0 or ay0 >= by1 or ay1 <= by0:
                 continue
-            if ShapelyPolygon(ai['points']).buffer(0).intersects(
-                    ShapelyPolygon(aj['points']).buffer(0)):
+            if polys[j] is not None and pi.intersects(polys[j]):
                 union(ai['id'], aj['id'])
                 edges.append([ai['id'], aj['id']])
 
@@ -1166,50 +1194,52 @@ def api_analyze_set(set_id: str):
 
 
 def run_ephemeral(cfg: AppConfig) -> None:
-    """The ephemeral launcher: seed → create_app → bind → run, the same non-forking way
-    scripts/gate.py has always needed. Used by the gate (and any other harness that wants
-    a concurrency-safe, sandbox-safe test instance — pass a per-run temp data_dir).
+    """The ephemeral launcher: write launch ledger → spawn granian-asgi (detached session)
+    → wait. Used by scripts/gate.py (and any other harness that wants a concurrency-safe,
+    sandbox-safe test instance — pass a per-run temp data_dir).
 
-    CRITICAL: use_reloader=False + a single process. The Werkzeug reloader forks a child
-    process; the sandbox harness reaps forked children with SIGSTKFLT (exit 144), so a
-    forking server never comes back up cleanly under it. debug=False keeps the reloader
-    off even if this ever changes upstream — do not flip either without re-checking that.
+    Same launch path as every other caller — dev, prod-in-container, and the gate all
+    ultimately hit webapp.run(cfg).
+
+    CRITICAL — sandbox reaper: granian internally forks a worker, and the harness/host
+    sandbox reaps same-session forked children with SIGSTKFLT (exit 144). run/launch_granian
+    solves this by spawning granian in its OWN session via start_new_session=True (and
+    tearing it down through killpg on SIGTERM/SIGINT). Do NOT swap in a same-session,
+    forking Werkzeug path — that's the old failure mode.
     """
-    seed_data(cfg)
-    create_app(cfg)
-    port = resolve_port(cfg)
-    app.run(debug=False, use_reloader=False, host=cfg.host, port=port, threaded=True)
+    from .wsgi import run
+    rc = run(cfg)
+    if rc != 0:
+        raise SystemExit(rc)
 
 
-def main() -> None:
-    """Dev entry point (`uv run leaf-annotation [flags]`): resolve config → seed DB →
-    create_app → bind port per policy → dev server.
+def main(argv: list[str] | None = None) -> int:
+    """Human dev CLI (`uv run leaf-annotation [flags]`): pure-flag argparse → AppConfig →
+    webapp.run(cfg). Reads ONLY flags — never the ambient environment, never a config file.
+    That's the library boundary: the webapp package knows nothing about prod/dev/test/gate
+    modes, or about app.config.toml.
 
-    threaded=True lets the streaming import endpoint serve its long-lived response without
-    blocking other requests (e.g. the thumbnails the page fetches while importing). Safe
-    because get_db is connection-per-request, WAL is on, and busy_timeout queues writers.
-    Production (Granian) is unaffected — this is the dev server only.
+    The situational entry paths (dev with app.config.toml, prod in-container with a mounted
+    compose secret, gate with an ephemeral test dir) all live in deploy.py / deploy_lib /
+    container_entry — each of them builds an AppConfig from its own source and calls
+    webapp.run(cfg). This CLI is just the bare-flags library harness on top.
 
-    Every knob is its own explicit flag (pure flags, no --profile presets — see
-    docs/plans/Task — Entrypoint + environment consolidation (build).md, D2). Port/host
-    default from $HT_PORT/$HT_HOST, data-dir from $HT_DATA_DIR — same env fallbacks as
-    before, so a plain `uv run leaf-annotation` keeps landing on 127.0.0.1:5000 with no
-    flags. We deliberately do NOT read the generic $PORT (that's the Docker/.env port).
-    Run a second instance for testing with: `uv run leaf-annotation --port 5001`.
+    Every knob is its own explicit flag (pure flags, no --profile presets). A plain
+    `uv run leaf-annotation` will crash with "AppConfig.secret_key is required" — that's
+    intentional: the CLI has no config-file to fall back to. Real dev goes through
+    `./deploy.py dev` (which reads app.config.toml [app]+[dev]).
     """
     parser = argparse.ArgumentParser(
-        prog='leaf-annotation', description='Run the leaf-annotation dev server.')
-    # Defaults are None here so we can distinguish "user passed a flag" from "fall back to the
-    # config file / env / built-in default", merged post-parse below (CLI > file > env > default).
+        prog='leaf-annotation',
+        description='Run the leaf-annotation server from CLI flags (library entrypoint; '
+                    'real dev/prod flows go through deploy.py).')
     parser.add_argument(
         '--data-dir', type=Path, default=None,
-        help='Data dir for app.db/images/jsons/i18n (default: app.config.toml data_dir, else '
-             '$HT_DATA_DIR, else the NFS-safe XDG default).')
-    parser.add_argument('--port', type=int, default=None,
-                        help='TCP port to bind (default: app.config.toml port, else $HT_PORT, else 5000).')
-    parser.add_argument('--host', default=None,
-                        help='Host/interface to bind (default: app.config.toml host, else $HT_HOST, '
-                             'else 127.0.0.1).')
+        help='Data dir for app.db/images/jsons/i18n (default: the NFS-safe local XDG dir).')
+    parser.add_argument('--port', type=int, default=5000,
+                        help='TCP port to bind (default: 5000).')
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='Host/interface to bind (default: 127.0.0.1).')
     port_policy = parser.add_mutually_exclusive_group()
     port_policy.add_argument('--strict-port', dest='port_policy', action='store_const', const='strict',
                               help='Fail if --port is already taken (default).')
@@ -1221,58 +1251,40 @@ def main() -> None:
                              "empty), 'restore' (populate from the host backup).")
     parser.add_argument('--restore-from', type=Path, default=None,
                         help='Litestream replica dir for --seed restore (default: the standard host backup).')
+    parser.add_argument('--secret-key', default=None,
+                        help='Flask session secret. REQUIRED (create_app raises if unset).')
     parser.add_argument(
         '--admin-password', default=None,
-        help="Force-set the 'admin' user's password, overwriting an existing admin "
-             '(unlike $ADMIN_PASSWORD, which only seeds admin on first boot).')
-    args = parser.parse_args()
-    file_cfg = load_file_config(BASE)
-    if file_cfg.source != 'toml':
-        _load_env()   # legacy: populate os.environ from .env (no-op if absent). Skipped when
-                      # app.config.toml is present so the TOML file is the single source.
+        help="Force-set the 'admin' user's password, overwriting an existing admin.")
+    parser.add_argument('--backup-dir', default=None,
+                        help='Host backup root (displayed in the admin settings panel).')
+    parser.add_argument('--backup-status-url', default=None,
+                        help='URL of the backup-status sidecar polled by /api/sync-status.')
+    parser.add_argument('--backup', action='store_true',
+                        help='Assert the backup-invariant is on (informational; the sidecars '
+                             'themselves are compose-managed, not this process).')
+    args = parser.parse_args(argv)
 
-    def pick(cli_val, *env_keys, default=None):
-        """CLI flag > config file > env var(s) > built-in default. env_keys tried in order
-        against both the file (canonical ENV name) and os.environ."""
-        if cli_val is not None:
-            return cli_val
-        for key in env_keys:
-            fv = file_cfg.get(key)
-            if fv is not None:
-                return fv
-        for key in env_keys:
-            ev = os.environ.get(key)
-            if ev is not None:
-                return ev
-        return default
-
-    data_dir_val = pick(args.data_dir, 'HT_DATA_DIR')
-    data_dir = Path(data_dir_val) if data_dir_val is not None else default_data_dir()
-    host = pick(args.host, 'HT_HOST', default='127.0.0.1')
-    port = int(pick(args.port, 'PORT', 'HT_PORT', default=5000))
-    admin_password = args.admin_password or pick(None, 'ADMIN_PASSWORD')
     cfg = AppConfig(
-        data_dir=data_dir,
-        host=host,
-        port=port,
+        data_dir=args.data_dir if args.data_dir is not None else default_data_dir(),
+        host=args.host,
+        port=args.port,
         port_policy=args.port_policy,
         db_seed=args.seed,
         restore_source=args.restore_from,
-        secret_key=pick(None, 'SECRET_KEY'),
-        admin_password=admin_password,
-        admin_password_force=bool(args.admin_password),
-        backup_dir=pick(None, 'BACKUP_DIR'),
-        backup_status_url=pick(None, 'BACKUP_STATUS_URL'),
+        backup=args.backup,
+        secret_key=args.secret_key,
+        admin_password=args.admin_password,
+        backup_dir=args.backup_dir,
+        backup_status_url=args.backup_status_url,
     )
+    from .wsgi import run
     try:
-        seed_data(cfg)
+        return run(cfg)
     except RuntimeError as exc:
         print(f'\n\033[31mERROR: {exc}\033[0m\n', file=sys.stderr)
-        raise SystemExit(1)
-    create_app(cfg)
-    port = resolve_port(cfg)
-    app.run(debug=True, host=cfg.host, port=port, threaded=True)
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

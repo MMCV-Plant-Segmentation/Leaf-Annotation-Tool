@@ -80,14 +80,6 @@ export const toolActive = style({
   textTransform: 'capitalize',
 });
 
-export const swatch = style({
-  display: 'inline-block',
-  width: '12px',
-  height: '12px',
-  borderRadius: '3px',
-  border: `1px solid ${vars.color.border}`,
-});
-
 export const classPick = style({
   fontSize: '0.82rem',
   display: 'flex',
@@ -97,6 +89,9 @@ export const classPick = style({
 
 // BUG 28b: the native <select> dropdown caret overlaps the selected annotator name.
 // Right-padding the select reserves space for the arrow so text never sits under it.
+// Still applies to the ANNOTATOR picker (AnnotatorPicker.tsx), which stays a native
+// <select> — the CLASS picker was replaced with LabelPicker.tsx (colour-coded rows,
+// which a native <select>'s OS-drawn <option> chrome can't do reliably).
 globalStyle(`${classPick} select`, {
   padding: '0.3rem 1.5rem 0.3rem 0.4rem',
   border: `1px solid ${vars.color.border}`,
@@ -107,6 +102,7 @@ globalStyle(`${classPick} select`, {
 });
 
 export const stage = style({
+  position: 'relative',  // anchors the admin viewport-heatmap control panel
   flex: '1 1 auto',
   minHeight: 0,
   background: vars.color.bg,
@@ -160,4 +156,35 @@ export const sizeNumberInput = style({
   background: vars.color.surface,
   color: vars.color.text,
   fontSize: '0.8rem',
+});
+
+export const legend = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.6rem',
+  flexWrap: 'wrap',
+  padding: '0.3rem 0.6rem',
+  borderTop: `1px solid ${vars.color.border}`,
+  background: vars.color.surface,
+  fontSize: '0.8rem',
+});
+
+export const legendTitle = style({
+  color: vars.color.textMuted,
+  fontWeight: 600,
+});
+
+export const legendItem = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.3rem',
+  color: vars.color.text,
+});
+
+export const legendSwatch = style({
+  display: 'inline-block',
+  width: '12px',
+  height: '12px',
+  borderRadius: '3px',
+  border: `1px solid ${vars.color.border}`,
 });

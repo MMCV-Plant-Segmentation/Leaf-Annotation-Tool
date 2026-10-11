@@ -33,6 +33,15 @@ class AppConfig:
     """Orthogonal knobs, sensible defaults. See docs/plans/Plan — Entrypoint +
     environment consolidation.md for the rationale.
 
+    Strictness policy (Christian, 2026-07-08 — "strict is good unless it's a setting we want to
+    hide"): the ONE key whose silent default would be dangerous is `secret_key`, and it is already
+    strict — create_app() raises if it's unset (no baked-in session secret). `data_dir` is the
+    deliberately-hidden setting (safe local-XDG default, kept OUT of the example config so no one
+    points SQLite at NFS). The remaining defaults are either dev/gate conveniences (host/port) or
+    genuinely optional (admin_password, backup_dir/backup_status_url = None means "not configured").
+    So "make it strict" is already satisfied where it matters; the harmless defaults stay — forcing
+    every test/tool AppConfig(...) to spell out host/port would be churn with no safety gain.
+
     data_dir        Where app.db + images/jsons/i18n live. Must stay on local disk.
     host / port     Bind address for the dev/gate Flask server (Granian owns its own
                     socket in prod; still recorded here for uniformity / logging).
@@ -45,16 +54,17 @@ class AppConfig:
     backup          Asserted invariant only — prod refuses to run silently without it.
                     Backup itself (Litestream/lsyncd) is a compose sidecar, not this code.
     secret_key      Flask session secret. Required by create_app().
-    admin_password  Seeds the 'admin' user on first boot if set (no admin exists yet).
-                    Does NOT overwrite an existing admin's password — see
-                    admin_password_force.
-    admin_password_force
-                    When True, admin_password force-updates an already-existing admin's
-                    password instead of only seeding on first boot. Set by an explicit
-                    `--admin-password` CLI flag (operator intent), never by the env-sourced
-                    ADMIN_PASSWORD default.
-    backup_dir      Host path where DB/file backups land (display-only in the admin
-                    settings panel); None/'' means "not configured" for this instance.
+    admin_password  Operator-supplied 'admin' password, CLI-only (deploy.py's --admin-password).
+                    When set, it CREATES-or-UPDATES the admin (explicit operator intent — there
+                    is no separate "seed" mode). When unset and an admin already exists, the
+                    admin is left untouched (the restore/restart path). When unset AND no admin
+                    exists, boot fails loudly — a first deployment MUST set it. It is never
+                    sourced from the config file (see deploy_lib.resolve), so it can't silently
+                    clobber a restored admin; you only ever change the admin by passing the flag.
+    backup_dir      Host backup root. deploy.py uses it for real — the litestream/lsyncd
+                    sidecars (start prod --with-backup) and --data-mode restore both read it
+                    (as BACKUP_DIR); the webapp only DISPLAYS it in the admin settings panel
+                    (read-only there). None/'' means "not configured" for this instance.
     backup_status_url
                     URL of the `backup-status` sidecar polled by GET /api/sync-status.
                     None means "use sync_status.py's compose-network default".
@@ -68,6 +78,5 @@ class AppConfig:
     backup: bool = False
     secret_key: str | None = None
     admin_password: str | None = None
-    admin_password_force: bool = False
     backup_dir: str | None = None
     backup_status_url: str | None = None

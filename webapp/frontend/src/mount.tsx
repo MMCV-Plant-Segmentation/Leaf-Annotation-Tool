@@ -17,8 +17,10 @@ import ProjectsScreen from './projects/ProjectsScreen';
 import ProjectHubScreen from './projects/ProjectHubScreen';
 import ProjectImagesScreen from './projects/ProjectImagesScreen';
 import ProjectTilingScreen from './projects/ProjectTilingScreen';
-import ProjectBatchesScreen from './projects/ProjectBatchesScreen';
+import ProjectLabelsScreen from './projects/ProjectLabelsScreen';
 import CanvasScreen from './projects/CanvasScreen';
+import MergeCanvasScreen from './projects/MergeCanvasScreen';
+import CalibrateScreen from './calibrate/CalibrateScreen';
 
 // Apply theme class to body on boot (dark default, respects localStorage).
 initTheme(darkThemeClass, lightThemeClass);
@@ -42,11 +44,13 @@ void initI18n().then(() => {
         <Route path="/admin" component={AdminScreen} />
         <Route path="/account" component={AccountScreen} />
         <Route path="/invite/:token" component={InviteScreen} />
+        <Route path="/calibrate" component={CalibrateScreen} />
         <Route path="/projects" component={ProjectsScreen} />
         <Route path="/projects/:id" component={ProjectHubScreen} />
         <Route path="/projects/:id/images" component={ProjectImagesScreen} />
         <Route path="/projects/:id/tiling" component={ProjectTilingScreen} />
-        <Route path="/projects/:id/batches" component={ProjectBatchesScreen} />
+        <Route path="/projects/:id/labels" component={ProjectLabelsScreen} />
+        <Route path="/projects/:id/batches/:batchId/merge" component={MergeCanvasScreen} />
         <Route path="/projects/:id/batches/:batchId" component={CanvasScreen} />
         <Route path="/*" component={HomeScreen} />
       </Router>

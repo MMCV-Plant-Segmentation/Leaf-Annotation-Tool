@@ -5,9 +5,12 @@ import * as styles from './AdminScreen.css';
 type Invite = { token: string; expires: number };
 type UserRow = { id: number; username: string; has_password: boolean; invite: Invite | null };
 
+function isExpired(invite: Invite): boolean {
+  return invite.expires <= Date.now() / 1000;
+}
+
 function fmtExpiry(ts: number): string {
   const secs = ts - Date.now() / 1000;
-  if (secs <= 0) return 'expired';
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   return d > 0 ? `${d}d ${h}h` : `${h}h`;
@@ -101,17 +104,22 @@ const UsersTab: Component = () => {
                 </div>
                 <Show when={u.invite}>
                   <div class={styles.inviteRow}>
-                    <span>{t('admin.user.inviteExpires', { expiry: fmtExpiry(u.invite!.expires) })}</span>
-                    <code class={styles.inviteCode}>{u.invite!.token}</code>
-                    <button class={styles.btnSm} onClick={() => copyText(u.invite!.token)}>
-                      {t('admin.user.copyCode')}
-                    </button>
-                    <button
-                      class={styles.btnSm}
-                      onClick={() => copyText(`${window.location.origin}/invite/${u.invite!.token}`)}
+                    <Show
+                      when={!isExpired(u.invite!)}
+                      fallback={<span>{t('admin.user.inviteExpired')}</span>}
                     >
-                      {t('admin.user.copyLink')}
-                    </button>
+                      <span>{t('admin.user.inviteExpires', { expiry: fmtExpiry(u.invite!.expires) })}</span>
+                      <code class={styles.inviteCode}>{u.invite!.token}</code>
+                      <button class={styles.btnSm} onClick={() => copyText(u.invite!.token)}>
+                        {t('admin.user.copyCode')}
+                      </button>
+                      <button
+                        class={styles.btnSm}
+                        onClick={() => copyText(`${window.location.origin}/invite/${u.invite!.token}`)}
+                      >
+                        {t('admin.user.copyLink')}
+                      </button>
+                    </Show>
                   </div>
                 </Show>
               </div>

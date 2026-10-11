@@ -1,8 +1,11 @@
 // Canvas annotation types + the annotation-mutation API surface — split out of api.ts
 // to keep it ≤200 lines. Re-exported from api.ts so `projectsApi.createAnnotation(...)`
 // etc. keep working unchanged for every existing caller.
-import type { Rect, Label } from './api';
+import type { Rect, Label, PointerSample } from './api';
+import type { Group, Compound, LabelSnapshot, BrokenCompound } from './taxonomy';
 import { jbody, jfetch } from './httpJson';
+import { strokeEditApi } from './canvasStrokeEditApi';
+export type { StrokeEditBefore, StrokeEditGroup } from './canvasStrokeEditApi';
 
 export type CanvasTile = Rect & {
   tileId: string;
@@ -15,9 +18,16 @@ export type CanvasTile = Rect & {
  * editing a completed tile re-opens it) — enough for the FE to patch its local state. */
 export type TileStateUpdate = { tileId: string; annotatorTileId: string; state: 'dirty' };
 
-/** A persisted annotation (mask). kind='stroke' renders from `rings` (the fused,
- * hole-less exterior ring the server stores — never recomputed client-side); other
- * kinds never fuse, so they render from their own `points`, same as before. */
+/** One member stroke of a fused mask (a11y #40 v1b — `tool` picks the outline
+ * builder on vertex-edit drop: `tool` selects the engine outline kind).
+ * `vertexIds` (t50 phase 2b, parallel to `points`) is the stable per-vertex id the
+ * server assigns — draw-time snapping indexes these to detect a nearby existing
+ * vertex to reference. */
+export type CanvasStroke = { id: string; tool: string; points: number[][]; strokeWidth: number; vertexIds?: string[]; samples?: PointerSample[] | null };
+
+/** A persisted annotation (mask). kind='stroke' renders from `rings` (fused, hole-less
+ * exterior ring the server stores); other kinds render from their own `points`.
+ * `strokes` is opt-in server-side and drives the vertex-edit handles when selected. */
 export type CanvasAnnotation = {
   id: string;
   kind: string;
@@ -25,9 +35,12 @@ export type CanvasAnnotation = {
   points: number[][];
   rings: number[][][];
   label: string | null;
+  labelColor: string | null;
+  labelSnapshot: LabelSnapshot | null;
   viewport: Rect | null;
   annotator: string;
   imageId: string;
+  strokes?: CanvasStroke[];
 };
 
 export type CanvasImage = {
@@ -43,9 +56,29 @@ export type BatchCanvas = {
   projectId: string;
   seq: number;
   status: string;
+  /** MERGE Phase 1 gate: true once every current roster member has completed every tile (t126). */
+  mergeReady: boolean;
   classes: Label[];
+  groups: Group[];
+  compounds: Compound[];
+  /** t109: broken (INVALID) compounds — merged into the paint dropdown, flagged. */
+  broken: BrokenCompound[];
   images: CanvasImage[];
 };
+
+/** One pooled mark from the merge-annotations read — same shape as CanvasAnnotation,
+ * just fetched cross-annotator (see MergeCanvasScreen.tsx). */
+export type MergeAnnotations = { annotations: CanvasAnnotation[] };
+
+/** MERGE Phase 2a: a merger's candidate-object row (the lesion-hypothesis identity — the
+ * `<g data-testid="candidate-object">` hull is a FE display concern computed from the
+ * live members' geometry, not persisted here). See webapp/projects.py list/create. */
+export type CandidateObject = { id: string; imageId: string; memberIds: string[] };
+export type CandidateObjects = { candidateObjects: CandidateObject[] };
+
+/** MERGE Phase 2a: this merger's erasures (per-merger toggles that flag a pooled mark
+ * as not-a-lesion — recoverable, survives reload). See webapp/projects.py list. */
+export type Erasures = { erasedIds: string[] };
 
 /** One fuse-set member a brush create/merge consumed — carries enough to repoint its
  * strokes back on undo (see canvasHistory.ts's `merge` action). */
@@ -64,19 +97,59 @@ export const canvasApi = {
   batchCanvas: (batchId: string, annotator: string) =>
     jfetch<BatchCanvas>(`/api/batches/${batchId}?annotator=${encodeURIComponent(annotator)}`),
 
+  /** MERGE Phase 1: batch structure (images/tiles), no annotations — MergeCanvasScreen pairs it with mergeAnnotations() for the pooled blind read. */
+  mergeBatch: (batchId: string) => jfetch<BatchCanvas>(`/api/batches/${batchId}`),
+
+  /** MERGE Phase 1: every non-deleted annotation from every annotator, scoped to this batch's tiles — the pooled read rendered one-colour/outline-only (blind). */
+  mergeAnnotations: (batchId: string) =>
+    jfetch<MergeAnnotations>(`/api/batches/${batchId}/merge-annotations`),
+
+  /** Advance a merge-ready batch to status='merge'. Idempotent; 409 if not ready. */
+  enterMerge: (batchId: string) =>
+    jfetch<{ ok: boolean; status: string }>(`/api/batches/${batchId}/enter-merge`, jbody('POST', {})),
+
+  // ── MERGE Phase 2a: candidate-object + erasure endpoints (see webapp/projects.py) ──
+  listCandidateObjects: (batchId: string, merger: string) =>
+    jfetch<CandidateObjects>(
+      `/api/batches/${batchId}/candidate-objects?merger=${encodeURIComponent(merger)}`),
+  createCandidateObject: (batchId: string, body: {
+    imageId: string; brushPath?: number[][]; brushWidth?: number; memberIds?: string[];
+  }) => jfetch<CandidateObject>(
+    `/api/batches/${batchId}/candidate-objects`, jbody('POST', body)),
+  patchCandidateObject: (coid: string, body: { addIds?: string[]; removeIds?: string[] }) =>
+    jfetch<CandidateObject>(`/api/candidate-objects/${coid}`, jbody('PATCH', body)),
+  dissolveCandidateObject: (coid: string) =>
+    jfetch<null>(`/api/candidate-objects/${coid}`, { method: 'DELETE' }),
+
+  listErasures: (batchId: string, merger: string) =>
+    jfetch<Erasures>(`/api/batches/${batchId}/erasures?merger=${encodeURIComponent(merger)}`),
+  createErasure: (batchId: string, annotationId: string) =>
+    jfetch<{ ok: boolean; annotationId: string }>(
+      `/api/batches/${batchId}/erasures`, jbody('POST', { annotationId })),
+  deleteErasure: (batchId: string, annotationId: string) =>
+    jfetch<null>(
+      `/api/batches/${batchId}/erasures/${encodeURIComponent(annotationId)}`, { method: 'DELETE' }),
+
   createAnnotation: (projectId: string, body: {
     imageId: string; annotator: string; kind: string; points: number[][];
     passNo?: number; label?: string; viewport?: Rect; hsvHist?: unknown;
-    strokeWidth?: number; outline?: number[][];
+    strokeWidth?: number; tool?: string; samples?: PointerSample[];
+    /** t50 phase 2b: per-point vertex ref (existing vertex id to share/lock, or
+     * null to mint) — parallel to `points`; draw-time snapping populates this. */
+    vertexRefs?: (string | null)[];
   }) => jfetch<CreateAnnotationResult>(`/api/projects/${projectId}/annotations`, jbody('POST', body)),
-  updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string }) =>
+  // `label: string | null` (not `?string`) so a relabel-undo/redo of a lesion whose
+  // prior label was null still sends the `label` key — JSON.stringify drops `undefined`
+  // properties but keeps explicit `null`, and the label-only PATCH branch (webapp/
+  // projects.py) requires the key present (see canvasHistory.ts `relabel` undo/redo).
+  updateAnnotation: (annotationId: string, body: { points?: number[][]; label?: string | null }) =>
     jfetch<CanvasAnnotation>(`/api/annotations/${annotationId}`, jbody('PATCH', body)),
   deleteAnnotation: (annotationId: string) =>
     jfetch<{ ok: boolean; tileStates: TileStateUpdate[] }>(`/api/annotations/${annotationId}`, { method: 'DELETE' }),
   mutateAnnotations: (projectId: string, op: 'delete' | 'restore', ids: string[]) =>
     jfetch<{ ok: boolean; ids: string[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/mutate`, jbody('POST', { op, ids })),
-  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number; outline?: number[][] }) =>
+  eraseStroke: (projectId: string, body: { imageId: string; annotator: string; points: number[][]; strokeWidth?: number }) =>
     jfetch<{ deletedAnnotationIds: string[]; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/erase-stroke`, jbody('POST', body)),
   /** Undo a brush create/merge: hard-deletes the created annotation+stroke server-side
@@ -86,6 +159,41 @@ export const canvasApi = {
     jfetch<{ ok: boolean; resurrected: CanvasAnnotation[]; deletedAnnotationId: string; tileStates: TileStateUpdate[] }>(
       `/api/projects/${projectId}/annotations/reverse`, jbody('POST', body)),
 
-  setTileState: (annotatorTileId: string, state: 'assigned' | 'completed' | 'dirty') =>
-    jfetch<{ ok: boolean; state: string }>(`/api/annotator-tiles/${annotatorTileId}`, jbody('PATCH', { state })),
+  ...strokeEditApi,
+
+  // t126: completion is lazy, keyed on (batch_tile, annotator) — minted server-side on first mark.
+  setTileState: (batchTileId: string, annotator: string, state: 'assigned' | 'completed' | 'dirty') =>
+    jfetch<{ ok: boolean; state: string; annotatorTileId: string }>(
+      `/api/batch-tiles/${batchTileId}/state`, jbody('POST', { annotator, state })),
+
+  /** Batch-insert viewport (pan/zoom) telemetry samples — see viewportTelemetry.ts.
+   * Best-effort by design: callers swallow rejections, never surface them to the user. */
+  postViewportEvents: (projectId: string, body: { imageId: string; events: ViewportSample[] }) =>
+    jfetch<{ ok: boolean; count: number }>(`/api/projects/${projectId}/viewport-events`, jbody('POST', body)),
+
+  /** Admin-only: fetch the recorded viewport telemetry rows for an image so the client
+   *  can compute the viewport-attention heatmap overlay. Rows are ordered by
+   *  (user_id, client_ts) for per-user consecutive-pair dwell. Optional userId filter. */
+  listViewportEvents: (projectId: string, imageId: string, userId?: string) =>
+    jfetch<{ events: ViewportEventRow[] }>(
+      `/api/projects/${projectId}/images/${imageId}/viewport-events`
+      + (userId ? `?user_id=${encodeURIComponent(userId)}` : '')),
+};
+
+/** One captured canvas viewport sample — wire shape for postViewportEvents. See
+ * viewportTelemetry.ts for how samples are gathered/batched. */
+export type ViewportSample = {
+  clientTs: string; x: number; y: number; w: number; h: number;
+  cssW: number; cssH: number; dpr: number;
+};
+
+/** One recorded viewport telemetry row, as returned by the admin-only
+ * GET .../viewport-events endpoint (see listViewportEvents). */
+export type ViewportEventRow = {
+  id: number;
+  userId: string;
+  clientTs: string;
+  receivedAt: string;
+  x: number; y: number; w: number; h: number;
+  cssW: number; cssH: number; dpr: number;
 };

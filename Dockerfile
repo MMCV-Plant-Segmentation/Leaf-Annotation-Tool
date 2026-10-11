@@ -23,14 +23,28 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY webapp/*.py webapp/
 COPY webapp/static/ webapp/static/
 
+# Deploy-side entrypoint (container_entry.py) + resolver library (deploy_lib.py) —
+# NOT under webapp/. They live at repo root so the webapp package stays a pure library
+# with zero knowledge of compose / secrets / /run/secrets. The Dockerfile CMD invokes
+# container_entry, which imports deploy_lib and hands off to webapp.run(cfg).
+COPY container_entry.py deploy_lib.py ./
+
 # Alembic migrations — read from disk by path at boot (webapp/db.py's auto_create_schema()),
 # NOT part of the installed Python package, so they need an explicit copy here too.
 COPY alembic.ini ./
 COPY alembic/ alembic/
 
+# The committed geo-engine wasm — the server computes ALL stroke geometry through it
+# (webapp/geo_engine.py loads <repo>/geo-engine/geo_engine.wasm). Only the artifact, never the
+# Rust source: the image runs it via wasmtime, it never builds it.
+COPY geo-engine/geo_engine.wasm geo-engine/geo_engine.wasm
+
 # Bundle from frontend build (populated via bake context; overrides any static/dist
 # that might have slipped through)
 COPY --from=frontend-build /app/webapp/static/dist ./webapp/static/dist
+# ...and the browser's copy of the engine, which the frontend build's copy-wasm step places in
+# static/ (gitignored, so a clean checkout's COPY webapp/static/ above never carries it).
+COPY --from=frontend-build /app/webapp/static/geo_engine.wasm ./webapp/static/geo_engine.wasm
 
 # Install the project itself
 RUN uv sync --frozen --no-dev
@@ -40,8 +54,9 @@ RUN uv sync --frozen --no-dev
 # otherwise 'Permission denied' for a non-root user (see the ownership-flip runbook).
 RUN chmod -R a+rX /app
 
-ENV HT_DATA_DIR=/data
-ENV PORT=5000
+# /data is the app's data dir — deploy.py mounts the `leaf-data` named volume here, and the
+# resolved app-config (mounted as the `app-config` compose secret at /run/secrets/app-config)
+# points AppConfig.data_dir at it. Not an env boundary; just a documented mount point.
 
 # Build-time version identity (docs/plans/Plan — Version everything (stack-wide).md).
 # The prod image has no `.git`, so the SHA/timestamp are baked in at `docker build` time;
@@ -54,8 +69,13 @@ ENV BUILD_TIME=$BUILD_TIME
 
 EXPOSE 5000
 
-# Run granian straight from the venv (not `uv run`): as a non-root uid, `uv run` would try to
-# touch its cache/venv and needs a writable HOME; the venv is already built, so invoke it directly.
-# umask 002 so files this process writes (the DB, WAL) are GROUP-writable — lets any member of the
-# shared group (see compose PUID/PGID + the ownership runbook) read/write the same data + backups.
-CMD ["sh", "-c", "umask 002 && exec /app/.venv/bin/granian --interface wsgi --host 0.0.0.0 --port ${PORT} --workers 1 webapp.wsgi:app"]
+# Launch through container_entry.py (the deploy-owned thin wrapper): it reads the resolved
+# app config mounted at /run/secrets/app-config (compose secret written by ./deploy.py prod),
+# builds an AppConfig via deploy_lib.build_appconfig, and calls webapp.run(cfg) — the SAME
+# webapp.run path dev (deploy.py dev) and the gate (run_ephemeral) go through. --workers 1
+# stays inside webapp.run (one process = one SQLite writer). Run the venv Python straight
+# (not `uv run`): as a non-root uid, uv would try to touch its cache/venv and needs a writable
+# HOME; the venv is already built. umask 002 so files this process writes (the DB, WAL,
+# launch-log.jsonl) are GROUP-writable — lets any member of the shared group (compose
+# PUID/PGID + the ownership runbook) read/write the same data + backups.
+CMD ["sh", "-c", "umask 002 && exec /app/.venv/bin/python /app/container_entry.py"]

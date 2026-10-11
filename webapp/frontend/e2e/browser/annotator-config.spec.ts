@@ -18,6 +18,7 @@
  */
 
 import { test, expect, type Page, type Browser } from '@playwright/test';
+import { uniquePngs } from './uploadFixtures';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ test('tile-size control disabled after batch created @full', async ({ page }, te
   await confirmTiling(page, pid);
 
   // Create a batch on the batches route
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
 
@@ -200,7 +201,7 @@ test('canvas has no open-as chooser and annotates as the logged-in user', async 
   await confirmTiling(page, pid);
 
   // Create batch on the batches route.
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
 
@@ -225,11 +226,8 @@ test('upload via file picker shows per-file progress and final count', async ({ 
   const pid = await createProject(page, `Upload ${Date.now()}`);
   await page.goto(`/projects/${pid}/images`);
 
-  const files = [
-    `${FIXTURE_FLAT}/upload0.png`,
-    `${FIXTURE_FLAT}/upload1.png`,
-    `${FIXTURE_FLAT}/upload2.png`,
-  ];
+  // Bytes unique to THIS test — global dedup would skip images another test already uploaded.
+  const files = uniquePngs(FIXTURE_FLAT, 'annotcfg-upload', 3);
 
   await page.getByTestId('import-files').setInputFiles(files);
   await page.getByTestId('upload-btn').click();
@@ -245,10 +243,8 @@ test('re-uploading same files skips them (dedup)', async ({ page }) => {
   const pid = await createProject(page, `Dedup ${Date.now()}`);
   await page.goto(`/projects/${pid}/images`);
 
-  const files = [
-    `${FIXTURE_FLAT}/upload0.png`,
-    `${FIXTURE_FLAT}/upload1.png`,
-  ];
+  // Bytes unique to THIS test, reused so the second upload is the dedup path.
+  const files = uniquePngs(FIXTURE_FLAT, 'annotcfg-dedup', 2);
 
   // First upload
   await page.getByTestId('import-files').setInputFiles(files);
@@ -281,7 +277,7 @@ async function setupCanvas(page: Page): Promise<void> {
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
   // Click the "Open" link on the first batch (i18n: detail.batch.open = "open canvas →")
@@ -305,7 +301,7 @@ async function setupCanvasAsAnnotator(page: Page, browser: Browser): Promise<Pag
   await importImages(page, pid);
   await confirmTiling(page, pid);
 
-  await page.goto(`/projects/${pid}/batches`);
+  await page.goto(`/projects/${pid}`);
   await page.getByRole('button', { name: /create batch/i }).click();
   await expect(page.getByText(/batch 1/i)).toBeVisible({ timeout: 5000 });
   await page.getByRole('button', { name: /open canvas/i }).first().click();
@@ -325,6 +321,7 @@ async function setupCanvasAsAnnotator(page: Page, browser: Browser): Promise<Pag
   await p2.fill('#login-username', username);
   await p2.fill('#login-password', pw);
   await p2.click('button[type=submit]');
+  await p2.waitForURL((url) => url.pathname === '/', { timeout: 8000 }); // land the post-login redirect before any goto
   await expect(p2.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
   await p2.goto(canvasUrl);
   await expect(p2.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
@@ -338,9 +335,11 @@ test('canvas toolbar shows only Pan and Brush, no polygon/point/line/finish @ful
   const toolbar = p.getByTestId('canvas-toolbar');
   await expect(toolbar.getByRole('button', { name: 'pan' })).toBeVisible();
   await expect(toolbar.getByRole('button', { name: 'brush' })).toBeVisible();
-  await expect(toolbar.getByRole('button', { name: 'polygon' })).toHaveCount(0);
-  await expect(toolbar.getByRole('button', { name: 'point' })).toHaveCount(0);
-  await expect(toolbar.getByRole('button', { name: 'line' })).toHaveCount(0);
+  // Exact match: these assert the LEGACY tools are absent — a substring match would false-
+  // positive on the polyline click-brush ("polyline" contains "line"), so pin them exact.
+  await expect(toolbar.getByRole('button', { name: 'polygon', exact: true })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'point', exact: true })).toHaveCount(0);
+  await expect(toolbar.getByRole('button', { name: 'line', exact: true })).toHaveCount(0);
   // Finish button removed: brush commits on pointer-up, no finish needed
   await expect(toolbar.getByRole('button', { name: /finish/i })).toHaveCount(0);
 });

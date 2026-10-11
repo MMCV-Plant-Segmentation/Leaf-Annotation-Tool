@@ -10,5 +10,17 @@ webapp/frontend/e2e/last-run.log
 webapp/frontend/e2e/.auth.json
 .env
 app.config.toml
+app.config.toml.bak*
 
 docs/plans/
+.cc_jail_gate_output.log
+
+# t103 geo-engine build output (the .wasm is committed; the target dir is not)
+geo-engine/target/
+
+# stray repo-root cargo target dir (a mis-set CARGO_TARGET_DIR can land build junk here)
+/target/
+/target2/
+
+# t150: build-copied from geo-engine/ (the committed artifact is the source of truth)
+webapp/static/geo_engine.wasm

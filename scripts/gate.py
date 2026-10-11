@@ -38,6 +38,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent          # .../code
 FE = REPO / 'webapp' / 'frontend'
+GE = REPO / 'geo-engine'
+GE_WASM = GE / 'geo_engine.wasm'
 
 # Reuse the SAME port primitive the deploy/app entrypoints use (webapp/seed.py) instead of a
 # hand-rolled copy — the gate is one of resolve_port()'s intended 'auto' callers (see seed.py's
@@ -129,6 +131,56 @@ def static_stages(log_dir: Path) -> list[Stage]:
     for name, cmd in specs:
         log = log_dir / f'{name}.log'
         stages.append(Stage(name, run(cmd, log, cwd=FE), log))
+    return stages
+
+
+def rust_stages(log_dir: Path, skip_wasm_diff: bool = False) -> list[Stage]:
+    """`cargo test` (t103 Phase B geo-engine crate) + rebuild the release wasm32 artifact and diff
+    it byte-for-byte against the committed `geo-engine/geo_engine.wasm` — the pinned toolchain
+    (`geo-engine/rust-toolchain.toml`) makes the build reproducible WITHIN a build environment.
+
+    `skip_wasm_diff`: an escape hatch to skip the byte-diff (still running `cargo test`). Since t137
+    (`build-wasm.sh` remaps embedded paths) the build is byte-reproducible ACROSS environments, so no
+    standard gate passes it — the containerized authoritative gate runs the diff in full.
+    """
+    stages: list[Stage] = []
+
+    # Honour the environment's CARGO_TARGET_DIR when set: the glm-harness jail mounts /work NOEXEC,
+    # so a build script compiled under the crate could never run there — the jail hands the gate's
+    # runner its own exec-capable target dir via this var. Otherwise (host / dev container) build
+    # into a target dir colocated with the crate (gitignored: "geo-engine/target/"). The wasm's
+    # bytes don't depend on the target dir's location (verified byte-identical across dirs), so
+    # this doesn't affect the reproducibility check below.
+    target_dir = os.environ.get('CARGO_TARGET_DIR') or str(GE / 'target')
+    cargo_env = {'CARGO_TARGET_DIR': target_dir}
+
+    test_log = log_dir / 'rust-test.log'
+    stages.append(Stage('rust:test', run(['cargo', 'test'], test_log, env=cargo_env, cwd=GE), test_log))
+
+    if skip_wasm_diff:
+        stages.append(Stage('rust:wasm-diff', True, test_log, 'skipped (host-authoritative; t137)'))
+        return stages
+
+    build_log = log_dir / 'rust-wasm-build.log'
+    # t137: go through build-wasm.sh, never raw cargo — it remaps $CARGO_HOME and the crate dir
+    # so the embedded source paths (and therefore the bytes) don't depend on WHERE it was built.
+    # A raw `cargo build` here would reintroduce the host-vs-jail byte drift this check trips on.
+    build_ok = run(
+        ['bash', str(GE / 'build-wasm.sh')],  # via bash: /work may be noexec (jail)
+        build_log, env=cargo_env, cwd=GE,
+    )
+    built_wasm = Path(target_dir) / 'wasm32-unknown-unknown' / 'release' / 'geo_engine.wasm'
+    if not build_ok:
+        stages.append(Stage('rust:wasm-diff', False, build_log, 'wasm build failed'))
+    elif not GE_WASM.exists():
+        stages.append(Stage('rust:wasm-diff', False, build_log, f'{GE_WASM} not committed'))
+    elif not built_wasm.exists():
+        stages.append(Stage('rust:wasm-diff', False, build_log, 'wasm build produced no artifact'))
+    else:
+        drifted = built_wasm.read_bytes() != GE_WASM.read_bytes()
+        detail = 'committed geo_engine.wasm is stale — rebuild + recommit' if drifted else ''
+        stages.append(Stage('rust:wasm-diff', not drifted, build_log, detail))
+
     return stages
 
 
@@ -224,6 +276,13 @@ def render(stages: list[Stage], log_dir: Path, level: int) -> None:
                     print(f'  {s.name}: {title}')
             else:
                 print(f'  {s.name} → {s.log}')
+                # Emit a log-tail on any log-only failure so in-jail agents (which can't
+                # read the /tmp log dir) can still diagnose. Bounded (last 40 lines) to
+                # keep the digest token-cheap.
+                if s.log and s.log.exists():
+                    tail = s.log.read_text(errors='replace').splitlines()[-40:]
+                    for line in tail:
+                        print(f'    | {line}')
 
     print('GATE: ALL GREEN' if all_ok else 'GATE: FAILURES')
 
@@ -233,11 +292,29 @@ def render(stages: list[Stage], log_dir: Path, level: int) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description='Project gate (concurrency-safe).')
     ap.add_argument('--no-e2e', action='store_true', help='skip Playwright (backend + tsc/lint/build only)')
+    ap.add_argument('--skip-wasm-diff', action='store_true',
+                    help='skip the geo-engine wasm byte-diff (t137: host-authoritative; managed in-jail '
+                         'gate/check pass this since jail bytes != host bytes until --remap-path-prefix)')
     g = ap.add_mutually_exclusive_group()
     g.add_argument('-v', '--verbose', action='store_true', help='tail each stage log')
     g.add_argument('-q', '--quiet', action='store_true', help='only the final summary')
     args = ap.parse_args()
     level = 2 if args.verbose else (0 if args.quiet else 1)
+
+    # Fail fast + actionable when the FE toolchain isn't installed (t132): every run does the
+    # static stages (tsc/lint/build), which need node_modules. A fresh `git worktree` never has
+    # it (gitignored), which otherwise surfaces as a confusing `eslint: not found` / `vite: not
+    # found` chain. Don't auto-install/symlink here — the gate is a verifier, not a mutator.
+    if not (FE / 'node_modules').is_dir():
+        print(
+            f"gate: {FE / 'node_modules'} is missing — the FE stages (tsc/lint/build/playwright) "
+            "can't run.\n"
+            "  • In a git worktree: create it with `scripts/worktree.sh add <branch>` "
+            "(symlinks node_modules + sets up an isolated .venv).\n"
+            f"  • Otherwise: run `npm ci` (or `npm install`) in {FE}.",
+            file=sys.stderr,
+        )
+        return 2
 
     run_dir = Path(tempfile.mkdtemp(prefix='leaf-gate-'))
     log_dir = run_dir / 'logs'
@@ -248,7 +325,7 @@ def main() -> int:
 
     ok = False
     try:
-        stages = backend_stages(log_dir) + static_stages(log_dir)
+        stages = backend_stages(log_dir) + rust_stages(log_dir, args.skip_wasm_diff) + static_stages(log_dir)
         if not args.no_e2e:
             stages.append(playwright_stage(log_dir, fixture_dir, state_file))
         render(stages, log_dir, level)

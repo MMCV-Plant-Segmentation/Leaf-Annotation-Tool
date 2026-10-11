@@ -15,6 +15,7 @@
  * in one gate run; a static username would collide on the second pass.
  */
 import { test, expect, type Page, type Browser } from '@playwright/test';
+import { loginAsFreshUser } from './freshUser';
 
 const FIXTURE_DIR = process.env.HT_E2E_FIXTURE_DIR ?? '/tmp/leaf-e2e-fixture';
 const FIXTURE_NESTED = `${FIXTURE_DIR}/nested-images`;
@@ -68,23 +69,6 @@ async function setupProject(page: Page, tag: string): Promise<Setup> {
   return { batchUrl: `/projects/${pid}/batches/${batch.id}`, alice, bob, aliceInvite };
 }
 
-async function loginAsFreshUser(browser: Browser, username: string, invite: string): Promise<Page> {
-  const pw = 'TestPass99!';
-  const anonCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
-  const anonPage = await anonCtx.newPage();
-  const acceptResp = await anonPage.request.post(`/api/invite/${invite}`, { data: { password: pw, confirm: pw } });
-  expect(acceptResp.ok()).toBeTruthy();
-  await anonCtx.close();
-
-  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
-  const p = await ctx.newPage();
-  await p.goto('/login');
-  await p.fill('#login-username', username);
-  await p.fill('#login-password', pw);
-  await p.click('button[type=submit]');
-  await expect(p.getByTestId('auth-username')).toBeVisible({ timeout: 8000 });
-  return p;
-}
 
 test('admin sees a roster dropdown and no paint/erase/undo/complete controls', async ({ page }) => {
   const { batchUrl } = await setupProject(page, 'ctl');

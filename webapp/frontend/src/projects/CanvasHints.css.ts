@@ -6,7 +6,17 @@ import { vars } from '../theme/contract.css';
 // an absolutely-positioned popover laid out vertically (help text, then readout).
 // All colours use theme tokens only (no raw literals).
 
+// A full-width bottom bar: "?" help on the left, the live viewport readout on the right.
 export const hints = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  width: '100%',
+  gap: '0.5rem',
+});
+
+// Anchors the help popup to the "?" trigger (not the full-width bar).
+export const triggerWrap = style({
   position: 'relative',
   display: 'inline-flex',
 });
@@ -38,7 +48,7 @@ export const trigger = style({
 export const panel = style({
   position: 'absolute',
   bottom: 'calc(100% + 0.4rem)',
-  right: 0,
+  left: 0,
   display: 'flex',
   flexDirection: 'column',
   gap: '0.5rem',
