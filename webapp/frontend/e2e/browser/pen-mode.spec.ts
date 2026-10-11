@@ -248,6 +248,27 @@ test.describe('pen mode on the canvas', () => {
     expect(await viewBox(c.p)).toBe(vb0);
   });
 
+  test('ON: a palm resting BEFORE the pen lands is dropped — the pen draws, no pinch/pan', async ({ page, browser }) => {
+    const c = await openCanvas(page, browser);
+    await enablePenMode(c.p);
+    const vb0 = await viewBox(c.p);
+    // The usual order on an iPad: the palm touches first and stays down.
+    const px = c.cx + 60, py = c.cy + 60;
+    await c.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: px, y: py, id: 6 }] });
+    const x0 = c.cx - 15, y0 = c.cy - 15;
+    await penDown(c, x0, y0);
+    for (let i = 1; i <= 6; i++) {
+      // The palm shifts while the pen draws — it must neither pan nor pair with the pen as a pinch.
+      await c.cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: px + i * 12, y: py + i * 8, id: 6 }] });
+      await penMove(c, x0 + i * 6, y0 + i * 4);
+    }
+    await penUp(c, x0 + 36, y0 + 24);
+    await c.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    expect(await received(c.p)).toEqual(['touch', 'pen']);
+    await expect(strokes(c.p)).toHaveCount(1, { timeout: 5000 });
+    expect(await viewBox(c.p)).toBe(vb0);
+  });
+
   test('ON: the mouse still draws (pen mode only changes touch)', async ({ page, browser }) => {
     const c = await openCanvas(page, browser);
     await enablePenMode(c.p);
