@@ -118,3 +118,108 @@ test('a second vertex placed on the first of the SAME polyline snaps onto it (t7
   // The 3rd point should have SNAPPED onto the 1st → they reference the SAME vertex id.
   expect(stroke.vertexIds[2]).toBe(stroke.vertexIds[0]);
 });
+
+// Christian 2026-10-11: dragging a vertex ALWAYS raised a "not found" alert, even though the move
+// itself landed (and survived a reload). Any alert during a plain drag is the bug.
+test('dragging a polyline vertex moves it with NO error alert', async ({ page, browser }) => {
+  const { p, batchId, username, canvasUrl, tiles } = await setup(page, browser);
+  const dialogs: string[] = [];
+  p.on('dialog', (d) => { dialogs.push(d.message()); void d.dismiss(); });
+  const t = tiles.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  const cx = Math.round(t.x + t.w / 2), cy = Math.round(t.y + t.h / 2);
+
+  await p.goto(canvasUrl);
+  await expect(p.locator('svg').first()).toBeVisible({ timeout: 10000 });
+  await p.getByTestId('tool-polyline').click();
+  const readStroke = async () => {
+    const live = await (await p.request.get(
+      `/api/batches/${batchId}?annotator=${encodeURIComponent(username)}`)).json();
+    const ann = live.images[0].annotations[0];
+    return ann ? ann.strokes[0] as { points: number[][]; vertexIds: string[] } : undefined;
+  };
+  const clickAt = async (ix: number, iy: number, n: number) => {
+    await p.mouse.click(...await toScreen(p, ix, iy));
+    await expect.poll(async () => (await readStroke())?.points.length, { timeout: 8000 }).toBe(n);
+  };
+  await clickAt(cx - 30, cy, 1);
+  await clickAt(cx, cy - 20, 2);
+  await clickAt(cx + 30, cy, 3);
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Escape');
+  await expect(p.getByTestId('tool-select')).toHaveAttribute('aria-pressed', 'true');
+
+  await p.mouse.click(...await toScreen(p, cx - 15, cy - 10));   // on the line → select the mask
+  await expect(p.getByTestId('vertex-handle')).toHaveCount(3, { timeout: 5000 });
+
+  const size = (await readStroke())!.points[1][2];
+  expect(size).toBeGreaterThan(0);
+  const [hx, hy] = await toScreen(p, cx, cy - 20);
+  const [dx, dy] = await toScreen(p, cx, cy - 40);
+  await p.mouse.move(hx, hy); await p.mouse.down();
+  await p.mouse.move((hx + dx) / 2, (hy + dy) / 2, { steps: 4 });
+  await p.mouse.move(dx, dy, { steps: 4 }); await p.mouse.up();
+
+  await expect.poll(async () => Math.round((await readStroke())!.points[1][1]), { timeout: 8000 })
+    .toBe(cy - 40);
+  expect((await readStroke())!.points[1][2]).toBe(size);   // the moved vertex keeps its size
+  await p.waitForTimeout(1000);
+  expect(dialogs).toEqual([]);
+});
+
+// Christian 2026-10-11: snapping didn't work at EDIT time. Dropping a dragged polyline vertex onto
+// another vertex must snap + lock onto it; and an ordinary drag must not unlock the stroke's other
+// snaps (the edit used to re-mint every vertex id, silently breaking a closed loop).
+test('edit-time snap: a dragged vertex locks onto the vertex it is dropped on; drags keep a loop closed', async ({ page, browser }) => {
+  const { p, batchId, username, canvasUrl, tiles } = await setup(page, browser);
+  const dialogs: string[] = [];
+  p.on('dialog', (d) => { dialogs.push(d.message()); void d.dismiss(); });
+  const t = tiles.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+  const cx = Math.round(t.x + t.w / 2), cy = Math.round(t.y + t.h / 2);
+  const readStroke = async () => {
+    const live = await (await p.request.get(
+      `/api/batches/${batchId}?annotator=${encodeURIComponent(username)}`)).json();
+    const ann = live.images[0].annotations[0];
+    return ann ? ann.strokes[0] as { points: number[][]; vertexIds: string[] } : undefined;
+  };
+  const drag = async (fx: number, fy: number, tx: number, ty: number) => {
+    const [hx, hy] = await toScreen(p, fx, fy);
+    const [dx, dy] = await toScreen(p, tx, ty);
+    await p.mouse.move(hx, hy); await p.mouse.down();
+    await p.mouse.move((hx + dx) / 2, (hy + dy) / 2, { steps: 4 });
+    await p.mouse.move(dx, dy, { steps: 4 }); await p.mouse.up();
+  };
+
+  await p.goto(canvasUrl);
+  await expect(p.locator('svg').first()).toBeVisible({ timeout: 10000 });
+  await p.getByTestId('tool-polyline').click();
+  const clickAt = async (ix: number, iy: number, n: number) => {
+    await p.mouse.click(...await toScreen(p, ix, iy));
+    await expect.poll(async () => (await readStroke())?.points.length, { timeout: 8000 }).toBe(n);
+  };
+  // An open "U": (cx-30,cy) → (cx-30,cy+30) → (cx+30,cy+30) → (cx+30,cy).
+  await clickAt(cx - 30, cy, 1);
+  await clickAt(cx - 30, cy + 30, 2);
+  await clickAt(cx + 30, cy + 30, 3);
+  await clickAt(cx + 30, cy, 4);
+  await p.keyboard.press('Escape');
+  await p.keyboard.press('Escape');
+  await expect(p.getByTestId('tool-select')).toHaveAttribute('aria-pressed', 'true');
+  await p.mouse.click(...await toScreen(p, cx, cy + 30));
+  await expect(p.getByTestId('vertex-handle')).toHaveCount(4, { timeout: 5000 });
+
+  // Drop the LAST vertex 2px off the FIRST (non-adjacent) → it snaps onto it: same id, same spot.
+  await drag(cx + 30, cy, cx - 28, cy + 1);
+  await expect.poll(async () => { const s = (await readStroke())!; return s.vertexIds[3] === s.vertexIds[0]; },
+    { timeout: 8000 }).toBe(true);
+  const closed = (await readStroke())!;
+  expect(closed.points[3].slice(0, 2)).toEqual(closed.points[0].slice(0, 2));
+
+  // An ordinary drag of a MIDDLE vertex keeps the loop locked (and keeps the other ids).
+  await expect(p.getByTestId('vertex-handle')).toHaveCount(4, { timeout: 5000 });
+  await drag(cx + 30, cy + 30, cx + 40, cy + 40);
+  await expect.poll(async () => Math.round((await readStroke())!.points[2][0]), { timeout: 8000 }).toBe(cx + 40);
+  const after = (await readStroke())!;
+  expect(after.vertexIds[3]).toBe(after.vertexIds[0]);
+  expect(after.vertexIds[1]).toBe(closed.vertexIds[1]);
+  expect(dialogs).toEqual([]);
+});

@@ -26,8 +26,11 @@ export function createRelabelDropdown(o: {
   });
   const pickDropdown = (label: string) => {
     const id = o.selId();
-    if (id) void o.relabel(id, label);
-    else o.setPaintLabel(label);
+    if (!id) { o.setPaintLabel(label); return; }
+    // A selection id can briefly outlive its mask (an edit deletes + re-mints it before the
+    // selection migrates) — never relabel a mask that isn't on the image, or one already so labelled.
+    const sel = o.image()?.annotations.find((a) => a.id === id);
+    if (sel && (sel.label ?? '') !== label) void o.relabel(id, label);
   };
   return { dropdownLabel, pickDropdown };
 }

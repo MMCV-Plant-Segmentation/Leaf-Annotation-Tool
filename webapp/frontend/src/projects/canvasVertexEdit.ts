@@ -64,14 +64,14 @@ export function hitHandle(
 }
 
 /**
- * Return a NEW points array with only `points[index]` replaced by [nx, ny]. Non-
- * mutating so callers can safely use the result for a live-preview memo without
- * touching the stored geometry until the drag commits.
+ * Return a NEW points array with only `points[index]` moved to [nx, ny] (its stored size, if
+ * any, kept). Non-mutating so callers can safely use the result for a live-preview memo
+ * without touching the stored geometry until the drag commits.
  */
 export function moveVertex(
   points: number[][], index: number, nx: number, ny: number,
 ): number[][] {
-  return points.map((p, i) => (i === index ? [nx, ny] : p));
+  return points.map((p, i) => (i === index ? [nx, ny, ...p.slice(2)] : p));  // keep its size
 }
 
 /**
@@ -143,11 +143,14 @@ export function sharedVertexId(
   return count >= 2 ? target : null;
 }
 
-/** What a handle-drop should do, decided purely (unit-testable, no DOM). */
+/** What a handle-drop should do, decided purely (unit-testable, no DOM). `refs` (parallel to
+ *  `points`) keeps every OTHER vertex of the stroke on its existing id — an edit without refs
+ *  re-mints them all server-side, silently unlocking any snap they were part of. Absent when
+ *  the stroke carries no vertex ids. */
 export type DropDecision =
   | { kind: 'move'; vertexId: string }        // shared/locked vertex → move the whole lock
-  | { kind: 'collapse'; points: number[][] }  // dropped onto an adjacent vertex → merge
-  | { kind: 'edit'; points: number[][] };     // ordinary single-vertex move
+  | { kind: 'collapse'; points: number[][]; refs?: (string | null)[] }  // onto an adjacent vertex → merge
+  | { kind: 'edit'; points: number[][]; refs?: (string | null)[] };     // single-vertex move (maybe snapped)
 
 /**
  * t95: a SHARED (snapped/locked) vertex ALWAYS moves — it must WIN over collapse. Collapsing
@@ -155,14 +158,30 @@ export type DropDecision =
  * a now-deleted vertex (its `vertexMove` entry replays `moveVertex` on a gone id → "not found",
  * and the view desyncs into a filled mask + orphaned polyline). Only an UNSHARED vertex may
  * collapse onto an adjacent neighbour (t66); everything else is an ordinary edit.
+ *
+ * Edit-time snap (2026-10-11): an unshared vertex dropped within reach of another vertex
+ * (`snap`, see canvasVertexDrop.ts) lands on it and references its id — locked, like a
+ * draw-time snap. Snapping onto an ADJACENT vertex of the same stroke is a collapse instead.
  */
 export function decideDrop(
   annotations: VertexScanAnnotation[], strokeId: string, index: number,
   points: number[][], nx: number, ny: number, radiusImg: number,
+  snap: { x: number; y: number; vertexId: string } | null = null,
 ): DropDecision {
   const vid = sharedVertexId(annotations, strokeId, index);
   if (vid) return { kind: 'move', vertexId: vid };
-  const merged = collapseOnAdjacent(points, index, nx, ny, radiusImg);
-  if (merged) return { kind: 'collapse', points: merged };
-  return { kind: 'edit', points: moveVertex(points, index, nx, ny) };
+  const ids = annotations.flatMap((a) => a.strokes ?? []).find((s) => s.id === strokeId)?.vertexIds;
+  const refs = ids && ids.length === points.length ? ids : undefined;
+  const collapse = (): DropDecision => ({ kind: 'collapse', points: points.filter((_, i) => i !== index),
+    refs: refs?.filter((_, i) => i !== index) });
+  if (snap) {
+    if (refs && (refs[index - 1] === snap.vertexId || refs[index + 1] === snap.vertexId)) return collapse();
+    return { kind: 'edit', points: moveVertex(points, index, snap.x, snap.y),
+      refs: refs?.map((r, i) => (i === index ? snap.vertexId : r)) };
+  }
+  if (collapseOnAdjacent(points, index, nx, ny, radiusImg)) return collapse();
+  // A free move mints the dragged vertex afresh (the server never rewrites a referenced
+  // vertex's position); every other vertex keeps its id.
+  return { kind: 'edit', points: moveVertex(points, index, nx, ny),
+    refs: refs?.map((r, i) => (i === index ? null : r)) };
 }

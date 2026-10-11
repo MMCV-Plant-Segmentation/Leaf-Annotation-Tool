@@ -15,6 +15,8 @@
 import { type Component, For, Show, createMemo, createSignal } from 'solid-js';
 import type { CanvasAnnotation } from './canvasApi';
 import { annStrokes, decideDrop, handleRadiusImg, moveVertex } from './canvasVertexEdit';
+import { dragSnapIndex } from './canvasVertexDrop';
+import { resolveSnap, type VertexIndex } from './canvasSnap';
 import { polylineOutlineRings } from './canvasPolylineGeometry';
 import { ringsToPath } from './canvasShapes';
 import { outlineBrushSyncOrEmpty } from './geoEngine';
@@ -29,7 +31,10 @@ const PREVIEW_STROKE = '#1e3a8a';
 const HANDLE_SCREEN_PX = 6;            // ~6 screen px radius — grabbable at any zoom
 
 type Drag = { strokeId: string; index: number; x: number; y: number; tool: string;
-  points: number[][]; strokeWidth: number };
+  points: number[][]; strokeWidth: number;
+  /** Every OTHER vertex on the image, built at grab time; `snap` = where the drop lands if
+   *  released now (another vertex within reach), else null. */
+  snapIdx: VertexIndex; snap: { x: number; y: number; vertexId: string } | null };
 
 export type VertexHandlesProps = {
   ann: CanvasAnnotation;
@@ -40,7 +45,8 @@ export type VertexHandlesProps = {
   toImage: (clientX: number, clientY: number) => [number, number];
   /** Called on drop with the new points (fresh outline is recomputed inside
    *  canvasPersistence.editStroke; here we only ship the vertices). */
-  onCommit: (strokeId: string, tool: string, points: number[][], strokeWidth: number) => void;
+  onCommit: (strokeId: string, tool: string, points: number[][], strokeWidth: number,
+    vertexRefs?: (string | null)[]) => void;
   /** t50 phase 3b: every loaded annotation (not just the selected mask) — needed to
    *  detect whether the grabbed handle's vertex is SHARED (see canvasVertexEdit.sharedVertexId). */
   allAnnotations: () => CanvasAnnotation[];
@@ -59,13 +65,16 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
     e.stopPropagation();
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     const [ix, iy] = props.toImage(e.clientX, e.clientY);
-    setDrag({ strokeId, index, x: ix, y: iy, tool, points, strokeWidth });
+    setDrag({ strokeId, index, x: ix, y: iy, tool, points, strokeWidth,
+      snapIdx: dragSnapIndex(props.allAnnotations(), strokeId, index), snap: null });
   };
   const updateDrag = (e: PointerEvent) => {
     if (!drag()) return;
     e.stopPropagation();
     const [ix, iy] = props.toImage(e.clientX, e.clientY);
-    setDrag((d) => (d ? { ...d, x: ix, y: iy } : d));
+    // Reach = the dragged point's own radius (resolveSnap also honours each target's radius).
+    setDrag((d) => (d ? { ...d, x: ix, y: iy, snap: resolveSnap(d.snapIdx, ix, iy,
+      (d.points[d.index][2] ?? d.strokeWidth) / 2) } : d));
   };
   const endDrag = (e: PointerEvent) => {
     const d = drag(); if (!d) return;
@@ -76,19 +85,19 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
     // every mark sharing it follows AND the vertex is never deleted out from under the undo
     // stack. Only an unshared vertex may collapse onto an adjacent neighbour (t66); anything
     // else is an ordinary per-stroke edit. Decision is pure (decideDrop) for testability.
-    const decision = decideDrop(props.allAnnotations(), d.strokeId, d.index, d.points, d.x, d.y, radius());
+    const decision = decideDrop(props.allAnnotations(), d.strokeId, d.index, d.points, d.x, d.y, radius(), d.snap);
     if (decision.kind === 'move') {
       const [bx, by] = d.points[d.index];
       props.onMoveSharedVertex(decision.vertexId, { x: bx, y: by }, { x: d.x, y: d.y });
       return;
     }
-    props.onCommit(d.strokeId, d.tool, decision.points, d.strokeWidth);
+    props.onCommit(d.strokeId, d.tool, decision.points, d.strokeWidth, decision.refs);
   };
 
   // Live preview: rebuild the affected stroke's outline as the vertex moves.
   const previewPath = createMemo(() => {
     const d = drag(); if (!d) return '';
-    const moved = moveVertex(d.points, d.index, d.x, d.y);
+    const moved = moveVertex(d.points, d.index, d.snap?.x ?? d.x, d.snap?.y ?? d.y);
     const rings = d.tool === 'polyline'
       ? polylineOutlineRings(moved, d.strokeWidth)
       : outlineBrushSyncOrEmpty(moved, Math.max(d.strokeWidth, 1));
@@ -110,8 +119,8 @@ export const VertexHandles: Component<VertexHandlesProps> = (props) => {
               const isDragging = () => {
                 const d = drag(); return !!(d && d.strokeId === s.id && d.index === i());
               };
-              const cx = () => { const d = drag(); return isDragging() && d ? d.x : x; };
-              const cy = () => { const d = drag(); return isDragging() && d ? d.y : y; };
+              const cx = () => { const d = drag(); return isDragging() && d ? d.snap?.x ?? d.x : x; };
+              const cy = () => { const d = drag(); return isDragging() && d ? d.snap?.y ?? d.y : y; };
               return (
                 <circle class={styles.handle} data-testid="vertex-handle"
                   cx={cx()} cy={cy()} r={radius()}

@@ -102,10 +102,37 @@ test.describe('canvasVertexEdit', () => {
     const open = [{ id: 'B', strokes: [{ id: 's', points: [[10, 10], [40, 10], [40, 40]],
       vertexIds: ['a', 'b', 'c'] }] }];
     expect(decideDrop(open as never, 's', 1, open[0].strokes[0].points, 41, 41, 5))
-      .toEqual({ kind: 'collapse', points: [[10, 10], [40, 40]] });
+      .toEqual({ kind: 'collapse', points: [[10, 10], [40, 40]], refs: ['a', 'c'] });
 
     // An unshared vertex dropped in open space is an ordinary edit.
     expect(decideDrop(open as never, 's', 1, open[0].strokes[0].points, 25, 25, 5))
-      .toEqual({ kind: 'edit', points: [[10, 10], [25, 25], [40, 40]] });
+      .toEqual({ kind: 'edit', points: [[10, 10], [25, 25], [40, 40]], refs: ['a', null, 'c'] });
+  });
+
+  test('edit-time snap: a dropped vertex locks onto the vertex it snaps to; others keep their ids', async () => {
+    const { decideDrop } = await import(MOD);
+    const { dragSnapIndex } = await import('../../src/projects/canvasVertexDrop');
+    const { resolveSnap } = await import('../../src/projects/canvasSnap');
+    const anns = [
+      { id: 'A', strokes: [{ id: 's', points: [[10, 10, 8], [40, 10, 8], [40, 40, 8]], vertexIds: ['a', 'b', 'c'] }] },
+      { id: 'B', strokes: [{ id: 't', points: [[100, 100, 8], [130, 100, 8]], vertexIds: ['x', 'y'] }] },
+    ];
+    const pts = anns[0].strokes[0].points;
+    // The dragged vertex never snaps onto itself.
+    const idx = dragSnapIndex(anns as never, 's', 2);
+    expect(resolveSnap(idx, 40, 40, 4)).toBeNull();
+    // Drop vertex c near another stroke's vertex x → lands ON x and references it.
+    const snap = resolveSnap(idx, 102, 101, 4);
+    expect(snap).toEqual({ x: 100, y: 100, vertexId: 'x' });
+    expect(decideDrop(anns as never, 's', 2, pts, 102, 101, 1, snap))
+      .toEqual({ kind: 'edit', points: [[10, 10, 8], [40, 10, 8], [100, 100, 8]], refs: ['a', 'b', 'x'] });
+    // Snapping onto a NON-adjacent vertex of the same stroke closes it (c onto a).
+    const close = resolveSnap(idx, 12, 11, 4);
+    expect(decideDrop(anns as never, 's', 2, pts, 12, 11, 1, close))
+      .toEqual({ kind: 'edit', points: [[10, 10, 8], [40, 10, 8], [10, 10, 8]], refs: ['a', 'b', 'a'] });
+    // Snapping onto an ADJACENT vertex is a collapse (t66), not a duplicate reference.
+    const adj = resolveSnap(idx, 41, 12, 4);
+    expect(decideDrop(anns as never, 's', 2, pts, 41, 12, 1, adj))
+      .toEqual({ kind: 'collapse', points: [[10, 10, 8], [40, 10, 8]], refs: ['a', 'b'] });
   });
 });

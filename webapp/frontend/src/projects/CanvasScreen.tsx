@@ -181,7 +181,7 @@ const CanvasScreen: Component = () => {
         }</Show>
         <Show when={imgLoaded() && tool() === 'select' && selectedStrokeAnn()}>{(ann) =>
           <VertexHandles ann={ann()} scale={imgPerScreenPx} toImage={interaction.toImage}
-            onCommit={(sid, tl, pts, sw) => void editStroke(sid, tl, pts, sw)}
+            onCommit={(sid, tl, pts, sw, refs) => void editStroke(sid, tl, pts, sw, refs)}
             allAnnotations={() => image()?.annotations ?? []}
             onMoveSharedVertex={(vid, b, a) => void moveSharedVertex(vid, b, a)} />
         }</Show>

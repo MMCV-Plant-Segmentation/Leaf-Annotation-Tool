@@ -51,7 +51,10 @@ export const LabelPicker: Component<Props> = (props) => {
       optionValue="name"
       optionTextValue="name"
       value={selected()}
-      onChange={(opt) => opt && props.onChange(opt.name)}
+      // Kobalte also fires onChange when the CONTROLLED value/options change under it (e.g. the
+      // selection briefly resolving to nothing mid-edit) — only forward a real change of value,
+      // never that echo (it used to relabel a just-deleted mask → "not found").
+      onChange={(opt) => { if (opt && opt.name !== props.value()) props.onChange(opt.name); }}
       disallowEmptySelection
       itemComponent={(ip) => (
         <Select.Item item={ip.item} class={styles.item}

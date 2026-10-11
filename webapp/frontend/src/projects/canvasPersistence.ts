@@ -132,11 +132,15 @@ export function createCanvasPersistence(o: CanvasPersistenceOpts) {
 
   // Stroke-vertex edit — routed over the socket. Same body shape the PATCH endpoint uses,
   // just carried as an op frame. History push happens inside applyEdit.
+  // `vertexRefs` omitted (e.g. a resize) → keep the stroke's current vertex ids when the point
+  // count is unchanged: an edit without refs re-mints every vertex, unlocking its snaps.
   const editStroke = async (strokeId: string, tool: string, points: number[][],
-                            strokeWidth: number): Promise<CanvasAnnotation[]> => {
+                            strokeWidth: number, vertexRefs?: (string | null)[]): Promise<CanvasAnnotation[]> => {
     const pid = o.getProjectId();
     if (!pid) return [];
-    const body = buildEditBody(strokeId, tool, points, strokeWidth);
+    const ids = o.image()?.annotations.flatMap((a) => a.strokes ?? []).find((s) => s.id === strokeId)?.vertexIds;
+    const refs = vertexRefs ?? (ids?.length === points.length ? ids : undefined);
+    const body = buildEditBody(strokeId, tool, points, strokeWidth, refs);
     return (await o.socket.enqueue<CanvasAnnotation[]>(async (send) => {
       const ack = await send<EditStrokeResult>('edit', body);
       if (!ack.ok) { alert(ack.message); return []; }
