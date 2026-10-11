@@ -357,6 +357,20 @@ def get_setting(key: str, env_default: str = '') -> str:
     return env_default
 
 
+# t164: app-wide flags any logged-in user may READ. Explicit allowlist — only these
+# settings rows are ever exposed (never BACKUP_DIR etc.). One line per future flag:
+#   response key -> (settings-table key, parser of the stored string; absent row = '').
+_GLOBAL_SETTINGS = {
+    'merge_enabled': ('MERGE_ENABLED', lambda v: v == '1'),
+}
+
+
+@auth_bp.get('/api/global-settings')
+@login_required
+def api_get_global_settings():
+    return jsonify({name: parse(get_setting(key)) for name, (key, parse) in _GLOBAL_SETTINGS.items()})
+
+
 @auth_bp.get('/api/settings')
 @admin_required
 def api_get_settings():

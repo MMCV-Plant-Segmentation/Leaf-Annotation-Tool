@@ -149,6 +149,7 @@
   "admin.user.copyLink": "Copy link",
   "admin.settings.backupDirLabel": "Backup directory (BACKUP_DIR)",
   "admin.settings.backupDirPlaceholder": "/path/to/backup",
+  "admin.settings.mergeEnabledLabel": "Enable batch merge (Enter / Continue merge buttons)",
   "admin.settings.conflict": "Conflict — another session updated this setting",
   "admin.settings.saveFailed": "Save failed",
   "admin.settings.saving": "Saving…",

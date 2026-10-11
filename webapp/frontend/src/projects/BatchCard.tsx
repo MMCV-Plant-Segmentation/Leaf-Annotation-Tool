@@ -8,6 +8,7 @@ import { type Component, For, Show } from 'solid-js';
 import type { Batch } from './api';
 import { t } from '../i18n/catalog';
 import BatchMemberRow from './BatchMemberRow';
+import { mergeEnabled } from '../shared/globalSettings';
 import * as styles from './BatchMembership.css';
 
 type Props = {
@@ -33,13 +34,14 @@ const BatchCard: Component<Props> = (props) => (
           {t('detail.batch.open')}
         </button>
       </Show>
-      <Show when={props.batch.status === 'merge'}>
+      {/* t164: the merge buttons are hidden unless an admin enabled merge (badge stays). */}
+      <Show when={mergeEnabled() && props.batch.status === 'merge'}>
         <button class={styles.link} data-testid="continue-merge-btn"
           onClick={() => props.onContinueMerge(props.batch.id)}>
           {t('detail.batch.continueMerge')}
         </button>
       </Show>
-      <Show when={props.batch.status !== 'merge' && props.batch.mergeReady}>
+      <Show when={mergeEnabled() && props.batch.status !== 'merge' && props.batch.mergeReady}>
         <button class={styles.link} data-testid="enter-merge-btn" disabled={props.mergeBusy}
           onClick={() => props.onEnterMerge(props.batch.id)}>
           {t('detail.batch.enterMerge')}

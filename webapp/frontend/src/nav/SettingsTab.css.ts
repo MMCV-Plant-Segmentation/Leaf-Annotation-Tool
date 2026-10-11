@@ -46,3 +46,12 @@ export const settingsMsg = style({
   color: vars.status.pass,
   minHeight: '1em',
 });
+
+/** t164: a single checkbox setting (checkbox + inline label), saved on change. */
+export const settingsCheck = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '0.5rem',
+  fontSize: '0.9rem',
+  color: vars.color.text,
+});

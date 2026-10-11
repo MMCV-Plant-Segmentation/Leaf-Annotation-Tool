@@ -2,6 +2,7 @@ import { type Component, createResource, createSignal, Show } from 'solid-js';
 import { t } from '../i18n/catalog';
 import SyncStatusCard from './SyncStatusCard';
 import VersionCard from './VersionCard';
+import MergeEnabledSetting from './MergeEnabledSetting';
 import * as styles from './AdminScreen.css';
 import * as settingsStyles from './SettingsTab.css';
 
@@ -20,6 +21,12 @@ const SettingsTab: Component = () => {
   const initBackupDir = () => {
     const s = settings();
     if (s && backupDir() === '') setBackupDir(s['BACKUP_DIR']?.value ?? '');
+  };
+
+  /** Show a saved/failed message; a "saved" one clears itself after 3s. */
+  const flash = (m: string) => {
+    setMsg(m);
+    if (m === t('common.saved')) setTimeout(() => setMsg(''), 3000);
   };
 
   const save = async (e: Event) => {
@@ -55,7 +62,6 @@ const SettingsTab: Component = () => {
       <Show when={settings()} fallback={<div>{t('common.loading')}</div>} keyed>
         {(s) => {
           initBackupDir();
-          void s;
           return (
             <form class={styles.section} onSubmit={save}>
               <h3 class={styles.sectionTitle}>{t('admin.tab.settings')}</h3>
@@ -72,6 +78,15 @@ const SettingsTab: Component = () => {
                   placeholder={t('admin.settings.backupDirPlaceholder')}
                 />
               </div>
+
+              <MergeEnabledSetting
+                initial={s['MERGE_ENABLED']?.value}
+                onSaved={(value) => mutate((prev) => ({
+                  ...prev,
+                  MERGE_ENABLED: { value, updated_at: Date.now() / 1000 },
+                }))}
+                onMessage={flash}
+              />
 
               <button class={settingsStyles.settingsSave} type="submit" disabled={busy()}>
                 {busy() ? t('admin.settings.saving') : t('common.save')}
