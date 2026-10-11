@@ -82,6 +82,8 @@ async function scribbleAcrossImage(page: Page) {
 
 test('merge 2a: grouping brush makes a candidate object; eraser flags a mark, recoverably @full', async ({ page, browser }, testInfo) => {
   if (testInfo.project.name !== 'full') return;
+  // t164: merge is behind an admin toggle (off by default) — this spec needs it on.
+  expect((await page.request.patch('/api/settings', { data: { MERGE_ENABLED: '1' } })).status()).toBe(200);
 
   // ── Setup: project, 2 annotators, images, tiling, batch, two seeded marks, enter merge ──
   const pid = await createProject(page, `MergeGroup ${Date.now()}`);

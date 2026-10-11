@@ -84,6 +84,8 @@ async function completeEveryTile(p: Page) {
 
 test('merge gate button + blind pooled read-only viewer @full', async ({ page, browser }, testInfo) => {
   if (testInfo.project.name !== 'full') return;
+  // t164: merge is behind an admin toggle (off by default) — this spec needs it on.
+  expect((await page.request.patch('/api/settings', { data: { MERGE_ENABLED: '1' } })).status()).toBe(200);
 
   // ── Setup: project, 2-annotator roster, images, tiling, a 2-tile batch ──────
   const pid = await createProject(page, `MergeMode ${Date.now()}`);
