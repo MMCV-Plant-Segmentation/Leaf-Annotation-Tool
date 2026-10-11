@@ -13,7 +13,7 @@ export type Props = {
   imgLoaded: Accessor<boolean>;
   tool: Accessor<Tool>;
   interaction: Pick<CanvasInteraction,
-    'onWheel' | 'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerLeave' | 'isSpaceDown'>;
+    'onWheel' | 'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel' | 'onPointerLeave' | 'isSpaceDown'>;
   // Phase 2 SEAM: `onTileToggle` is today's per-annotator MANUAL tile-complete state
   // (see tileComplete.ts). Grouping/candidate-object work will swap this for a COMPUTED
   // checkmark ("all this tile's marks belong to a candidate object") fed as a derived
@@ -60,6 +60,7 @@ export const CanvasStage: Component<Props> = (props) => (
           onPointerDown={props.interaction.onPointerDown}
           onPointerMove={props.interaction.onPointerMove}
           onPointerUp={props.interaction.onPointerUp}
+          onPointerCancel={props.interaction.onPointerCancel}
           onPointerLeave={props.interaction.onPointerLeave}
           classList={{
             [styles.panning]: props.tool() === 'pan',

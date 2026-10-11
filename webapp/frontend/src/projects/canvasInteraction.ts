@@ -24,8 +24,7 @@ export interface CanvasInteraction {
   onWheel: (e: WheelEvent) => void;
   onPointerDown: (e: PointerEvent) => void;
   onPointerMove: (e: PointerEvent) => void;
-  onPointerUp: (e: PointerEvent) => void;
-  onPointerLeave: () => void;
+  onPointerUp: (e: PointerEvent) => void; onPointerCancel: (e: PointerEvent) => void; onPointerLeave: () => void;
   handleKeyDown: (e: KeyboardEvent) => void;
   handleKeyUp: (e: KeyboardEvent) => void;
   isSpaceDown: Accessor<boolean>;
@@ -41,13 +40,12 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   let spacePanRef: { x: number; y: number; vb: ViewBox } | null = null;
 
   // Mid-stroke pan lock (B §D: all pan disabled while pointer is down drawing)
-  let strokeInProgress = false;
+  let strokeInProgress = false, strokeId = -1;  // strokeId = the pointer drawing it (only its lift commits)
   let panDragging = false;
   let lastPanClient: { x: number; y: number } | null = null;
 
-  // Multi-touch tracking for two-finger pinch (§E)
   type TouchPt = { clientX: number; clientY: number; imgX: number; imgY: number };
-  const touches = new Map<number, TouchPt>();
+  const touches = new Map<number, TouchPt>();  // multi-touch tracking for two-finger pinch (§E)
   let pinchStart: { dist: number; midImgX: number; midImgY: number; vb: ViewBox } | null = null;
 
   const toImage = (clientX: number, clientY: number): [number, number] => { // client px → image px via CTM
@@ -122,7 +120,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     const tl = o.tool();
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
     if (tl === 'pan') { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
-    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; o.setDraft([[ix, iy]]); capture.reset(); capture.collect(e); return; }
+    if (tl === 'brush' || tl === 'eraser' || tl === 'group') { strokeInProgress = true; strokeId = e.pointerId; o.setDraft([[ix, iy]]); capture.reset(); capture.collect(e); return; }
     if (tl === 'polyline') { firePolylineClick(ix, iy, o); return; }  // per-click persist (see canvasPolyline.ts)
     o.setDraft((d) => [...d, [Math.round(ix), Math.round(iy)]]);  // polygon/line legacy vertex
   };
@@ -172,7 +170,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     touches.delete(e.pointerId);
     if (touches.size < 2) pinchStart = null;
 
-    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress) {
+    if ((o.tool() === 'brush' || o.tool() === 'eraser' || o.tool() === 'group') && strokeInProgress && e.pointerId === strokeId) {
       // Commit (1-point click ok). kind='erase'=CanvasScreen delete-by-intersection;
       // 'group'=MergeCanvasScreen POST candidate-object (server resolves); 'stroke'=brush create.
       capture.collect(e); const pts = o.draft();  // t61 float precision; t141 final samples
@@ -183,6 +181,9 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     panDragging = false; spacePanRef = null; lastPanClient = null;
   };
 
+  // t161: iOS ends a rejected PALM touch with pointercancel, never pointerup. Forget it like a lift, else
+  // it stays "down" and every later pen stroke reads as a two-finger pinch until reload. Never commits.
+  const onPointerCancel = (e: PointerEvent) => { if (e.pointerId === strokeId) { o.setDraft([]); strokeInProgress = false; } onPointerUp(e); };
   const handleKeyDown = (e: KeyboardEvent) => { if (e.key === ' ') setSpaceDown(true); };
   const handleKeyUp = (e: KeyboardEvent) => { if (e.key === ' ') { setSpaceDown(false); spacePanRef = null; } };
 
@@ -194,5 +195,5 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
     else if (tl === 'line' && d.length >= 2) o.commit('line', d);
     o.setDraft([]);
   };
-  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
+  return { toImage, onWheel, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onPointerLeave, handleKeyDown, handleKeyUp, isSpaceDown: spaceDown, hoverImg, finishDraft };
 }
