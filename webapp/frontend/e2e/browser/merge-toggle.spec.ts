@@ -83,6 +83,8 @@ test('merge buttons hidden until an admin enables merge; the merge-ready badge s
   const pA = await loginAsFreshUser(browser, uA, userA.invite.token);
   await pA.goto(canvasUrl);
   await expect(pA.getByTestId('canvas-toolbar')).toBeVisible({ timeout: 5000 });
+  // completeEveryTile counts circles without waiting — wait for the tile overlay to render first.
+  await expect(pA.getByTestId('tile-complete').first()).toBeVisible({ timeout: 5000 });
   await completeEveryTile(pA);
 
   // ── OFF (default): badge says merge-ready, but no merge buttons — for admin and member alike ──
