@@ -129,7 +129,9 @@ test.describe('brush popup', () => {
     await p.getByTestId('tool-brush').evaluate((el) => {
       const w = window as unknown as { __ctx: boolean[] };
       w.__ctx = [];
-      el.addEventListener('contextmenu', (e) => queueMicrotask(() => w.__ctx.push(e.defaultPrevented)));
+      // Read defaultPrevented AFTER dispatch finishes: Solid delegates contextmenu to the document, so a
+      // microtask here would run before the app's (bubbling) handler gets the event.
+      el.addEventListener('contextmenu', (e) => setTimeout(() => w.__ctx.push(e.defaultPrevented), 0));
     });
     await p.getByTestId('tool-brush').click({ button: 'right' });
     await expect(p.getByTestId('brush-menu')).toBeVisible();
