@@ -15,7 +15,11 @@ import type { Ring } from './geoEngine';
  * Look matches the old outline rendering: translucent fill, a dark edge straddling the boundary,
  * a white halo just outside it. The edge/halo widths are screen-px constants (`scale` = image px
  * per screen px); both are masked off the interior so the fill stays see-through. The fill's
- * alpha is applied once to the whole group, so overlapping chunk ends don't darken. */
+ * alpha is applied once to the whole group, so overlapping chunk ends don't darken.
+ *
+ * A stroke that comes back onto itself encloses a hole the stored shape fills, so the preview
+ * fills it too (brushLoops.ts): each closed loop is painted in the fill and masked off the
+ * edge/halo, so only the outer edge shows — as stored. */
 export const BrushDraftStroke: Component<{
   draft: number[][]; size: number; scale: number; eraser: boolean;
 }> = (props) => {
@@ -24,6 +28,15 @@ export const BrushDraftStroke: Component<{
   onCleanup(stream.end);
   const line = createMemo(() => stream.update(props.draft, props.size));
   const live = createMemo(() => pathD(line().live));
+  const liveLoop = createMemo(() => { const l = line().liveLoop; return l ? pathD(l) + ' Z' : ''; });
+  // Every closed loop (painted once) + the one the pen is closing now, filled.
+  const Loops = (p: { fill: string; testid?: string }) => (
+    <>
+      <For each={line().loops}>{(l) =>
+        <path d={pathD(l) + ' Z'} fill={p.fill} stroke="none" data-testid={p.testid} />}</For>
+      <path d={liveLoop()} fill={p.fill} stroke="none" data-testid={p.testid} />
+    </>
+  );
   const edge = () => LIVE_DRAFT.strokeWidth * props.scale;
   const halo = () => LIVE_DRAFT.haloWidth * props.scale;
   // Mask region = the line's bounds padded by the widest layer (bounded, cheap to rasterize).
@@ -49,9 +62,11 @@ export const BrushDraftStroke: Component<{
       <mask id={maskId} maskUnits="userSpaceOnUse" x={box().x} y={box().y} width={box().w} height={box().h}>
         <rect x={box().x} y={box().y} width={box().w} height={box().h} fill="white" />
         <Layer stroke="black" width={Math.max(props.size - edge(), 0)} />
+        <Loops fill="black" />
       </mask>
       <g opacity={fill().opacity}>
         <Layer stroke={fill().color} width={props.size} testid="brush-draft-fill" />
+        <Loops fill={fill().color} testid="brush-draft-loop" />
       </g>
       <Layer stroke={LIVE_DRAFT.haloColor} width={props.size + halo()} mask={`url(#${maskId})`} />
       <Layer stroke={props.eraser ? LIVE_DRAFT.eraserStroke : LIVE_DRAFT.brushStroke}

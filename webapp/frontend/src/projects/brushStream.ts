@@ -1,4 +1,5 @@
 import { brushStreamEndSync, brushStreamPushSync, type Ring } from './geoEngine';
+import { createLoopFinder } from './brushLoops';
 
 /** Frozen centreline points per closed chunk path. A closed chunk never changes again, so its SVG
  * path is never re-rendered; only the open chunk + tail (bounded) are redrawn per pointer move. */
@@ -8,10 +9,12 @@ export type Box = { x0: number; y0: number; x1: number; y1: number };
 
 /** The live brush's centreline, split for rendering: `chunks` are closed and immutable (each
  * starts at the previous chunk's last point, so the stroke is continuous); `live` is the open
- * chunk followed by the provisional tail; `box` bounds everything. */
-export type BrushLine = { chunks: Ring[]; live: Ring; box: Box | null };
+ * chunk followed by the provisional tail; `box` bounds everything. `loops` are the closed loops
+ * the stroke has made so far (immutable, see brushLoops.ts); `liveLoop` the one the pen is closing
+ * right now, if any. */
+export type BrushLine = { chunks: Ring[]; live: Ring; box: Box | null; loops: Ring[]; liveLoop: Ring | null };
 
-const EMPTY: BrushLine = { chunks: [], live: [], box: null };
+const EMPTY: BrushLine = { chunks: [], live: [], box: null, loops: [], liveLoop: null };
 
 function grow(box: Box | null, p: number[]): Box {
   if (!box) return { x0: p[0], y0: p[1], x1: p[0], y1: p[1] };
@@ -33,6 +36,7 @@ export function createBrushStream() {
   let chunks: Ring[] = [];
   let open: Ring = [];
   let frozenBox: Box | null = null;
+  const loops = createLoopFinder();
 
   function end(): void {
     if (id !== undefined) brushStreamEndSync(id);
@@ -44,15 +48,16 @@ export function createBrushStream() {
     if (!draft.length) return EMPTY;
     const r = brushStreamPushSync(id, sz, draft.slice(fed));
     if (!r) return EMPTY;  // engine not loaded yet — retry from scratch next move
+    if (id === undefined) loops.reset(sz);
     id = r.id; fed = draft.length; first = draft[0]; size = sz;
     for (const p of r.frozen) {
-      open.push(p);
+      open.push(p); loops.add(p);
       frozenBox = grow(frozenBox, p);
       if (open.length === BRUSH_CHUNK_POINTS) { chunks = [...chunks, open]; open = [p]; }
     }
     let box = frozenBox;
     for (const p of r.tail) box = grow(box, p);
-    return { chunks, live: open.concat(r.tail), box };
+    return { chunks, live: open.concat(r.tail), box, loops: loops.loops(), liveLoop: loops.live(r.tail) };
   }
 
   return { update, end };
