@@ -12,10 +12,12 @@ pre-optimization on REALISTIC strokes — dense drags for brush, sparse clicked 
 Green now (current == golden) and MUST STAY green through the optimization; perf itself is measured
 out-of-band (a hard time budget in a test flakes across machines).
 
-NB brush fixtures here are realistic DENSE drags. Since t158 the brush op is a round brush dragged
-along a smooth curve through the points (no longer perfect-freehand ∪ disks), so SPARSE input is
-covered by construction and no longer densified first; on these dense drags it stays within PARITY_TOL
-of the pre-t158 golden. Sparse/curved behaviour is pinned by the geo-engine crate's own tests.
+NB the BRUSH half no longer pins the pre-t158 (perfect-freehand-era) output: that brush was never
+ground truth, and t158 deliberately replaced it (a round brush dragged along a causal, extend-only
+curve). Its golden rings were re-blessed to the accepted t158 brush; the brush half is now a
+gross-regression + coverage guard on realistic dense drags. Exact brush geometry is pinned by
+test_geo_engine_parity; sparse/curved behaviour by the geo-engine crate's own tests. The POLYLINE
+golden is unchanged from t140.
 
 Run: uv run python webapp/tests/test_outline_parity.py
 """
@@ -30,10 +32,8 @@ from webapp import geo_engine
 HERE = os.path.dirname(__file__)
 GOLDEN = json.load(open(os.path.join(HERE, 'fixtures', 't140_outline_golden.json')))
 
-PARITY_TOL = 0.04   # symmetric-difference area / golden area. Realistic strokes measure <=1.5%;
-                    # the ceiling is set by the adversarial sub-brush-width WIGGLE fixture (~3.4% —
-                    # the fast op smooths a wiggle drawn finer than the brush is wide, which is
-                    # imperceptible). Still a tight "same to the eye" bound + a gross-regression guard.
+PARITY_TOL = 0.04   # symmetric-difference area / golden area. A tight "same to the eye" bound +
+                    # gross-regression guard; a deliberate brush change re-blesses the brush rings.
 COVER_EPS = 0.10    # a sample point must lie within this many px of the filled outline
 
 
