@@ -1,11 +1,11 @@
 import { type Component, type JSX, For, Show } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { A } from '@solidjs/router';
 import type { Tool } from './canvasShapes';
 import type { Label } from './api';
 import { AnnotatorPicker } from './AnnotatorPicker';
 import { LabelPicker } from './LabelPicker';
 import { toolMeta } from './canvasToolRegistry';
+import { BrushMenu } from './BrushMenu';
 import { t } from '../i18n/catalog';
 import * as styles from './CanvasScreen.css';
 
@@ -109,6 +109,13 @@ export const CanvasToolbar: Component<Props> = (props) => (
       <For each={props.tools}>
         {(tl) => {
           const m = toolMeta(tl);
+          if (tl === 'brush') {
+            return (
+              <BrushMenu active={props.tool() === tl} testId={m.testId} title={m.title}
+                label={m.label} toolClass={props.tool() === tl ? styles.toolActive : styles.tool}
+                onClick={() => props.setTool(tl)} />
+            );
+          }
           return (
             <button class={props.tool() === tl ? styles.toolActive : styles.tool}
               aria-pressed={props.tool() === tl}
@@ -164,8 +171,7 @@ export const CanvasToolbar: Component<Props> = (props) => (
       </Show>
     </Show>
     <button class={styles.tool} onClick={props.onFit}>{t('canvas.fit')}</button>
-    {/* t157: temporary entry to the input-calibration page. */}
-    <A href="/calibrate" class={styles.tool} data-testid="calibrate-link">{t('calibrate.open')}</A>
+    {/* t161: /calibrate moved into the Brush button's hidden popup (see BrushMenu.tsx). */}
     <Show when={props.imgCount > 1}>
       <span class={styles.sep} />
       <button class={styles.tool} disabled={props.imgIdx() === 0}

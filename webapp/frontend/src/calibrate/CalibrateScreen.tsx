@@ -45,6 +45,7 @@ function rows(s: CalSummary, refreshHz: number): [string, string][] {
 
 const CalibrateScreen: Component = () => {
   let canvas!: HTMLCanvasElement;
+  let wrapRef!: HTMLDivElement;
   const refresh = createRefreshMeter();
   const [summary, setSummary] = createSignal<CalSummary | null>(null);
   // Every finished stroke, frozen at pointer-up (refresh rate captured then) — the report only
@@ -117,6 +118,11 @@ const CalibrateScreen: Component = () => {
     canvas.addEventListener('pointerrawupdate', onRaw);
     canvas.addEventListener('pointerup', onUp);
     canvas.addEventListener('pointercancel', onUp);
+    // t161: a long-press drawing must not select page text — except the report, which
+    // stays selectable for copy (styles.report opts back in against this ancestor).
+    wrapRef.addEventListener('selectstart', (e) => {
+      if (e.target !== reportEl) e.preventDefault();
+    });
   });
   onCleanup(() => refresh.stop());
 
@@ -134,7 +140,7 @@ const CalibrateScreen: Component = () => {
   const report = () => JSON.stringify({ ua: navigator.userAgent, api, strokes: log() });
 
   return (
-    <div class={styles.wrap} data-screen="project" data-testid="calibrate-screen">
+    <div ref={wrapRef} class={styles.wrap} data-screen="project" data-testid="calibrate-screen">
       <div class={styles.bar}>
         <button class={styles.button} onClick={() => history.back()}>{t('canvas.back')}</button>
         <h2 class={styles.title}>{t('calibrate.title')}</h2>

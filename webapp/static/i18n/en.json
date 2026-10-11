@@ -285,6 +285,7 @@
   "canvas.panTitle": "Pan",
   "canvas.brush": "brush",
   "canvas.brushTitle": "Brush",
+  "canvas.penMode": "Pen mode",
   "canvas.polyline": "polyline",
   "canvas.polylineTitle": "Polyline click-brush (each click drops a vertex and is saved; Undo peels one, Esc or another tool finishes)",
   "canvas.eraser": "✕ eraser",

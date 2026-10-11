@@ -3,6 +3,7 @@ import type { Tool, ViewBox } from './canvasShapes';
 import { firePolylineClick } from './canvasPolyline';
 import type { VertexIndex } from './canvasSnap';
 import { createSampleCapture, createRepeatFilter, type PointerSample } from './canvasCapture';
+import { createPenModeGate } from './canvasPenModeGate';
 
 export interface CanvasInteractionOpts {
   getSvg: () => SVGSVGElement | undefined; vb: Accessor<ViewBox>; setVb: Setter<ViewBox>; tool: Accessor<Tool>;
@@ -47,6 +48,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   type TouchPt = { clientX: number; clientY: number; imgX: number; imgY: number };
   const touches = new Map<number, TouchPt>();  // multi-touch tracking for two-finger pinch (§E)
   let pinchStart: { dist: number; midImgX: number; midImgY: number; vb: ViewBox } | null = null;
+  const penGate = createPenModeGate();  // t161: pen-mode touch gating (see canvasPenModeGate.ts)
 
   const toImage = (clientX: number, clientY: number): [number, number] => { // client px → image px via CTM
     const ctm = o.getSvg()!.getScreenCTM();
@@ -92,30 +94,25 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   };
 
   const onPointerDown = (e: PointerEvent) => {
+    if (penGate.onDown(e, touches)) return;  // t161: pen is down + pen mode on — ignore this touch entirely
     (e.target as Element).setPointerCapture?.(e.pointerId);
     const [ix, iy] = toImage(e.clientX, e.clientY);
     touches.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY, imgX: ix, imgY: iy });
 
-    if (touches.size >= 2) {
-      // Two-finger gesture starts: cancel any in-flight stroke (§E)
+    if (touches.size >= 2) {  // Two-finger gesture starts: cancel any in-flight stroke (§E)
       if (strokeInProgress) { o.setDraft([]); strokeInProgress = false; }
       panDragging = false; spacePanRef = null;
       const pts = [...touches.values()];
       const dx = pts[1].clientX - pts[0].clientX, dy = pts[1].clientY - pts[0].clientY;
-      pinchStart = {
-        dist: Math.hypot(dx, dy),
-        midImgX: (pts[0].imgX + pts[1].imgX) / 2,
-        midImgY: (pts[0].imgY + pts[1].imgY) / 2,
-        vb: o.vb(),
-      };
+      pinchStart = { dist: Math.hypot(dx, dy), midImgX: (pts[0].imgX + pts[1].imgX) / 2,
+        midImgY: (pts[0].imgY + pts[1].imgY) / 2, vb: o.vb() };
       return;
     }
 
     // Space+drag → temporary pan from any tool, not mid-stroke (§C)
-    if (spaceDown() && !strokeInProgress) {
-      spacePanRef = { x: e.clientX, y: e.clientY, vb: o.vb() };
-      return;
-    }
+    if (spaceDown() && !strokeInProgress) { spacePanRef = { x: e.clientX, y: e.clientY, vb: o.vb() }; return; }
+    // t161: pen mode ON — a finger only navigates (pans), any tool; never draws/erases/selects.
+    if (penGate.isTouchNav(e)) { panDragging = true; lastPanClient = { x: e.clientX, y: e.clientY }; return; }
 
     const tl = o.tool();
     if (tl === 'select') { o.onSelect?.([ix, iy]); return; }
@@ -127,6 +124,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
 
   const onPointerLeave = () => { setHoverImg(null); };
   const onPointerMove = (e: PointerEvent) => {
+    if (penGate.isIgnoredMove(e, touches)) return;  // t161: stays ignored for its whole gesture
     if (isRepeat(e)) return; setHoverImg(toImage(e.clientX, e.clientY));
     if (touches.has(e.pointerId)) {
       const [ix, iy] = toImage(e.clientX, e.clientY);
@@ -155,7 +153,8 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
       return;
     }
 
-    if (o.tool() === 'pan' && panDragging && lastPanClient) {
+    // t161: a forced touch-nav pan (pen mode, finger, any tool) also lands here.
+    if (panDragging && lastPanClient && (o.tool() === 'pan' || penGate.isTouchNav(e))) {
       panBy(e.clientX - lastPanClient.x, e.clientY - lastPanClient.y);
       lastPanClient = { x: e.clientX, y: e.clientY };
       return;
@@ -167,6 +166,7 @@ export function createCanvasInteraction(o: CanvasInteractionOpts): CanvasInterac
   };
 
   const onPointerUp = (e: PointerEvent) => {
+    penGate.release(e.pointerId);
     touches.delete(e.pointerId);
     if (touches.size < 2) pinchStart = null;
 
