@@ -55,6 +55,12 @@ async function completeEveryTile(p: Page) {
   }
 }
 
+/** Client-side navigation (no reload) — the router follows history + popstate. */
+async function spaNav(page: Page, path: string) {
+  await page.evaluate((u) => { history.pushState({}, '', u); dispatchEvent(new PopStateEvent('popstate')); }, path);
+  await expect(page).toHaveURL(new RegExp(`${path.replace(/[/]/g, '\\/')}$`));
+}
+
 async function openSettings(page: Page) {
   await page.goto('/admin');
   await expect(page.getByTestId('auth-username')).toBeVisible();
@@ -96,13 +102,19 @@ test('merge buttons hidden until an admin enables merge; the merge-ready badge s
   await expect(pA.getByText('merge-ready', { exact: true })).toBeVisible({ timeout: 5000 });
   await expect(pA.getByTestId('enter-merge-btn')).toHaveCount(0);
 
-  // ── Admin turns it on in Admin > Settings; it persists ──
-  await openSettings(page);
+  // ── Admin turns it on in Admin > Settings — via IN-APP navigation from the hub (no reload), so
+  // the hub's already-read "off" must not stick: going back must show the button straight away. ──
+  await page.goto(`/projects/${pid}`);
+  await expect(page.getByText('merge-ready', { exact: true })).toBeVisible({ timeout: 5000 });
+  await spaNav(page, '/admin');
+  await page.click('button[role=tab]:text("Settings")');
   const box = page.getByTestId('setting-merge-enabled');
   await expect(box).not.toBeChecked();
   await box.check();
   await expect.poll(async () => (await (await page.request.get('/api/settings')).json() as
     Record<string, { value: string }>).MERGE_ENABLED?.value).toBe('1');
+  await spaNav(page, `/projects/${pid}`);
+  await expect(page.getByTestId('enter-merge-btn')).toBeVisible({ timeout: 5000 });
   await openSettings(page);
   await expect(page.getByTestId('setting-merge-enabled')).toBeChecked();
 
