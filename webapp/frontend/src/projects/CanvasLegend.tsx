@@ -6,7 +6,7 @@
  * still appear here via their snapshot. Pure presentation; extracted to keep CanvasScreen
  * under 200 lines.
  */
-import { type Component, For, Show, createMemo } from 'solid-js';
+import { type Component, For, createMemo } from 'solid-js';
 import type { CanvasAnnotation, Label } from './api';
 import { t } from '../i18n/catalog';
 import * as styles from './CanvasScreen.css';
@@ -34,20 +34,22 @@ export const CanvasLegend: Component<Props> = (props) => {
     return [...byName.values()];
   });
 
+  // The row ALWAYS takes its space (hidden while empty): mounting it on the first stroke
+  // squeezed the stage and visibly shifted the image under the pen.
   return (
-    <Show when={entries().length > 0}>
-      <div class={styles.legend} data-testid="canvas-legend">
-        <span class={styles.legendTitle}>{t('canvas.legend')}</span>
-        <For each={entries()}>
-          {(e) => (
-            <span class={styles.legendItem}>
-              <span class={styles.legendSwatch} style={{ background: e.color }} aria-hidden="true" />
-              {e.name}
-            </span>
-          )}
-        </For>
-      </div>
-    </Show>
+    <div class={styles.legend} data-testid="canvas-legend"
+      style={{ visibility: entries().length > 0 ? 'visible' : 'hidden' }}
+      aria-hidden={entries().length > 0 ? undefined : 'true'}>
+      <span class={styles.legendTitle}>{t('canvas.legend')}</span>
+      <For each={entries()}>
+        {(e) => (
+          <span class={styles.legendItem}>
+            <span class={styles.legendSwatch} style={{ background: e.color }} aria-hidden="true" />
+            {e.name}
+          </span>
+        )}
+      </For>
+    </div>
   );
 };
 
