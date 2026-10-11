@@ -19,8 +19,8 @@ const LONG_PRESS_MS = 500;
 /**
  * t161 — the Brush tool button, plus its hidden popup (pen mode + /calibrate). Right-click
  * or a long-press (touch/pen, ≥500ms, opens while still held) reveals it; a plain click/tap
- * just selects Brush. No visual marker that the popup exists — only the pen-mode badge,
- * which is a separate, persistent piece of state.
+ * just selects Brush; choosing an item closes it. No visual marker that the popup exists — only
+ * the pen-mode badge, which is a separate, persistent piece of state.
  */
 export const BrushMenu: Component<Props> = (props) => {
   const [open, setOpen] = createSignal(false);
@@ -79,7 +79,7 @@ export const BrushMenu: Component<Props> = (props) => {
       </button>
       {open() && (
         <div ref={menuRef} class={styles.menu} data-testid="brush-menu">
-          <button class={styles.menuItem} data-testid="pen-mode-toggle" onClick={() => togglePenMode()}>
+          <button class={styles.menuItem} data-testid="pen-mode-toggle" onClick={() => { togglePenMode(); setOpen(false); }}>
             {t('canvas.penMode')}
           </button>
           <A href="/calibrate" class={styles.menuItem} data-testid="brush-menu-calibrate">

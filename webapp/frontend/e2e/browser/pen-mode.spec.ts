@@ -115,7 +115,7 @@ async function enablePenMode(p: Page) {
   await expect(p.getByTestId('brush-menu')).toBeVisible();
   await p.getByTestId('pen-mode-toggle').click();
   await expect(p.getByTestId('pen-mode-badge')).toBeVisible();
-  await p.keyboard.press('Escape');
+  // Choosing an item closes the popup (Christian 2026-10-11: it used to stay open).
   await expect(p.getByTestId('brush-menu')).toHaveCount(0);
 }
 
