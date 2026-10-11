@@ -214,8 +214,14 @@ test('edit-time snap: a dragged vertex locks onto the vertex it is dropped on; d
   const closed = (await readStroke())!;
   expect(closed.points[3].slice(0, 2)).toEqual(closed.points[0].slice(0, 2));
 
-  // An ordinary drag of a MIDDLE vertex keeps the loop locked (and keeps the other ids).
-  await expect(p.getByTestId('vertex-handle')).toHaveCount(4, { timeout: 5000 });
+  // An ordinary drag of a MIDDLE vertex keeps the loop locked (and keeps the other ids). The edit
+  // re-mints the mask, so first wait for the handles to re-render at the SNAPPED spot (a stale
+  // handle set would still count 4) before grabbing the next one.
+  const handleAt = (ix: number, iy: number) => p.getByTestId('vertex-handle').evaluateAll(
+    (els, [x, y]) => els.some((e) => Math.abs(Number(e.getAttribute('cx')) - x) < 0.5
+      && Math.abs(Number(e.getAttribute('cy')) - y) < 0.5), [ix, iy]);
+  await expect.poll(() => handleAt(cx + 30, cy), { timeout: 5000 }).toBe(false);
+  await expect.poll(() => handleAt(closed.points[3][0], closed.points[3][1]), { timeout: 5000 }).toBe(true);
   await drag(cx + 30, cy + 30, cx + 40, cy + 40);
   await expect.poll(async () => Math.round((await readStroke())!.points[2][0]), { timeout: 8000 }).toBe(cx + 40);
   const after = (await readStroke())!;
